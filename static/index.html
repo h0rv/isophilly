@@ -9,25 +9,34 @@
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
     canvas { display: block; cursor: grab; touch-action: none; }
     canvas.dragging { cursor: grabbing; }
-    header, aside { position: fixed; z-index: 1; background: #191714e8; color: #f6f0e6; }
+    header { position: fixed; z-index: 1; background: #191714e8; color: #f6f0e6; }
     header { top: 0; left: 0; right: 0; display: flex; gap: 1rem; align-items: baseline; padding: .65rem 1rem; }
     h1 { margin: 0; font-size: 1rem; letter-spacing: -.02em; }
     #status { color: #c7bfb2; font-size: .8rem; }
     button { border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .2rem .45rem; cursor: pointer; }
-    aside { bottom: 1rem; left: 1rem; padding: .65rem .8rem; font-size: .75rem; line-height: 1.55; }
+    details { margin-left: auto; position: relative; font-size: .75rem; }
+    summary { cursor: pointer; color: #c7bfb2; }
+    .legend { position: absolute; right: 0; top: 1.7rem; width: max-content; padding: .65rem .8rem; background: #191714f5; line-height: 1.55; }
     i { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem; vertical-align: -.08rem; }
   </style>
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header><h1>geo-philly</h1><span id="status">loading city geometry…</span><button id="home">City Hall</button></header>
+  <header>
+    <h1>geo-philly</h1>
+    <span id="status">loading city geometry…</span>
+    <button id="home">City Hall</button>
+    <details>
+      <summary>Legend</summary>
+      <div class="legend">
+        <div><i style="background:#9c4e36"></i>rowhouses</div>
+        <div><i style="background:#76778c"></i>towers</div>
+        <div><i style="background:#5d8490"></i>water</div>
+        <div><i style="background:#779267"></i>parks</div>
+        <div>drag to explore · wheel to zoom</div>
+      </div>
+    </details>
+  </header>
   <canvas id="map"></canvas>
-  <aside>
-    <div><i style="background:#9c4e36"></i>rowhouses</div>
-    <div><i style="background:#76778c"></i>towers</div>
-    <div><i style="background:#5d8490"></i>water</div>
-    <div><i style="background:#779267"></i>parks</div>
-    <div>drag to explore · wheel to zoom</div>
-  </aside>
 </body>
 </html>

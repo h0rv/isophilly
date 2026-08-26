@@ -3,10 +3,11 @@ use std::{cmp::Ordering, io};
 use rstar::AABB;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 
-use crate::world::{Aerial, Bounds, Building, Ring, World, isometric};
+use crate::world::{Bounds, Building, Ring, World, isometric};
 
 const TILE_SIZE: u32 = 256;
 const OVERVIEW_ZOOM: u8 = 3;
+const EXTRUSION_ZOOM: u8 = 7;
 const OVERVIEW_LIMIT: usize = 60_000;
 const DETAIL_LIMIT: usize = 6_000;
 
@@ -15,9 +16,6 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
     pixmap.fill(Color::from_rgba8(217, 209, 195, 255));
-    if let Some(aerial) = &world.aerial {
-        draw_aerial(&mut pixmap, aerial, world.source_bounds, bounds, scale);
-    }
     let query = bounds.source_envelope();
     draw_rings(
         &mut pixmap,
@@ -59,7 +57,7 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
                 None,
             );
         }
-    } else if z == OVERVIEW_ZOOM + 1 {
+    } else if z < EXTRUSION_ZOOM {
         for building in buildings {
             fill_ring(
                 &mut pixmap,
@@ -81,41 +79,6 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
         }
     }
     pixmap.encode_png().map_err(io::Error::other)
-}
-
-fn draw_aerial(pixmap: &mut Pixmap, aerial: &Aerial, source: Bounds, tile: Bounds, scale: f32) {
-    let data = pixmap.data_mut();
-    for pixel_y in 0..TILE_SIZE {
-        let iso_y = tile.min_y + (pixel_y as f32 + 0.5) / scale;
-        for pixel_x in 0..TILE_SIZE {
-            let iso_x = tile.min_x + (pixel_x as f32 + 0.5) / scale;
-            let source_x = (iso_x + 2.0 * iso_y) * 0.5;
-            let source_y = (2.0 * iso_y - iso_x) * 0.5;
-            let image_x = ((source_x - source.min_x) / source.width() * aerial.width as f32) as i32;
-            let image_y =
-                ((source.max_y - source_y) / source.height() * aerial.height as f32) as i32;
-            if image_x < 0
-                || image_y < 0
-                || image_x >= aerial.width as i32
-                || image_y >= aerial.height as i32
-            {
-                continue;
-            }
-            let target = ((pixel_y * TILE_SIZE + pixel_x) * 4) as usize;
-            let image = ((image_y as u32 * aerial.width + image_x as u32) * 4) as usize;
-            let brightness = aerial.data[image] as u16
-                + aerial.data[image + 1] as u16
-                + aerial.data[image + 2] as u16;
-            if brightness < 270 {
-                continue;
-            }
-            for channel in 0..3 {
-                data[target + channel] = ((data[target + channel] as u16
-                    + aerial.data[image + channel] as u16)
-                    / 2) as u8;
-            }
-        }
-    }
 }
 
 fn draw_rings(
