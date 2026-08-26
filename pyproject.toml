@@ -1,0 +1,43 @@
+[project]
+name = "geo-philly"
+version = "0.1.0"
+description = "geo-philly data ingest for the native tile server"
+requires-python = ">=3.12"
+dependencies = [
+    "shapely>=2.0",
+    "philly>=0.1",
+    "geopandas>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "poethepoet",
+    "ruff",
+    "ty",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.poe.tasks]
+check-python = { shell = "ruff format --check src scripts && ruff check src scripts && ty check src scripts" }
+check-rust = { shell = "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features && cargo build --release --locked && cargo deny check" }
+check-web = "npm run check"
+check = { shell = "poe check-python && poe check-web && poe check-rust" }
+audit = "cargo deny check"
+ingest = "python -m geo_philly_ingest.ingest"
+prebuild = "cargo run --release -- prebuild --max-zoom 5"
+serve = "cargo run --release -- serve --port 3000"

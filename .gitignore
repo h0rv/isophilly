@@ -1,0 +1,31 @@
+# Data (generated, large)
+data/
+!data/.gitkeep
+!data/clean/.gitkeep
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+uv.lock
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Rust
+/target/
+
+# Node / viewer
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

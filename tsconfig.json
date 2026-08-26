@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2023",
+    "lib": ["DOM", "ES2023"]
+  },
+  "include": ["static/app.js"]
+}

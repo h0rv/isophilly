@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "2.4.6",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "check": "biome check static/app.js && tsc --noEmit"
+  }
+}
