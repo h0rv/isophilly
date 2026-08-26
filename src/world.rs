@@ -1,6 +1,7 @@
 use std::{fs, io, path::Path};
 
 use rstar::{AABB, RTree, RTreeObject};
+use tiny_skia::Pixmap;
 
 const MAGIC: &[u8; 8] = b"GEOPHILY";
 
@@ -110,6 +111,7 @@ impl RTreeObject for Indexed {
 }
 
 pub struct World {
+    pub source_bounds: Bounds,
     pub buildings: Vec<Building>,
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
@@ -117,6 +119,13 @@ pub struct World {
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
+    pub aerial: Option<Aerial>,
+}
+
+pub struct Aerial {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
 }
 
 pub fn load_world(path: &Path) -> io::Result<World> {
@@ -169,6 +178,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         .collect::<io::Result<Vec<_>>>()?;
     let max_height = buildings.iter().map(|b| b.height).fold(0.0, f32::max);
     Ok(World {
+        source_bounds: bounds,
         building_tree: index_buildings(&buildings),
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
@@ -176,6 +186,16 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         water,
         parks,
         iso_bounds: bounds.isometric(max_height),
+        aerial: load_aerial(Path::new("data/clean/aerial.png")),
+    })
+}
+
+fn load_aerial(path: &Path) -> Option<Aerial> {
+    let pixmap = Pixmap::load_png(path).ok()?;
+    Some(Aerial {
+        width: pixmap.width(),
+        height: pixmap.height(),
+        data: pixmap.data().to_vec(),
     })
 }
 

@@ -5,6 +5,7 @@ description = "geo-philly data ingest for the native tile server"
 requires-python = ">=3.12"
 dependencies = [
     "shapely>=2.0",
+    "pillow>=12",
     "philly>=0.1",
     "geopandas>=1.0",
 ]
@@ -39,5 +40,6 @@ check-web = "npm run check"
 check = { shell = "poe check-python && poe check-web && poe check-rust" }
 audit = "cargo deny check"
 ingest = "python -m geo_philly_ingest.ingest"
+aerial = "python -m geo_philly_ingest.aerial"
 prebuild = "cargo run --release -- prebuild --max-zoom 5"
 serve = "cargo run --release -- serve --port 3000"
