@@ -13,12 +13,17 @@ use tokio::sync::Semaphore;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
-use crate::{render::render_tile, world::World};
+use crate::{
+    render::{render_blank_tile, render_tile},
+    world::World,
+};
 
 #[derive(Clone)]
 struct AppState {
     world: Arc<World>,
     tile_dir: PathBuf,
+    tile_version: String,
+    blank_tile: Arc<Vec<u8>>,
     render_slots: Arc<Semaphore>,
 }
 #[derive(Serialize)]
@@ -26,23 +31,35 @@ struct Meta {
     iso_bounds: [f32; 4],
     city_hall: [f32; 2],
     counts: Counts,
+    tile_version: String,
+    max_zoom: u8,
+    home_zoom: u8,
 }
 #[derive(Serialize)]
 struct Counts {
     buildings: usize,
     water: usize,
     parks: usize,
+    streets: usize,
 }
 
-const WARM_ZOOM: u8 = 5;
+const WARM_ZOOM: u8 = 4;
 const CITY_HALL: [f32; 2] = [748_854.06, 446_419.38];
-const TILE_CACHE_VERSION: &str = "v2";
+const RENDER_VERSION: &str = "v4";
+const MAX_ZOOM: u8 = 12;
+const HOME_ZOOM: u8 = 3;
+const PERSIST_MAX_ZOOM: u8 = 8;
 
 pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
     let warm_world = Arc::clone(&world);
+    let tile_version = tile_version(&world);
+    let tile_dir = tile_cache_dir(&tile_version);
+    let warm_tile_dir = tile_dir.clone();
     let state = AppState {
         world,
-        tile_dir: tile_cache_dir(),
+        tile_dir,
+        tile_version,
+        blank_tile: Arc::new(render_blank_tile()?),
         render_slots: Arc::new(Semaphore::new(render_workers())),
     };
     let app = Router::new()
@@ -58,15 +75,18 @@ pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
         );
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     println!("geo-philly http://127.0.0.1:{port}");
-    let warm_task = tokio::task::spawn_blocking(move || warm_missing_tiles(&warm_world, WARM_ZOOM));
+    let warm_task = tokio::task::spawn_blocking(move || {
+        warm_missing_tiles(&warm_world, &warm_tile_dir, WARM_ZOOM);
+    });
     drop(warm_task);
     axum::serve(listener, app).await.map_err(io::Error::other)
 }
 pub fn prebuild(world: &World, max_zoom: u8) -> io::Result<()> {
+    let tile_dir = tile_cache_dir(&tile_version(world));
     for z in 0..=max_zoom {
         let count = 1_u32 << z;
         (0..count).into_par_iter().try_for_each(|y| {
-            (0..count).try_for_each(|x| cache_tile(world, z, x, y, true).map(|_| ()))
+            (0..count).try_for_each(|x| cache_tile(world, &tile_dir, z, x, y, true).map(|_| ()))
         })?;
         println!("prebuilt z{z}");
     }
@@ -110,7 +130,11 @@ async fn meta(State(state): State<AppState>) -> Json<Meta> {
             buildings: state.world.buildings.len(),
             water: state.world.water.len(),
             parks: state.world.parks.len(),
+            streets: state.world.streets.len(),
         },
+        tile_version: state.tile_version.clone(),
+        max_zoom: MAX_ZOOM,
+        home_zoom: HOME_ZOOM,
     })
 }
 async fn tile(
@@ -121,53 +145,38 @@ async fn tile(
     let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if z > 15 || x >= 1 << z || y >= 1 << z {
+    if z > MAX_ZOOM || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    let tile_bounds = state.world.iso_bounds.tile(z, x, y);
+    if !state.world.has_content(&tile_bounds.source_envelope()) {
+        return png_response(state.blank_tile.as_ref().clone(), "empty");
     }
     let path = state
         .tile_dir
         .join(z.to_string())
         .join(x.to_string())
         .join(format!("{y}.png"));
-    let (png, cache) = match tokio::fs::read(&path).await {
-        Ok(png) => (png, "disk"),
-        Err(error) => {
+    let cached = if should_persist(z) {
+        Some(tokio::fs::read(&path).await)
+    } else {
+        None
+    };
+    let (png, cache) = match cached {
+        Some(Ok(png)) => (png, "disk"),
+        Some(Err(error)) => {
             if error.kind() != io::ErrorKind::NotFound {
                 warn!(?error, path = %path.display(), "tile cache read failed");
             }
-            let queued = Instant::now();
-            let render_slot = match state.render_slots.acquire().await {
-                Ok(slot) => slot,
-                Err(error) => {
-                    warn!(?error, z, x, y, "tile render queue closed");
-                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
-                }
-            };
-            let world = Arc::clone(&state.world);
-            let png = match tokio::task::spawn_blocking(move || render_tile(&world, z, x, y)).await
-            {
-                Ok(Ok(png)) => png,
-                Ok(Err(error)) => {
-                    warn!(?error, z, x, y, "tile render failed");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-                Err(error) => {
-                    warn!(?error, z, x, y, "tile worker failed");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            };
-            let queue_ms = queued.elapsed().as_millis();
-            drop(render_slot);
-            if let Some(parent) = path.parent() {
-                if let Err(error) = tokio::fs::create_dir_all(parent).await {
-                    warn!(?error, path = %parent.display(), "tile cache directory failed");
-                } else if let Err(error) = tokio::fs::write(&path, &png).await {
-                    warn!(?error, path = %path.display(), "tile cache write failed");
-                }
+            match render_requested_tile(&state, &path, z, x, y, started).await {
+                Ok(rendered) => rendered,
+                Err(status) => return status.into_response(),
             }
-            info!(z, x, y, queue_ms, "tile render scheduled");
-            (png, "rendered")
         }
+        None => match render_requested_tile(&state, &path, z, x, y, started).await {
+            Ok(rendered) => rendered,
+            Err(status) => return status.into_response(),
+        },
     };
     info!(
         z,
@@ -177,17 +186,79 @@ async fn tile(
         elapsed_ms = started.elapsed().as_millis(),
         "tile served"
     );
+    png_response(png, cache)
+}
+
+async fn render_requested_tile(
+    state: &AppState,
+    path: &std::path::Path,
+    z: u8,
+    x: u32,
+    y: u32,
+    started: Instant,
+) -> Result<(Vec<u8>, &'static str), StatusCode> {
+    let queued = Instant::now();
+    let render_slot = match state.render_slots.acquire().await {
+        Ok(slot) => slot,
+        Err(error) => {
+            warn!(?error, z, x, y, "tile render queue closed");
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    let world = Arc::clone(&state.world);
+    let png = match tokio::task::spawn_blocking(move || render_tile(&world, z, x, y)).await {
+        Ok(Ok(png)) => png,
+        Ok(Err(error)) => {
+            warn!(?error, z, x, y, "tile render failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(error) => {
+            warn!(?error, z, x, y, "tile worker failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let queue_ms = queued.elapsed().as_millis();
+    drop(render_slot);
+    if should_persist(z)
+        && let Some(parent) = path.parent()
+    {
+        if let Err(error) = tokio::fs::create_dir_all(parent).await {
+            warn!(?error, path = %parent.display(), "tile cache directory failed");
+        } else if let Err(error) = tokio::fs::write(path, &png).await {
+            warn!(?error, path = %path.display(), "tile cache write failed");
+        }
+    }
+    info!(
+        z,
+        x,
+        y,
+        queue_ms,
+        elapsed_ms = started.elapsed().as_millis(),
+        "tile rendered"
+    );
+    Ok((
+        png,
+        if should_persist(z) {
+            "rendered"
+        } else {
+            "volatile"
+        },
+    ))
+}
+
+fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
     (
         [
             (header::CONTENT_TYPE, "image/png"),
-            (header::CACHE_CONTROL, "no-store"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (header::HeaderName::from_static("x-tile-cache"), cache),
         ],
         png,
     )
         .into_response()
 }
 
-fn warm_missing_tiles(world: &World, max_zoom: u8) {
+fn warm_missing_tiles(world: &World, tile_dir: &std::path::Path, max_zoom: u8) {
     let started = Instant::now();
     let pool = match rayon::ThreadPoolBuilder::new()
         .num_threads(render_workers().min(2))
@@ -207,7 +278,7 @@ fn warm_missing_tiles(world: &World, max_zoom: u8) {
                 .into_par_iter()
                 .map(|y| {
                     (0..count)
-                        .filter_map(|x| match cache_tile(world, z, x, y, false) {
+                        .filter_map(|x| match cache_tile(world, tile_dir, z, x, y, false) {
                             Ok(rendered) => Some(u32::from(rendered)),
                             Err(error) => {
                                 warn!(?error, z, x, y, "tile warm failed");
@@ -227,8 +298,15 @@ fn warm_missing_tiles(world: &World, max_zoom: u8) {
     );
 }
 
-fn cache_tile(world: &World, z: u8, x: u32, y: u32, overwrite: bool) -> io::Result<bool> {
-    let path = tile_path(z, x, y);
+fn cache_tile(
+    world: &World,
+    tile_dir: &std::path::Path,
+    z: u8,
+    x: u32,
+    y: u32,
+    overwrite: bool,
+) -> io::Result<bool> {
+    let path = tile_path(tile_dir, z, x, y);
     if !overwrite && path.exists() {
         return Ok(false);
     }
@@ -244,13 +322,32 @@ fn render_workers() -> usize {
     std::thread::available_parallelism().map_or(2, |count| count.get().clamp(1, 8))
 }
 
-fn tile_path(z: u8, x: u32, y: u32) -> PathBuf {
-    tile_cache_dir()
+const fn should_persist(z: u8) -> bool {
+    z <= PERSIST_MAX_ZOOM
+}
+
+fn tile_path(tile_dir: &std::path::Path, z: u8, x: u32, y: u32) -> PathBuf {
+    tile_dir
         .join(z.to_string())
         .join(x.to_string())
         .join(format!("{y}.png"))
 }
 
-fn tile_cache_dir() -> PathBuf {
-    PathBuf::from("data/tiles").join(TILE_CACHE_VERSION)
+fn tile_version(world: &World) -> String {
+    format!("{RENDER_VERSION}-{:016x}", world.data_version)
+}
+
+fn tile_cache_dir(tile_version: &str) -> PathBuf {
+    PathBuf::from("data/tiles").join(tile_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PERSIST_MAX_ZOOM, should_persist};
+
+    #[test]
+    fn deep_zoom_tiles_do_not_fill_the_disk_cache() {
+        assert!(should_persist(PERSIST_MAX_ZOOM));
+        assert!(!should_persist(PERSIST_MAX_ZOOM + 1));
+    }
 }

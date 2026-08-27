@@ -3,6 +3,7 @@ use std::{fs, io, path::Path};
 use rstar::{AABB, RTree, RTreeObject};
 
 const MAGIC: &[u8; 8] = b"GEOPHILY";
+const STREET_MAGIC: &[u8; 8] = b"GEOSTRPH";
 
 #[derive(Clone, Copy)]
 pub struct Bounds {
@@ -98,6 +99,12 @@ pub struct Building {
     pub center: (f32, f32),
 }
 #[derive(Clone)]
+pub struct Street {
+    pub class: u8,
+    pub points: Vec<(f32, f32)>,
+    pub bounds: Bounds,
+}
+#[derive(Clone)]
 pub struct Indexed {
     pub index: usize,
     envelope: AABB<[f32; 2]>,
@@ -113,14 +120,51 @@ pub struct World {
     pub buildings: Vec<Building>,
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
+    pub streets: Vec<Street>,
     pub building_tree: RTree<Indexed>,
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
+    pub street_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
+    pub data_version: u64,
+}
+
+impl World {
+    pub fn has_content(&self, query: &AABB<[f32; 2]>) -> bool {
+        self.building_tree
+            .locate_in_envelope_intersecting(query)
+            .next()
+            .is_some()
+            || self
+                .water_tree
+                .locate_in_envelope_intersecting(query)
+                .next()
+                .is_some()
+            || self
+                .park_tree
+                .locate_in_envelope_intersecting(query)
+                .next()
+                .is_some()
+            || self
+                .street_tree
+                .locate_in_envelope_intersecting(query)
+                .next()
+                .is_some()
+    }
 }
 
 pub fn load_world(path: &Path) -> io::Result<World> {
     let bytes = fs::read(path)?;
+    let streets_path = path.with_file_name("streets.bin");
+    let street_bytes = match fs::read(&streets_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let data_version = street_bytes.as_deref().map_or_else(
+        || fingerprint(&bytes),
+        |streets| fingerprint_pair(&bytes, streets),
+    );
     let mut cursor = Cursor {
         bytes: &bytes,
         offset: 0,
@@ -167,16 +211,84 @@ pub fn load_world(path: &Path) -> io::Result<World> {
     let parks = (0..park_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
+    let streets = street_bytes
+        .as_deref()
+        .map(parse_streets)
+        .transpose()?
+        .unwrap_or_default();
     let max_height = buildings.iter().map(|b| b.height).fold(0.0, f32::max);
     Ok(World {
         building_tree: index_buildings(&buildings),
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
+        street_tree: index_streets(&streets),
         buildings,
         water,
         parks,
+        streets,
         iso_bounds: bounds.isometric(max_height),
+        data_version,
     })
+}
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    fingerprint_from(0xcbf2_9ce4_8422_2325, bytes)
+}
+fn fingerprint_pair(first: &[u8], second: &[u8]) -> u64 {
+    fingerprint_from(fingerprint(first), second)
+}
+fn fingerprint_from(initial: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(initial, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+fn parse_streets(bytes: &[u8]) -> io::Result<Vec<Street>> {
+    let mut cursor = Cursor { bytes, offset: 0 };
+    if cursor.take(8)? != STREET_MAGIC || cursor.u32()? != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported street data",
+        ));
+    }
+    let _epsg = cursor.u32()?;
+    let count = cursor.u32()? as usize;
+    for _ in 0..4 {
+        let _bound = cursor.f64()?;
+    }
+    (0..count)
+        .map(|_| {
+            let class = cursor.u8()?;
+            let point_count = cursor.u32()? as usize;
+            let mut points = Vec::with_capacity(point_count);
+            let mut bounds = Bounds {
+                min_x: f32::INFINITY,
+                min_y: f32::INFINITY,
+                max_x: f32::NEG_INFINITY,
+                max_y: f32::NEG_INFINITY,
+            };
+            for _ in 0..point_count {
+                let x = cursor.f32()?;
+                let y = cursor.f32()?;
+                bounds.min_x = bounds.min_x.min(x);
+                bounds.min_y = bounds.min_y.min(y);
+                bounds.max_x = bounds.max_x.max(x);
+                bounds.max_y = bounds.max_y.max(y);
+                points.push((x, y));
+            }
+            if points.len() < 2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "street needs at least two points",
+                ));
+            }
+            Ok(Street {
+                class,
+                points,
+                bounds,
+            })
+        })
+        .collect()
 }
 
 fn index_buildings(buildings: &[Building]) -> RTree<Indexed> {
@@ -194,6 +306,15 @@ fn index_rings(rings: &[Ring]) -> RTree<Indexed> {
             .iter()
             .enumerate()
             .map(|(index, ring)| indexed(index, ring.bounds))
+            .collect(),
+    )
+}
+fn index_streets(streets: &[Street]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        streets
+            .iter()
+            .enumerate()
+            .map(|(index, street)| indexed(index, street.bounds))
             .collect(),
     )
 }
@@ -227,6 +348,12 @@ impl<'a> Cursor<'a> {
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u32"))?;
         Ok(u32::from_le_bytes(bytes))
+    }
+    fn u8(&mut self) -> io::Result<u8> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated u8"))
     }
     fn f32(&mut self) -> io::Result<f32> {
         let bytes: [u8; 4] = self
@@ -270,7 +397,7 @@ pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, Cursor};
+    use super::{Bounds, Cursor, fingerprint, fingerprint_pair};
 
     #[test]
     fn isometric_bounds_cover_ground_and_height() {
@@ -312,5 +439,15 @@ mod tests {
         };
 
         assert!(cursor.u32().is_err());
+    }
+
+    #[test]
+    fn fingerprint_changes_with_data() {
+        assert_ne!(fingerprint(b"city-a"), fingerprint(b"city-b"));
+        assert_eq!(fingerprint(b"city-a"), fingerprint(b"city-a"));
+        assert_ne!(
+            fingerprint_pair(b"city", b"roads-a"),
+            fingerprint_pair(b"city", b"roads-b")
+        );
     }
 }

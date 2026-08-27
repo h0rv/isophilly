@@ -3,29 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Explore Philadelphia as a fast, deterministic isometric map built from public city geometry.">
+  <meta name="theme-color" content="#191714">
   <title>geo-philly</title>
+  <link rel="icon" href="data:,">
   <style>
     :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
-    canvas { display: block; cursor: grab; touch-action: none; }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
     canvas.dragging { cursor: grabbing; }
-    header { position: fixed; z-index: 1; background: #191714e8; color: #f6f0e6; }
-    header { top: 0; left: 0; right: 0; display: flex; gap: 1rem; align-items: baseline; padding: .65rem 1rem; }
-    h1 { margin: 0; font-size: 1rem; letter-spacing: -.02em; }
+    header { position: fixed; z-index: 1; background: #191714eb; color: #f6f0e6; backdrop-filter: blur(6px); }
+    header { top: 0; left: 0; right: 0; display: flex; gap: .75rem; align-items: center; min-height: 2.75rem; padding: .5rem .85rem; }
+    h1 { margin: 0; font-size: 1.05rem; letter-spacing: -.025em; }
     #status { color: #c7bfb2; font-size: .8rem; }
-    button { border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .2rem .45rem; cursor: pointer; }
-    details { margin-left: auto; position: relative; font-size: .75rem; }
+    .controls { display: flex; gap: .3rem; margin-left: auto; }
+    button { min-width: 1.8rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .25rem .5rem; cursor: pointer; font: inherit; }
+    button:hover { background: #464039; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid #c88a6b; outline-offset: 2px; }
+    details { position: relative; font-size: .75rem; }
     summary { cursor: pointer; color: #c7bfb2; }
-    .legend { position: absolute; right: 0; top: 1.7rem; width: max-content; padding: .65rem .8rem; background: #191714f5; line-height: 1.55; }
+    .legend { position: absolute; right: 0; top: 1.75rem; width: max-content; padding: .65rem .8rem; background: #191714f5; border: 1px solid #484239; border-radius: .2rem; line-height: 1.55; box-shadow: 0 .5rem 1.5rem #0005; }
+    .legend a { color: #c7bfb2; }
     i { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem; vertical-align: -.08rem; }
+    @media (max-width: 620px) {
+      header { gap: .5rem; }
+      #status { max-width: 9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .controls { margin-left: auto; }
+    }
   </style>
-  <script src="/app.js?v=20260826-2" defer></script>
+  <script src="/app.js" defer></script>
 </head>
 <body>
   <header>
     <h1>geo-philly</h1>
-    <span id="status">loading city geometry…</span>
-    <button id="home">City Hall</button>
+    <span id="status" aria-live="polite">loading city geometry…</span>
+    <nav class="controls" aria-label="Map controls">
+      <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
+      <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+      <button id="home">City Hall</button>
+    </nav>
     <details>
       <summary>Legend</summary>
       <div class="legend">
@@ -33,10 +50,14 @@
         <div><i style="background:#76778c"></i>towers</div>
         <div><i style="background:#5d8490"></i>water</div>
         <div><i style="background:#779267"></i>parks</div>
+        <div><i style="background:#beb29f"></i>streets</div>
         <div>drag to explore · wheel to zoom</div>
+        <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia open data</a></div>
       </div>
     </details>
   </header>
-  <canvas id="map"></canvas>
+  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia">
+    Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
+  </canvas>
 </body>
 </html>

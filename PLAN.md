@@ -21,19 +21,21 @@ official City Limits polygon defines the extent and clips all edge geometry.
 uv run poe ingest     # snapshot sources; refresh clean binaries + provenance
 uv run poe prebuild   # materialize z0-z5 to data/tiles
 uv run poe serve      # http://127.0.0.1:3000
+uv run poe visual     # screenshot + tile-gap/performance QA
 uv run poe check      # Python + Rust checks
 ```
 
 `data/` is generated and ignored. Tiles through z5 are pre-rendered. Above that,
-the server rasterizes only requested tiles in a blocking worker; cache headers let
-a browser or production edge cache them normally. A production deploy that wants
-long immutable caching should put a data-version prefix in the tile URL.
+the server rasterizes only requested tiles in a blocking worker. Cache paths and
+browser URLs include both the renderer revision and a clean-data fingerprint.
+Empty tiles are shared rather than persisted; z9+ stays browser/edge-only.
 
 ## Rendering rules
 
-- z0-z4: water, parks, and a sampled city fabric.
-- z5: pre-rendered flat/extruded building forms.
-- z6+: full 2.5D footprints, painter-sorted and capped at 6,000 buildings per tile.
-- Palette: warm ground, brick rowhouses, cool towers, blue water, green parks.
+- z0-z2: water, parks, and sampled city fabric.
+- z3: sampled fabric plus expressways and ramps.
+- z4: height-aligned roofs plus major streets.
+- z5+: full painter-sorted 2.5D footprints plus street centerlines.
+- Palette: warm ground, varied brick rowhouses, cool towers, blue water, green parks.
 
-No 3D engine, textures, satellite imagery, AI rendering, or duplicated data loader.
+No 3D engine, textures, satellite imagery, or AI rendering.
