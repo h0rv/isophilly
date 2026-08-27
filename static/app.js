@@ -39,6 +39,7 @@ const tiles = new Map();
 const MIN_ZOOM = 0.35;
 const MAX_TILE_ZOOM = 12;
 const MAX_ZOOM = 2 ** (MAX_TILE_ZOOM - 3);
+const TILE_VERSION = "20260826-2";
 
 function city() {
   if (meta === undefined) throw new Error("city metadata is not loaded");
@@ -68,7 +69,7 @@ function requestTile(z, x, y) {
     tiles.delete(id);
     setTimeout(draw, 250);
   };
-  image.src = `/tiles/${z}/${x}/${y}.png`;
+  image.src = `/tiles/${z}/${x}/${y}.png?v=${TILE_VERSION}`;
   tiles.set(id, image);
   return image;
 }

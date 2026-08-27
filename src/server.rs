@@ -36,12 +36,13 @@ struct Counts {
 
 const WARM_ZOOM: u8 = 5;
 const CITY_HALL: [f32; 2] = [748_854.06, 446_419.38];
+const TILE_CACHE_VERSION: &str = "v2";
 
 pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
     let warm_world = Arc::clone(&world);
     let state = AppState {
         world,
-        tile_dir: PathBuf::from("data/tiles"),
+        tile_dir: tile_cache_dir(),
         render_slots: Arc::new(Semaphore::new(render_workers())),
     };
     let app = Router::new()
@@ -78,7 +79,7 @@ async fn index() -> Result<impl IntoResponse, StatusCode> {
             (
                 [
                     (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                    (header::CACHE_CONTROL, "no-cache"),
+                    (header::CACHE_CONTROL, "no-store"),
                 ],
                 body,
             )
@@ -93,7 +94,7 @@ async fn app_js() -> Result<impl IntoResponse, StatusCode> {
             (
                 [
                     (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-                    (header::CACHE_CONTROL, "no-cache"),
+                    (header::CACHE_CONTROL, "no-store"),
                 ],
                 body,
             )
@@ -179,7 +180,7 @@ async fn tile(
     (
         [
             (header::CONTENT_TYPE, "image/png"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         png,
     )
@@ -244,8 +245,12 @@ fn render_workers() -> usize {
 }
 
 fn tile_path(z: u8, x: u32, y: u32) -> PathBuf {
-    PathBuf::from("data/tiles")
+    tile_cache_dir()
         .join(z.to_string())
         .join(x.to_string())
         .join(format!("{y}.png"))
+}
+
+fn tile_cache_dir() -> PathBuf {
+    PathBuf::from("data/tiles").join(TILE_CACHE_VERSION)
 }
