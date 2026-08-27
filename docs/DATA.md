@@ -1,10 +1,11 @@
 # Data pipeline
 
-`uv run poe ingest` downloads immutable, content-addressed snapshots of five
-official City of Philadelphia ArcGIS layers, processes them offline, and writes:
+`uv run poe ingest` downloads content-addressed snapshots of five City of
+Philadelphia ArcGIS layers and one OpenStreetMap query. It processes them
+offline and writes:
 
-- `data/clean/philly.bin`: the stable version-1 building/water/park world read by
-  the Rust server.
+- `data/clean/philly.bin`: the version 2 building, building part, water, and park
+  world read by the Rust server.
 - `data/clean/streets.bin`: a separate optional street-centerline artifact.
 - `data/clean/meta.json`: source URLs, request times, HTTP validators, SHA-256
   checksums, CRS, bounds, counts, and output checksums.
@@ -30,6 +31,46 @@ snapshot.
 - streets include City classes 1–5, 9, and 10 (expressways through local roads
   and ramps). Class 6 driveways and non-traversable/walking/boundary lines are
   excluded from the clean render input.
+- the Center City query covers longitude `-75.19042` to `-75.13356` and latitude
+  `39.94018` to `39.96987`. It selects OpenStreetMap ways tagged
+  `building:part`. An explicit height takes priority over a level count, and
+  one level is estimated as 3.2 metres. Parts without either value are skipped.
+  The renderer retains the City footprint under incomplete part sets.
+
+## World binary format
+
+All integers and floats are little-endian. Coordinates are EPSG:32129 metres.
+
+```text
+8 bytes  magic "GEOPHILY"
+u32      version (2)
+u32      EPSG (32129)
+u32      building count
+u32      building part count
+u32      water ring count
+u32      park ring count
+f64 x 4  official city bounds: min_x, min_y, max_x, max_y
+repeat building count times:
+  f32    height
+  ring
+repeat building part count times:
+  u64    OpenStreetMap way ID
+  f32    height
+  f32    minimum height
+  f32    roof height
+  u8     roof shape
+  ring
+repeat water and park counts:
+  ring
+
+ring:
+  u32    point count
+  repeat point count times: f32 x, f32 y
+```
+
+Roof shape values are 0 flat, 1 gabled, 2 hipped, 3 pyramidal, 4 dome, 5 cone,
+and 6 mansard. The clean metadata stores the Overpass generator, data timestamp,
+query URL, response checksum, and part count.
 
 ## Street binary format
 
@@ -73,7 +114,8 @@ The City catalog describes the building footprints as weekly-updated public
 data, the hydrology as current surface-water geometry, the street centerline as
 a reference base layer, and City Limits as the generalized standard boundary.
 Before redistributing a generated dataset or commercial image, verify the
-current City of Philadelphia license/terms and preserve attribution.
+current City of Philadelphia terms and preserve attribution. The interface must
+also display [OpenStreetMap contributor attribution](https://www.openstreetmap.org/copyright).
 
 ## Licensing boundary
 
@@ -82,6 +124,8 @@ relicense City source data or generated tiles. OpenDataPhilly catalog pages
 identify these inputs as City of Philadelphia data and link to the applicable
 terms. Review the current [City of Philadelphia terms of
 use](https://www.phila.gov/terms-of-use/) before publishing or commercially
-using a derived artifact, and display City of Philadelphia/OpenDataPhilly
-attribution with the map. This project is an illustration, not an authoritative
-boundary, property, elevation, or navigation product.
+using a derived artifact, and display City of Philadelphia and OpenDataPhilly
+attribution with the map. OpenStreetMap data is available under the ODbL, which
+has separate attribution and database sharing requirements. This project is an
+illustration, not an authoritative boundary, property, elevation, or navigation
+product.

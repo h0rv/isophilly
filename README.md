@@ -1,8 +1,8 @@
 # geo-philly
 
-A small, deterministic isometric map of Philadelphia built from public City
-geometry and 2025 City aerial photography. Explore the whole city in a browser,
-from the regional silhouette to individual building footprints.
+A small, deterministic isometric map of Philadelphia built from City geometry,
+OpenStreetMap building parts, and 2025 City aerial photography. Explore the
+whole city in a browser, from the regional silhouette to individual buildings.
 
 The expensive geospatial import happens once in Python. A compact Rust service
 loads that result, renders PNG tiles in parallel, and caches them on disk. The
@@ -21,16 +21,20 @@ uv run --locked poe serve
 ```
 
 Open <http://127.0.0.1:3000>. The default is deterministic pixel processing.
-`ingest` downloads official City Limits, Building
-Footprints, Hydrology, PPR Properties, and Street Centerline snapshots. It
-writes the compact `philly.bin` and `streets.bin` inputs plus a `meta.json`
-provenance record. The download and conversion are the slow first-run step.
+`ingest` downloads official City Limits, Building Footprints, Hydrology, PPR
+Properties, and Street Centerline snapshots. It also downloads height-backed
+OpenStreetMap building parts for Center City. It writes the compact `philly.bin`
+and `streets.bin` inputs plus a `meta.json` provenance record. The download and
+conversion are the slow first run step. Existing checkouts must rerun `ingest`
+because world format version 2 adds the building part records.
 `prebuild` creates the overview tiles. Requested tiles through z8 are reused
 from `data/tiles/`; z9+ render lazily and stay browser/edge-only so local disk
 usage remains bounded. Aerial source crops come from the native three-inch 2025
 PASDA service as a 1024 pixel crop of the exact ground extent for each requested
-isometric tile. The first visit needs network access. Source crops are reused by
-both texture modes under `data/aerial/`. The cache has a hard 1 GiB ceiling.
+isometric tile. The first visit needs network access. Cold source requests are
+serialized so the public image service is not overloaded. A failed image request
+returns a temporary geometry tile and is retried later. Source crops are reused
+by both texture modes under `data/aerial/`. The cache has a hard 1 GiB ceiling.
 
 ```sh
 uv run --locked poe serve-full   # photographic aerial color
@@ -69,7 +73,7 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-OpenDataPhilly geometry + PASDA 2025 aerial crops
+OpenDataPhilly geometry + OSM Center City parts + PASDA 2025 aerial crops
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
@@ -91,9 +95,11 @@ behind a static/edge cache.
 ## Project status
 
 This is an early public prototype, not an authoritative map or surveying tool.
-The current City footprint layer has roughly 546,000 structures. Building
-height is estimated when the source does not supply it, so the geometry is
-recognizable but not yet a complete 3D model.
+The current City footprint layer has roughly 546,000 structures. Center City
+also has about 800 OpenStreetMap parts with an explicit height or level count.
+The ingest skips parts with no usable height instead of inventing geometry.
+City footprint heights still use an 8 metre fallback when the City source has
+no usable value, so the result is not a complete architectural model.
 
 The source code is [MIT licensed](LICENSE). That license does not grant rights
 to the source datasets or generated map tiles; their provenance and publication

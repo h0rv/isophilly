@@ -25,6 +25,8 @@
     summary { cursor: pointer; color: #c7bfb2; }
     .legend { position: absolute; right: 0; top: 1.75rem; width: max-content; padding: .65rem .8rem; background: #191714f5; border: 1px solid #484239; border-radius: .2rem; line-height: 1.55; box-shadow: 0 .5rem 1.5rem #0005; }
     .legend a { color: #c7bfb2; }
+    footer { position: fixed; right: .45rem; bottom: .35rem; z-index: 1; padding: .2rem .35rem; background: #191714d9; border-radius: .15rem; font-size: .65rem; }
+    footer a { color: #ded6ca; }
     i { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem; vertical-align: -.08rem; }
     @media (max-width: 620px) {
       header { gap: .5rem; }
@@ -54,11 +56,13 @@
         <div>drag to explore · wheel to zoom</div>
         <div><a href="https://www.pasda.psu.edu/uci/SearchResults.aspx?searchType=mapserver&amp;keyword=Philadelphia+Imagery" target="_blank" rel="noreferrer">2025 aerial: City of Philadelphia / PASDA</a></div>
         <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">geometry: City of Philadelphia</a></div>
+        <div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">3D parts: © OpenStreetMap contributors</a></div>
       </div>
     </details>
   </header>
   <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>
+  <footer><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></footer>
 </body>
 </html>

@@ -77,7 +77,7 @@ impl Bounds {
                 .fold(f32::NEG_INFINITY, f32::max),
         }
     }
-    pub fn source_envelope(self) -> AABB<[f32; 2]> {
+    pub fn source_envelope(self, max_height: f32) -> AABB<[f32; 2]> {
         let corners = [
             (
                 (self.min_x + 2.0 * self.min_y) * 0.5,
@@ -109,8 +109,8 @@ impl Bounds {
             max_y = max_y.max(y);
         }
         AABB::from_corners(
-            [min_x - 350.0, min_y - 350.0],
-            [max_x + 350.0, max_y + 350.0],
+            [min_x - max_height, min_y - max_height],
+            [max_x + max_height, max_y + max_height],
         )
     }
 }
@@ -123,6 +123,45 @@ pub struct Ring {
 #[derive(Clone)]
 pub struct Building {
     pub height: f32,
+    pub ring: Ring,
+    pub center: (f32, f32),
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoofShape {
+    Flat,
+    Gabled,
+    Hipped,
+    Pyramidal,
+    Dome,
+    Cone,
+    Mansard,
+}
+impl TryFrom<u8> for RoofShape {
+    type Error = io::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Flat),
+            1 => Ok(Self::Gabled),
+            2 => Ok(Self::Hipped),
+            3 => Ok(Self::Pyramidal),
+            4 => Ok(Self::Dome),
+            5 => Ok(Self::Cone),
+            6 => Ok(Self::Mansard),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported roof shape",
+            )),
+        }
+    }
+}
+#[derive(Clone)]
+pub struct BuildingPart {
+    pub osm_id: u64,
+    pub height: f32,
+    pub min_height: f32,
+    pub roof_height: f32,
+    pub roof_shape: RoofShape,
     pub ring: Ring,
     pub center: (f32, f32),
 }
@@ -146,23 +185,36 @@ impl RTreeObject for Indexed {
 
 pub struct World {
     pub buildings: Vec<Building>,
+    pub building_parts: Vec<BuildingPart>,
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
     pub streets: Vec<Street>,
     pub building_tree: RTree<Indexed>,
+    pub building_part_tree: RTree<Indexed>,
+    pub detailed_buildings: Vec<bool>,
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
     pub street_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
+    pub max_height: f32,
     pub data_version: u64,
 }
 
 impl World {
+    pub fn source_envelope(&self, bounds: Bounds) -> AABB<[f32; 2]> {
+        bounds.source_envelope(self.max_height)
+    }
+
     pub fn has_content(&self, query: &AABB<[f32; 2]>) -> bool {
         self.building_tree
             .locate_in_envelope_intersecting(query)
             .next()
             .is_some()
+            || self
+                .building_part_tree
+                .locate_in_envelope_intersecting(query)
+                .next()
+                .is_some()
             || self
                 .water_tree
                 .locate_in_envelope_intersecting(query)
@@ -203,7 +255,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             "not geo-philly data",
         ));
     }
-    if cursor.u32()? != 1 {
+    if cursor.u32()? != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -211,6 +263,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
     }
     let _epsg = cursor.u32()?;
     let building_count = cursor.u32()? as usize;
+    let building_part_count = cursor.u32()? as usize;
     let water_count = cursor.u32()? as usize;
     let park_count = cursor.u32()? as usize;
     let bounds = Bounds {
@@ -233,6 +286,28 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             center,
         });
     }
+    let mut building_parts = Vec::with_capacity(building_part_count);
+    for _ in 0..building_part_count {
+        let osm_id = cursor.u64()?;
+        let height = cursor.f32()?;
+        let min_height = cursor.f32()?;
+        let roof_height = cursor.f32()?;
+        let roof_shape = RoofShape::try_from(cursor.u8()?)?;
+        let ring = cursor.ring()?;
+        let center = (
+            (ring.bounds.min_x + ring.bounds.max_x) * 0.5,
+            (ring.bounds.min_y + ring.bounds.max_y) * 0.5,
+        );
+        building_parts.push(BuildingPart {
+            osm_id,
+            height,
+            min_height,
+            roof_height,
+            roof_shape,
+            ring,
+            center,
+        });
+    }
     let water = (0..water_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
@@ -244,17 +319,27 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         .map(parse_streets)
         .transpose()?
         .unwrap_or_default();
-    let max_height = buildings.iter().map(|b| b.height).fold(0.0, f32::max);
+    let max_height = buildings
+        .iter()
+        .map(|building| building.height)
+        .chain(building_parts.iter().map(|part| part.height))
+        .fold(0.0, f32::max);
+    let building_tree = index_buildings(&buildings);
+    let detailed_buildings = detailed_buildings(&buildings, &building_tree, &building_parts);
     Ok(World {
-        building_tree: index_buildings(&buildings),
+        building_tree,
+        building_part_tree: index_building_parts(&building_parts),
+        detailed_buildings,
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
         street_tree: index_streets(&streets),
         buildings,
+        building_parts,
         water,
         parks,
         streets,
         iso_bounds: bounds.isometric(max_height),
+        max_height,
         data_version,
     })
 }
@@ -328,6 +413,78 @@ fn index_buildings(buildings: &[Building]) -> RTree<Indexed> {
             .collect(),
     )
 }
+fn index_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| indexed(index, part.ring.bounds))
+            .collect(),
+    )
+}
+fn detailed_buildings(
+    buildings: &[Building],
+    building_tree: &RTree<Indexed>,
+    parts: &[BuildingPart],
+) -> Vec<bool> {
+    let building_areas: Vec<f32> = buildings
+        .iter()
+        .map(|building| ring_area(&building.ring))
+        .collect();
+    let mut covered_areas = vec![0.0; buildings.len()];
+    for part in parts {
+        let point = AABB::from_point([part.center.0, part.center.1]);
+        let parent = building_tree
+            .locate_in_envelope_intersecting(&point)
+            .filter(|item| contains(&buildings[item.index].ring, part.center))
+            .min_by(|left, right| {
+                building_areas[left.index]
+                    .partial_cmp(&building_areas[right.index])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some(parent) = parent {
+            covered_areas[parent.index] += ring_area(&part.ring).min(building_areas[parent.index]);
+        }
+    }
+    covered_areas
+        .iter()
+        .zip(building_areas)
+        .map(|(covered, area)| area > 0.0 && *covered >= area * 0.65)
+        .collect()
+}
+
+fn contains(ring: &Ring, point: (f32, f32)) -> bool {
+    if ring.points.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = ring.points.len() - 1;
+    for current in 0..ring.points.len() {
+        let (x1, y1) = ring.points[current];
+        let (x2, y2) = ring.points[previous];
+        if (y1 > point.1) != (y2 > point.1)
+            && point.0 < (x2 - x1).mul_add((point.1 - y1) / (y2 - y1), x1)
+        {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn ring_area(ring: &Ring) -> f32 {
+    if ring.points.len() < 3 {
+        return 0.0;
+    }
+    let twice_area: f32 = ring
+        .points
+        .iter()
+        .zip(ring.points.iter().cycle().skip(1))
+        .take(ring.points.len())
+        .map(|(left, right)| left.0.mul_add(right.1, -(right.0 * left.1)))
+        .sum();
+    twice_area.abs() * 0.5
+}
 fn index_rings(rings: &[Ring]) -> RTree<Indexed> {
     RTree::bulk_load(
         rings
@@ -376,6 +533,13 @@ impl<'a> Cursor<'a> {
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u32"))?;
         Ok(u32::from_le_bytes(bytes))
+    }
+    fn u64(&mut self) -> io::Result<u64> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u64"))?;
+        Ok(u64::from_le_bytes(bytes))
     }
     fn u8(&mut self) -> io::Result<u8> {
         self.take(1)?
@@ -429,7 +593,34 @@ pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, Cursor, fingerprint, fingerprint_pair, inverse_isometric, isometric};
+    use super::{
+        Bounds, Building, BuildingPart, Cursor, Ring, RoofShape, detailed_buildings, fingerprint,
+        fingerprint_pair, index_buildings, inverse_isometric, isometric,
+    };
+
+    fn square(size: f32) -> Ring {
+        Ring {
+            points: vec![(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)],
+            bounds: Bounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: size,
+                max_y: size,
+            },
+        }
+    }
+
+    fn part(size: f32) -> BuildingPart {
+        BuildingPart {
+            osm_id: 1,
+            height: 20.0,
+            min_height: 0.0,
+            roof_height: 0.0,
+            roof_shape: RoofShape::Flat,
+            ring: square(size),
+            center: (size * 0.5, size * 0.5),
+        }
+    }
 
     #[test]
     fn isometric_bounds_cover_ground_and_height() {
@@ -491,5 +682,29 @@ mod tests {
             fingerprint_pair(b"city", b"roads-a"),
             fingerprint_pair(b"city", b"roads-b")
         );
+    }
+
+    #[test]
+    fn building_parts_replace_only_well_covered_footprints() {
+        let buildings = vec![Building {
+            height: 12.0,
+            ring: square(10.0),
+            center: (5.0, 5.0),
+        }];
+        let tree = index_buildings(&buildings);
+
+        assert_eq!(
+            detailed_buildings(&buildings, &tree, &[part(9.0)]),
+            vec![true]
+        );
+        assert_eq!(
+            detailed_buildings(&buildings, &tree, &[part(2.0)]),
+            vec![false]
+        );
+    }
+
+    #[test]
+    fn roof_shape_rejects_unknown_binary_values() {
+        assert!(RoofShape::try_from(7).is_err());
     }
 }

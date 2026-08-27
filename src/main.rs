@@ -1,3 +1,5 @@
+mod building_render;
+mod landmarks;
 mod render;
 mod server;
 mod texture;

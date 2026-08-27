@@ -4,7 +4,7 @@
  * @typedef {{
  *   iso_bounds: [number, number, number, number],
  *   city_hall: [number, number],
- *   counts: { buildings: number, water: number, parks: number, streets: number },
+ *   counts: { buildings: number, building_parts: number, water: number, parks: number, streets: number },
  *   tile_version: string,
  *   max_zoom: number,
  *   home_zoom: number,
@@ -230,10 +230,15 @@ function setZoom(nextZoom) {
 
 /** @param {number} tileZoom */
 function centerCityHall(tileZoom = city().home_zoom) {
+  centerAt(city().city_hall, tileZoom);
+}
+
+/** @param {[number, number]} point @param {number} tileZoom */
+function centerAt(point, tileZoom) {
   if (meta === undefined) return;
   zoom = 2 ** (tileZoom - BASE_TILE_ZOOM);
-  cameraX = meta.city_hall[0];
-  cameraY = meta.city_hall[1];
+  cameraX = point[0];
+  cameraY = point[1];
   draw();
 }
 
@@ -242,6 +247,14 @@ function initialTileZoom() {
   return Number.isInteger(requested)
     ? Math.max(0, Math.min(city().max_zoom, requested))
     : city().home_zoom;
+}
+
+/** @returns {[number, number]} */
+function initialCenter() {
+  const parameters = new URLSearchParams(location.search);
+  const x = Number.parseFloat(parameters.get("cx") ?? "");
+  const y = Number.parseFloat(parameters.get("cy") ?? "");
+  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : city().city_hall;
 }
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -312,7 +325,7 @@ async function loadMeta() {
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
     meta = loaded;
     resize();
-    centerCityHall(initialTileZoom());
+    centerAt(initialCenter(), initialTileZoom());
   } catch {
     statusText.textContent = "Run the ingest command to load city geometry.";
   }
@@ -331,6 +344,7 @@ function isMeta(value) {
     candidate.city_hall.every(Number.isFinite) &&
     typeof candidate.counts === "object" &&
     candidate.counts !== null &&
+    Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_parts) &&
     typeof candidate.tile_version === "string" &&
     Number.isInteger(candidate.max_zoom) &&
     Number.isInteger(candidate.home_zoom) &&

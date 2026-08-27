@@ -7,8 +7,9 @@
 - Run `uv run --locked poe check`; do not waive formatter, type, lint, test,
   release-build, or dependency-audit failures.
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
-  with the exact source commit. Confirm that every source has a URL, retrieval
-  time, HTTP validators when available, byte count, and SHA-256 checksum.
+  with the exact source commit and every raw snapshot. Confirm that every source
+  has a URL, retrieval time, byte count, and SHA-256 checksum. Confirm that the
+  OSM source also records its generator and data timestamp.
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.
@@ -24,11 +25,15 @@
   keyboard navigation.
 - Save representative whole-city, neighborhood, and street-level screenshots
   from the exact release build.
+- Run the visual check at City Hall and at another Center City coordinate so the
+  general building part path is tested. Confirm that the visible OSM attribution
+  remains present when the legend is closed.
 
 ## Publication
 
-- Keep the City/OpenDataPhilly attribution visible and re-check the current
-  source terms; the code's MIT license does not cover source data or tiles.
+- Keep the City, OpenDataPhilly, PASDA, and OpenStreetMap attribution visible.
+  Re-check the current source terms because the code's MIT license does not
+  cover source data or tiles.
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to
   localhost and is a development origin, not a hardened public edge server.
 - Prefer fully prebuilt static tiles for an untrusted public audience. If the

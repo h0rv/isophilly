@@ -14,6 +14,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
+    landmarks::city_hall_focus,
     render::{render_blank_tile, render_tile},
     texture::{AerialSource, AerialTile, TextureMode},
     world::World,
@@ -42,6 +43,7 @@ struct Meta {
 #[derive(Serialize)]
 struct Counts {
     buildings: usize,
+    building_parts: usize,
     water: usize,
     parks: usize,
     streets: usize,
@@ -54,10 +56,14 @@ struct TileCoord {
     y: u32,
 }
 
+struct RenderedTile {
+    png: Vec<u8>,
+    cacheable: bool,
+}
+
 const PLAIN_WARM_ZOOM: u8 = 4;
 const TEXTURED_WARM_ZOOM: u8 = 2;
-const CITY_HALL: [f32; 2] = [748_854.06, 446_419.38];
-const RENDER_VERSION: &str = "v10";
+const RENDER_VERSION: &str = "v11";
 const MAX_ZOOM: u8 = 12;
 const HOME_ZOOM: u8 = 3;
 const PERSIST_MAX_ZOOM: u8 = 8;
@@ -175,9 +181,10 @@ async fn meta(State(state): State<AppState>) -> Json<Meta> {
     let bounds = state.world.iso_bounds;
     Json(Meta {
         iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
-        city_hall: CITY_HALL,
+        city_hall: city_hall_focus(),
         counts: Counts {
             buildings: state.world.buildings.len(),
+            building_parts: state.world.building_parts.len(),
             water: state.world.water.len(),
             parks: state.world.parks.len(),
             streets: state.world.streets.len(),
@@ -201,7 +208,9 @@ async fn tile(
     }
     let coord = TileCoord { z, x, y };
     let tile_bounds = state.world.iso_bounds.tile(z, x, y);
-    let has_content = state.world.has_content(&tile_bounds.source_envelope());
+    let has_content = state
+        .world
+        .has_content(&state.world.source_envelope(tile_bounds));
     let render_context =
         !has_content && state.texture != TextureMode::None && z <= TEXTURED_CONTEXT_MAX_ZOOM;
     if !has_content && !render_context {
@@ -269,7 +278,7 @@ async fn render_requested_tile(
     let world = Arc::clone(&state.world);
     let aerial = state.aerial.clone();
     let texture = state.texture;
-    let png = match tokio::task::spawn_blocking(move || {
+    let rendered = match tokio::task::spawn_blocking(move || {
         render(
             world.as_ref(),
             aerial.as_deref(),
@@ -280,7 +289,7 @@ async fn render_requested_tile(
     })
     .await
     {
-        Ok(Ok(png)) => png,
+        Ok(Ok(rendered)) => rendered,
         Ok(Err(error)) => {
             warn!(?error, z, x, y, "tile render failed");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -292,10 +301,11 @@ async fn render_requested_tile(
     };
     let queue_ms = queued.elapsed().as_millis();
     drop(render_slot);
+    let persist = persist && rendered.cacheable;
     if persist && let Some(parent) = path.parent() {
         if let Err(error) = tokio::fs::create_dir_all(parent).await {
             warn!(?error, path = %parent.display(), "tile cache directory failed");
-        } else if let Err(error) = tokio::fs::write(path, &png).await {
+        } else if let Err(error) = tokio::fs::write(path, &rendered.png).await {
             warn!(?error, path = %path.display(), "tile cache write failed");
         }
     }
@@ -307,7 +317,14 @@ async fn render_requested_tile(
         elapsed_ms = started.elapsed().as_millis(),
         "tile rendered"
     );
-    Ok((png, if persist { "rendered" } else { "volatile" }))
+    let cache = if !rendered.cacheable {
+        "degraded"
+    } else if persist {
+        "rendered"
+    } else {
+        "volatile"
+    };
+    Ok((rendered.png, cache))
 }
 
 fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
@@ -386,7 +403,7 @@ fn cache_tile(
     overwrite: bool,
 ) -> io::Result<bool> {
     let bounds = world.iso_bounds.tile(coord.z, coord.x, coord.y);
-    if !world.has_content(&bounds.source_envelope()) {
+    if !world.has_content(&world.source_envelope(bounds)) {
         return Ok(false);
     }
     let path = tile_path(tile_dir, coord.z, coord.x, coord.y);
@@ -397,7 +414,11 @@ fn cache_tile(
         .parent()
         .ok_or_else(|| io::Error::other("tile path has no parent"))?;
     fs::create_dir_all(parent)?;
-    fs::write(path, render(world, aerial, texture, coord, false)?)?;
+    let rendered = render(world, aerial, texture, coord, false)?;
+    if !rendered.cacheable {
+        return Ok(false);
+    }
+    fs::write(path, rendered.png)?;
     Ok(true)
 }
 
@@ -407,16 +428,31 @@ fn render(
     texture: TextureMode,
     coord: TileCoord,
     render_context: bool,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<RenderedTile> {
     let TileCoord { z, x, y } = coord;
     let bounds = world.iso_bounds.tile(z, x, y);
-    if !render_context && !world.has_content(&bounds.source_envelope()) {
-        return render_blank_tile();
+    if !render_context && !world.has_content(&world.source_envelope(bounds)) {
+        return render_blank_tile().map(|png| RenderedTile {
+            png,
+            cacheable: true,
+        });
     }
-    let aerial_tile = aerial
+    let aerial_tile = match aerial
         .map(|source| AerialTile::for_isometric_tile(source, bounds, z, x, y))
-        .transpose()?;
+        .transpose()
+    {
+        Ok(tile) => tile,
+        Err(error) => {
+            warn!(
+                ?error,
+                z, x, y, "aerial tile unavailable; rendering geometry only"
+            );
+            None
+        }
+    };
+    let cacheable = aerial.is_none() || aerial_tile.is_some();
     render_tile(world, aerial_tile.as_ref(), texture, z, x, y)
+        .map(|png| RenderedTile { png, cacheable })
 }
 
 fn render_workers() -> usize {

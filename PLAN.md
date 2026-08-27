@@ -5,7 +5,7 @@ Make a small, flat, isometric map of Philadelphia from real public footprints.
 ## Shape
 
 ```
-official Philadelphia ArcGIS snapshots
+official Philadelphia ArcGIS snapshots + OpenStreetMap Center City parts
   -> Python ingest (GeoPandas/Shapely; one offline binary)
   -> Rust runtime (rstar index + tiny-skia PNG tiles + Axum)
   -> static canvas viewer
@@ -39,6 +39,9 @@ Empty tiles are shared rather than persisted; z9+ stays browser/edge-only.
 - z3: sampled fabric plus expressways and ramps.
 - z4: height-aligned roofs plus major streets.
 - z5+: full painter-sorted 2.5D footprints plus street centerlines.
+- z5+: height-backed Center City parts replace a base footprint only when their
+  combined area covers most of it.
+- z7+: height-corrected roof photography. z8+ adds restrained floor bands.
 - Texture modes: native detail 2025 PASDA aerial crops, deterministic pixel
   processing, or plain geometry.
 - Palette overlays keep water, parks, streets, and building massing readable over imagery.

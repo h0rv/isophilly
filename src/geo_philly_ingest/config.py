@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
@@ -29,6 +30,7 @@ class Source:
     name: str
     filename: str
     url: str
+    extension: str = "geojson"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,9 +40,26 @@ class Sources:
     water: Source
     parks: Source
     streets: Source
+    building_parts: Source
 
     def all(self) -> tuple[Source, ...]:
-        return (self.city, self.buildings, self.water, self.parks, self.streets)
+        return (
+            self.city,
+            self.buildings,
+            self.water,
+            self.parks,
+            self.streets,
+            self.building_parts,
+        )
+
+
+CENTER_CITY_BOUNDS = (39.94018, -75.19042, 39.96987, -75.13356)
+_south, _west, _north, _east = CENTER_CITY_BOUNDS
+_building_parts_query = (
+    "[out:json][timeout:180];"
+    f'way["building:part"]({_south},{_west},{_north},{_east});'
+    "out tags geom;"
+)
 
 
 SOURCES = Sources(
@@ -76,5 +95,11 @@ SOURCES = Sources(
         "https://hub.arcgis.com/api/v3/datasets/"
         "c36d828494cd44b5bd8b038be696c839_0/downloads/data?"
         "format=geojson&spatialRefId=4326&where=1%3D1",
+    ),
+    building_parts=Source(
+        "OpenStreetMap Center City Building Parts",
+        "center-city-building-parts",
+        "https://overpass-api.de/api/interpreter?data=" + quote(_building_parts_query),
+        "json",
     ),
 )

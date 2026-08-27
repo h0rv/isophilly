@@ -1,7 +1,10 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -12,7 +15,7 @@ use serde::Serialize;
 
 use crate::world::Bounds;
 
-const SOURCE_CACHE_VERSION: &str = "2025-1024-v1";
+const SOURCE_CACHE_VERSION: &str = "2025-1024-v2";
 const SOURCE_SIZE: u32 = 1024;
 const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
 const SOURCE_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
@@ -42,6 +45,7 @@ pub struct AerialSource {
     root: PathBuf,
     cached_bytes: AtomicU64,
     temporary_id: AtomicU64,
+    download_lock: Mutex<()>,
 }
 
 impl AerialSource {
@@ -58,6 +62,7 @@ impl AerialSource {
             root,
             cached_bytes: AtomicU64::new(cached_bytes),
             temporary_id: AtomicU64::new(0),
+            download_lock: Mutex::new(()),
         })
     }
 
@@ -71,7 +76,17 @@ impl AerialSource {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.download(&path, bounds)?
+                let _guard = self
+                    .download_lock
+                    .lock()
+                    .map_err(|_| io::Error::other("aerial download lock poisoned"))?;
+                match fs::read(&path) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        self.download(&path, bounds)?
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Err(error) => return Err(error),
         };
@@ -233,6 +248,13 @@ impl AerialTile {
         } else {
             sampled
         }
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.bounds.min_x
+            && x <= self.bounds.max_x
+            && y >= self.bounds.min_y
+            && y <= self.bounds.max_y
     }
 
     fn bilinear(&self, u: f32, v: f32) -> [u8; 3] {

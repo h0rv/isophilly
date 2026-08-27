@@ -1,8 +1,8 @@
 # Data quality audit
 
-Measured 2026-08-26 against the raw snapshots and clean binaries produced by
-commit `c027aa7`. Counts describe this snapshot, not permanent properties of the
-live City services. Source URLs and full SHA-256 checksums are in
+Measured 2026-08-27 against the raw snapshots and version 2 clean binaries.
+Counts describe this snapshot, not permanent properties of the live services.
+Source URLs and full SHA-256 checksums are in
 `data/clean/meta.json`; the source rationale is in [RESEARCH.md](RESEARCH.md).
 
 ## Delivered coverage
@@ -10,6 +10,7 @@ live City services. Source URLs and full SHA-256 checksums are in
 | Layer | Raw City records | Clean artifact | Notes |
 | --- | ---: | ---: | --- |
 | Building footprints | 546,084 | 545,672 polygons | Output is polygon parts after clipping, repair, multipart expansion, and the 10 m² cutoff—not a record join count. |
+| OSM Center City building parts | 1,039 ways | 826 polygons | Output keeps parts with a valid height or level count. It also rejects bad geometry and the replaced William Penn placeholder. |
 | Hydrology polygons | 2,000 | 69 polygons | Exactly the 69 source records that intersect the official City Limits mask. |
 | PPR properties | 506 | 659 polygons | 505 records intersect; repair and multipart expansion produce more output polygons. |
 | Street centerlines | 41,271 | 40,418 lines | Selected classes are clipped and multipart lines can split at the boundary. |
@@ -18,10 +19,9 @@ The official City Limits extent is 27.29 × 30.52 km in EPSG:32129. It replaces
 the former layer-derived 31.91 × 41.93 km extent, so off-city hydrology no longer
 creates a large empty map.
 
-The five raw GeoJSON snapshots total about 516 MB. Building footprints alone
-are 476.4 MB in this capture, materially larger than the preliminary ~110 MB
-estimate in the research note. Runtime binaries remain small: about 36.7 MB for
-the world and 1.0 MB for streets.
+The five raw GeoJSON snapshots total about 516 MB. The OSM JSON adds about 0.8
+MB. Building footprints alone are 476.4 MB in this capture. Runtime binaries
+remain small at about 36.8 MB for the world and 1.0 MB for streets.
 
 ## Building heights
 
@@ -55,6 +55,13 @@ solids: every footprint receives one flat extrusion, vertical renovations may
 not be captured, and the sparse skyline tail has not been reconciled against a
 landmark list or 2022 LiDAR.
 
+The OSM query returned 446 parts with an explicit height and 400 parts with only
+a level count. Another 193 parts had neither value and were skipped. One level
+is estimated as 3.2 metres. The packed part heights range from 3.2 to 341 metres.
+The raw roof tags include 888 flat, 56 gabled, 35 hipped, 28 pyramidal, and 9
+dome parts. Some rare values map to the closest supported roof family, while
+unsupported values remain flat.
+
 ## Street classification
 
 The clean artifact keeps City classes 1–5, 9, and 10:
@@ -78,9 +85,10 @@ rules by class; the source does not provide measured curb-to-curb width.
 
 ## Known limitations
 
-- Binary v1 stores only exterior rings. The source contains 609 footprint
-  features with 1,006 interior rings, so courtyards and atria are filled. It
-  also reduces every building to one height and has no roof-form geometry.
+- Binary version 2 still stores only exterior rings. The City source contains
+  609 footprint features with 1,006 interior rings, so courtyards and atria are
+  filled. It reduces each City footprint to one height. OSM parts can add roof
+  geometry in Center City when their tags provide enough data.
 - The 0.35 m footprint and 1 m ground/street simplification tolerances are fixed,
   not zoom-specific. Coordinates become `f32` in the binaries.
 - City Limits is an official generalized cartographic mask, not a surveyed

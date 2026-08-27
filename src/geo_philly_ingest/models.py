@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 
 type Point = tuple[float, float]
@@ -34,6 +35,26 @@ class Bounds:
 @dataclass(frozen=True, slots=True)
 class Building:
     height: float
+    ring: Ring
+
+
+class RoofShape(IntEnum):
+    FLAT = 0
+    GABLED = 1
+    HIPPED = 2
+    PYRAMIDAL = 3
+    DOME = 4
+    CONE = 5
+    MANSARD = 6
+
+
+@dataclass(frozen=True, slots=True)
+class BuildingPart:
+    osm_id: int
+    height: float
+    min_height: float
+    roof_height: float
+    roof_shape: RoofShape
     ring: Ring
 
 

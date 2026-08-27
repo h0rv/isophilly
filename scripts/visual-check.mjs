@@ -55,8 +55,12 @@ async function waitForServer() {
   throw new Error(`server did not become ready:\n${serverOutput}`);
 }
 
-/** @param {import("playwright-core").Page} page @param {number} zoom */
-async function capture(page, zoom) {
+/**
+ * @param {import("playwright-core").Page} page
+ * @param {number} zoom
+ * @param {{ name: string, center?: [number, number] }} view
+ */
+async function capture(page, zoom, view = { name: "city-hall" }) {
   const errors = [];
   const tileRequests = [];
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
@@ -73,7 +77,12 @@ async function capture(page, zoom) {
       errors.push(`${response.status()} ${response.url()}`);
     }
   });
-  await page.goto(`${origin}/?z=${zoom}`, { waitUntil: "domcontentloaded" });
+  const parameters = new URLSearchParams({ z: String(zoom) });
+  if (view.center !== undefined) {
+    parameters.set("cx", String(view.center[0]));
+    parameters.set("cy", String(view.center[1]));
+  }
+  await page.goto(`${origin}/?${parameters}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector(`canvas[data-zoom="${zoom}"]`);
   await page.waitForFunction(
     () => {
@@ -84,7 +93,7 @@ async function capture(page, zoom) {
     { timeout: tileTimeout },
   );
   await page.waitForTimeout(100);
-  const screenshot = `z${zoom}.png`;
+  const screenshot = view.name === "city-hall" ? `z${zoom}.png` : `${view.name}-z${zoom}.png`;
   await page.screenshot({ path: `${artifactDir}/${screenshot}` });
   const canvas = await page.locator("#map").evaluate((element) => {
     if (!(element instanceof HTMLCanvasElement)) throw new Error("map canvas is missing");
@@ -121,6 +130,7 @@ async function capture(page, zoom) {
     throw new Error(`z${zoom} appears blank: ${JSON.stringify(canvas)}`);
   }
   return {
+    view: view.name,
     zoom,
     screenshot,
     canvas,
@@ -186,6 +196,9 @@ try {
   if (meta.texture !== texture) {
     throw new Error(`server texture mismatch: expected ${texture}, got ${meta.texture}`);
   }
+  if (!Number.isInteger(meta.counts?.building_parts) || meta.counts.building_parts < 1) {
+    throw new Error(`server has no detailed building parts: ${JSON.stringify(meta.counts)}`);
+  }
   const rendering = await profile(meta);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
@@ -196,6 +209,17 @@ try {
   for (const zoom of zooms) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     results.push(await capture(page, zoom));
+    await page.close();
+  }
+  if (process.env.GEO_PHILLY_VISUAL_SECONDARY !== "0") {
+    const hall = /** @type {number[]} */ (meta.city_hall);
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    results.push(
+      await capture(page, 8, {
+        name: "east-center-city",
+        center: [hall[0] + 900, hall[1] + 180],
+      }),
+    );
     await page.close();
   }
   const report = {

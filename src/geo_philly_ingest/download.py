@@ -21,7 +21,9 @@ def _download(source: Source) -> Snapshot:
     fetched_at = datetime.now(UTC).isoformat()
     with (
         urlopen(request, timeout=300) as response,
-        tempfile.NamedTemporaryFile(dir=RAW_DIR, suffix=".geojson", delete=False) as temporary,
+        tempfile.NamedTemporaryFile(
+            dir=RAW_DIR, suffix=f".{source.extension}", delete=False
+        ) as temporary,
     ):
         while chunk := response.read(1024 * 1024):
             digest.update(chunk)
@@ -31,7 +33,7 @@ def _download(source: Source) -> Snapshot:
         last_modified = response.headers.get("Last-Modified")
 
     sha256 = digest.hexdigest()
-    snapshot_path = RAW_DIR / f"{source.filename}-{sha256[:12]}.geojson"
+    snapshot_path = RAW_DIR / f"{source.filename}-{sha256[:12]}.{source.extension}"
     if snapshot_path.exists():
         temporary_path.unlink()
     else:
