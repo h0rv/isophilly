@@ -32,9 +32,9 @@
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to
   localhost and is a development origin, not a hardened public edge server.
 - Prefer fully prebuilt static tiles for an untrusted public audience. If the
-  dynamic renderer remains reachable, enforce request rate limits and a disk
-  quota/eviction policy: arbitrary valid tile coordinates can otherwise force
-  unbounded cache-file creation.
+  dynamic renderer remains reachable, retain the empty-tile and z9+ volatile
+  cache protections, and enforce request rate limits plus a disk quota at the
+  edge.
 - Serve immutable, versioned tile URLs with long cache lifetimes. Serve the HTML
   entry point with revalidation so a deployment cannot strand users on stale
   tile versions.

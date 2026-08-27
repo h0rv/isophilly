@@ -24,8 +24,9 @@ Open <http://127.0.0.1:3000>. `ingest` downloads official City Limits, Building
 Footprints, Hydrology, PPR Properties, and Street Centerline snapshots. It
 writes the compact `philly.bin` and `streets.bin` inputs plus a `meta.json`
 provenance record. The download and conversion are the slow first-run step.
-`prebuild` creates the overview tiles; deeper tiles render lazily and are reused
-from `data/tiles/`.
+`prebuild` creates the overview tiles. Requested tiles through z8 are reused
+from `data/tiles/`; z9+ render lazily and stay browser/edge-only so local disk
+usage remains bounded.
 
 After the first ingest, the usual development loop is only:
 
