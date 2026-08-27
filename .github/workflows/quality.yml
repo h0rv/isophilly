@@ -8,12 +8,31 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: 0.12.5
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --all-groups
+      - run: uv run --locked poe check-python
+      - run: uv audit --locked --preview-features audit-command
+
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -27,17 +46,20 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 25
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm audit --audit-level=high
 
   dependencies:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2

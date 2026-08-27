@@ -2,6 +2,9 @@
 name = "geo-philly"
 version = "0.1.0"
 description = "geo-philly data ingest for the native tile server"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "shapely>=2.0",
@@ -19,6 +22,9 @@ dev = [
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+module-name = "geo_philly_ingest"
+
 [tool.ruff]
 line-length = 100
 
@@ -34,10 +40,10 @@ python-version = "3.12"
 [tool.poe.tasks]
 test-python = "python -m unittest discover -s tests"
 check-python = { shell = "ruff format --check src scripts tests && ruff check src scripts tests && ty check src scripts tests && python -m unittest discover -s tests" }
-check-rust = { shell = "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features && cargo build --release --locked && cargo deny check" }
+check-rust = { shell = "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features && cargo build --release --locked" }
 check-web = "npm run check"
-check = { shell = "poe check-python && poe check-web && poe check-rust" }
-audit = "cargo deny check"
+audit = { shell = "uv audit --locked --preview-features audit-command && npm audit --audit-level=high && cargo deny check" }
+check = { shell = "poe check-python && poe check-web && poe check-rust && poe audit" }
 ingest = "python -m geo_philly_ingest.ingest"
 prebuild = "cargo run --release -- prebuild --max-zoom 5"
 serve = "cargo run --release -- serve --port 3000"
