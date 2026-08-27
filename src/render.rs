@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, io};
+use std::io;
 
 use rstar::AABB;
 use tiny_skia::{
@@ -6,9 +6,7 @@ use tiny_skia::{
 };
 
 use crate::{
-    building_render::{
-        RenderContext, building_color, draw_building, draw_building_part, draw_william_penn,
-    },
+    building_render::{RenderContext, building_color, draw_building, draw_building_part},
     texture::{AerialTile, TextureMode},
     world::{Bounds, Building, BuildingPart, Ring, Street, World, inverse_isometric, isometric},
 };
@@ -19,17 +17,27 @@ const EXTRUSION_ZOOM: u8 = 5;
 const OVERVIEW_LIMIT: usize = 60_000;
 
 enum Structure<'a> {
-    Building(&'a Building),
+    Building(usize, &'a Building),
     Part(&'a BuildingPart),
 }
 
 impl Structure<'_> {
     fn depth(&self) -> f32 {
-        let center = match self {
-            Self::Building(building) => building.center,
-            Self::Part(part) => part.center,
+        let ring = match self {
+            Self::Building(_, building) => &building.ring,
+            Self::Part(part) => &part.ring,
         };
-        center.0 + center.1
+        ring.points
+            .iter()
+            .map(|(x, y)| x + y)
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    fn stable_id(&self) -> u64 {
+        match self {
+            Self::Building(index, _) => *index as u64,
+            Self::Part(part) => part.osm_id | (1_u64 << 63),
+        }
     }
 }
 
@@ -83,27 +91,42 @@ pub fn render_tile(
                 .ok_or_else(|| io::Error::other("overview dot"))?;
             pixmap.fill_rect(
                 dot,
-                &paint(building_color(building.center, building.height)),
+                &paint(building_color(
+                    &building.ring,
+                    building.center,
+                    building.height,
+                    None,
+                    texture,
+                    block_size,
+                )),
                 Transform::identity(),
                 None,
             );
         }
     } else if z < EXTRUSION_ZOOM {
         for (_, building) in buildings {
-            fill_projected_ring(
+            fill_projected_building(
                 &mut pixmap,
                 &building.ring,
                 building.height,
                 bounds,
                 scale,
-                building_color(building.center, building.height),
+                building_color(
+                    &building.ring,
+                    building.center,
+                    building.height,
+                    None,
+                    texture,
+                    block_size,
+                ),
+                texture,
             );
         }
     } else {
         let mut structures: Vec<Structure<'_>> = buildings
             .drain(..)
             .filter(|(index, _)| !world.detailed_buildings[*index])
-            .map(|(_, building)| Structure::Building(building))
+            .map(|(index, building)| Structure::Building(index, building))
             .chain(
                 world
                     .building_part_tree
@@ -113,17 +136,18 @@ pub fn render_tile(
             .collect();
         structures.sort_by(|left, right| {
             left.depth()
-                .partial_cmp(&right.depth())
-                .unwrap_or(Ordering::Equal)
+                .total_cmp(&right.depth())
+                .then_with(|| left.stable_id().cmp(&right.stable_id()))
         });
         let mut context = RenderContext::new(aerial, texture, block_size, z, bounds, scale);
         for structure in structures {
             match structure {
-                Structure::Building(building) => draw_building(&mut pixmap, building, &mut context),
+                Structure::Building(_, building) => {
+                    draw_building(&mut pixmap, building, &mut context);
+                }
                 Structure::Part(part) => draw_building_part(&mut pixmap, part, &mut context),
             }
         }
-        draw_william_penn(&mut pixmap, &mut context);
     }
     pixmap.encode_png().map_err(io::Error::other)
 }
@@ -224,6 +248,24 @@ fn fill_projected_ring(
 ) {
     fill_points(pixmap, &projected(ring, height, bounds, scale), color);
 }
+fn fill_projected_building(
+    pixmap: &mut Pixmap,
+    ring: &Ring,
+    height: f32,
+    bounds: Bounds,
+    scale: f32,
+    color: Color,
+    texture: TextureMode,
+) {
+    let mut points = projected(ring, height, bounds, scale);
+    if texture == TextureMode::Pixel {
+        for point in &mut points {
+            point.0 = point.0.round();
+            point.1 = point.1.round();
+        }
+    }
+    fill_points_with_antialias(pixmap, &points, color, texture != TextureMode::Pixel);
+}
 fn projected(ring: &Ring, height: f32, bounds: Bounds, scale: f32) -> Vec<(f32, f32)> {
     ring.points
         .iter()
@@ -237,6 +279,14 @@ pub(crate) fn pixel(point: (f32, f32), bounds: Bounds, scale: f32) -> (f32, f32)
     )
 }
 pub(crate) fn fill_points(pixmap: &mut Pixmap, points: &[(f32, f32)], color: Color) {
+    fill_points_with_antialias(pixmap, points, color, true);
+}
+fn fill_points_with_antialias(
+    pixmap: &mut Pixmap,
+    points: &[(f32, f32)],
+    color: Color,
+    anti_alias: bool,
+) {
     if points.len() < 3 {
         return;
     }
@@ -247,13 +297,9 @@ pub(crate) fn fill_points(pixmap: &mut Pixmap, points: &[(f32, f32)], color: Col
     }
     path.close();
     if let Some(path) = path.finish() {
-        pixmap.fill_path(
-            &path,
-            &paint(color),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
+        let mut fill = paint(color);
+        fill.anti_alias = anti_alias;
+        pixmap.fill_path(&path, &fill, FillRule::Winding, Transform::identity(), None);
     }
 }
 pub(crate) fn paint(color: Color) -> Paint<'static> {
