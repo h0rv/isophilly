@@ -5,19 +5,20 @@ Make a small, flat, isometric map of Philadelphia from real public footprints.
 ## Shape
 
 ```
-remote OpenDataPhilly via philly
+official Philadelphia ArcGIS snapshots
   -> Python ingest (GeoPandas/Shapely; one offline binary)
   -> Rust runtime (rstar index + tiny-skia PNG tiles + Axum)
   -> static canvas viewer
 ```
 
 Python is deliberately not in the request-time rendering loop. It is good at the
-one-off geospatial import; Rust owns the hot path over ~545k footprints.
+one-off geospatial import; Rust owns the hot path over ~545k footprints. The
+official City Limits polygon defines the extent and clips all edge geometry.
 
 ## Commands
 
 ```sh
-uv run poe ingest     # refresh data/clean/philly.bin
+uv run poe ingest     # snapshot sources; refresh clean binaries + provenance
 uv run poe prebuild   # materialize z0-z5 to data/tiles
 uv run poe serve      # http://127.0.0.1:3000
 uv run poe check      # Python + Rust checks
