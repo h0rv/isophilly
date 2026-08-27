@@ -14,12 +14,13 @@ from shapely.geometry.base import BaseGeometry
 from .config import CLEAN_DIR, EPSG, METADATA_JSON, SOURCES, STREETS_BIN, WORLD_BIN
 from .download import download_all
 from .geometry import buildings, city_rings, ground_rings, projected, streets
-from .models import Bounds, Building, BuildingPart, Ring, Snapshot, Street
+from .mesh import building_meshes
+from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot, Street
 from .osm import building_parts, source_metadata
 
 WORLD_MAGIC = b"GEOPHILY"
 STREET_MAGIC = b"GEOSTRPH"
-VERSION = 2
+VERSION = 4
 STREET_VERSION = 1
 
 
@@ -36,9 +37,16 @@ def write_ring(file: BufferedWriter, outline: Ring) -> None:
         file.write(struct.pack("<ff", x, y))
 
 
+def write_face(file: BufferedWriter, face: MeshFace) -> None:
+    file.write(struct.pack("<I", len(face.points)))
+    for x, y, z in face.points:
+        file.write(struct.pack("<fff", x, y, z))
+
+
 def pack_world(
     packed_buildings: list[Building],
     parts: list[BuildingPart],
+    meshes: list[BuildingMesh],
     water: list[Ring],
     parks: list[Ring],
     bounds: Bounds,
@@ -47,11 +55,12 @@ def pack_world(
         file.write(WORLD_MAGIC)
         file.write(
             struct.pack(
-                "<IIIIII",
+                "<IIIIIII",
                 VERSION,
                 EPSG,
                 len(packed_buildings),
                 len(parts),
+                len(meshes),
                 len(water),
                 len(parks),
             )
@@ -71,7 +80,14 @@ def pack_world(
                     int(part.roof_shape),
                 )
             )
+            color = part.facade_color
+            file.write(bytes((*color, 255)) if color is not None else bytes(4))
             write_ring(file, part.ring)
+        for mesh in meshes:
+            file.write(struct.pack("<IfI", mesh.source_id, mesh.height, len(mesh.faces)))
+            write_ring(file, mesh.footprint)
+            for face in mesh.faces:
+                write_face(file, face)
         for outline in water + parks:
             write_ring(file, outline)
 
@@ -99,12 +115,14 @@ def write_metadata(
     bounds: Bounds,
     packed_buildings: list[Building],
     parts: list[BuildingPart],
+    meshes: list[BuildingMesh],
     water: list[Ring],
     parks: list[Ring],
     packed_streets: list[Street],
 ) -> None:
     heights = [building.height for building in packed_buildings]
     part_heights = [part.height for part in parts]
+    mesh_heights = [mesh.height for mesh in meshes]
     sources = []
     for source in SOURCES.all():
         snapshot = snapshots[source.filename]
@@ -126,6 +144,9 @@ def write_metadata(
         "counts": {
             "buildings": len(packed_buildings),
             "building_parts": len(parts),
+            "building_part_facade_colors": sum(part.facade_color is not None for part in parts),
+            "building_meshes": len(meshes),
+            "building_mesh_faces": sum(len(mesh.faces) for mesh in meshes),
             "water": len(water),
             "parks": len(parks),
             "streets": len(packed_streets),
@@ -133,6 +154,7 @@ def write_metadata(
         "height_m": {
             "buildings": {"min": min(heights), "max": max(heights)},
             "building_parts": {"min": min(part_heights), "max": max(part_heights)},
+            "building_meshes": {"min": min(mesh_heights), "max": max(mesh_heights)},
         },
         "artifacts": {
             WORLD_BIN.name: {"bytes": WORLD_BIN.stat().st_size, "sha256": sha256(WORLD_BIN)},
@@ -157,14 +179,15 @@ async def main_async() -> None:
     city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city)
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
+    meshes = building_meshes(snapshots[SOURCES.downtown_meshes.filename])
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
     packed_streets = streets(load(snapshots[SOURCES.streets.filename]), city)
 
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
-    pack_world(packed_buildings, parts, water, parks, bounds)
+    pack_world(packed_buildings, parts, meshes, water, parks, bounds)
     pack_streets(packed_streets, bounds)
-    write_metadata(snapshots, bounds, packed_buildings, parts, water, parks, packed_streets)
+    write_metadata(snapshots, bounds, packed_buildings, parts, meshes, water, parks, packed_streets)
     print(
         f"wrote {WORLD_BIN} ({WORLD_BIN.stat().st_size / 1_000_000:.1f} MB) and "
         f"{STREETS_BIN} ({STREETS_BIN.stat().st_size / 1_000_000:.1f} MB)"

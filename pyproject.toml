@@ -9,6 +9,8 @@ requires-python = ">=3.12"
 dependencies = [
     "shapely>=2.0",
     "geopandas>=1.0",
+    "pyarrow>=20",
+    "pyogrio>=0.10",
 ]
 
 [dependency-groups]

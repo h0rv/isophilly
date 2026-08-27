@@ -1,8 +1,9 @@
 # geo-philly
 
 A small, deterministic isometric map of Philadelphia built from City geometry,
-OpenStreetMap building parts, and 2025 City aerial photography. Explore the
-whole city in a browser, from the regional silhouette to individual buildings.
+the official 2015 Center City 3D model, OpenStreetMap building parts, and 2025
+City aerial photography. Explore the whole city in a browser, from the regional
+silhouette to individual buildings.
 
 The expensive geospatial import happens once in Python. A compact Rust service
 loads that result, renders PNG tiles in parallel, and caches them on disk. The
@@ -23,10 +24,11 @@ uv run --locked poe serve
 Open <http://127.0.0.1:3000>. The default is deterministic pixel processing.
 `ingest` downloads official City Limits, Building Footprints, Hydrology, PPR
 Properties, and Street Centerline snapshots. It also downloads height-backed
-OpenStreetMap building parts for Center City. It writes the compact `philly.bin`
-and `streets.bin` inputs plus a `meta.json` provenance record. The download and
-conversion are the slow first run step. Existing checkouts must rerun `ingest`
-because world format version 2 adds the building part records.
+OpenStreetMap building parts and the official 2015 Center City 3D model. It
+writes the compact `philly.bin` and `streets.bin` inputs plus a `meta.json`
+provenance record. The download and conversion are the slow first run step.
+Existing checkouts must rerun `ingest` because world format version 4 adds the
+3D mesh records and sourced facade colors.
 `prebuild` creates the overview tiles. Requested tiles through z8 are reused
 from `data/tiles/`; z9+ render lazily and stay browser/edge-only so local disk
 usage remains bounded. Aerial source crops come from the native three-inch 2025
@@ -73,7 +75,7 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-OpenDataPhilly geometry + OSM Center City parts + PASDA 2025 aerial crops
+OpenDataPhilly geometry + official Center City meshes + OSM parts + PASDA aerial
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
@@ -95,11 +97,11 @@ behind a static/edge cache.
 ## Project status
 
 This is an early public prototype, not an authoritative map or surveying tool.
-The current City footprint layer has roughly 546,000 structures. Center City
-also has about 800 OpenStreetMap parts with an explicit height or level count.
-The ingest skips parts with no usable height instead of inventing geometry.
-City footprint heights still use an 8 metre fallback when the City source has
-no usable value, so the result is not a complete architectural model.
+The current City footprint layer has roughly 546,000 structures. The detailed
+Center City area adds 859 official multipatch buildings and about 800
+OpenStreetMap parts. The mesh geometry preserves setbacks, sloped roofs, and
+landmark silhouettes. City footprints elsewhere still use one height per
+outline, including an 8 metre fallback when the source has no usable value.
 
 The source code is [MIT licensed](LICENSE). That license does not grant rights
 to the source datasets or generated map tiles; their provenance and publication

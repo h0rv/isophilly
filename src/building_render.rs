@@ -55,12 +55,18 @@ pub fn building_color(
     let fallback = if height >= 80.0 {
         palette(
             variation,
-            &[(104, 108, 129), (115, 116, 137), (123, 122, 139)],
+            &[(101, 108, 112), (111, 116, 117), (121, 121, 118)],
         )
     } else if height >= 30.0 {
-        palette(variation, &[(149, 96, 75), (158, 104, 80), (166, 112, 85)])
+        palette(
+            variation,
+            &[(125, 114, 104), (137, 124, 111), (145, 132, 117)],
+        )
     } else {
-        palette(variation, &[(170, 82, 55), (181, 91, 59), (188, 101, 67)])
+        palette(
+            variation,
+            &[(132, 105, 88), (145, 116, 96), (153, 126, 104)],
+        )
     };
     let Some(aerial) = aerial else {
         return fallback;
@@ -111,7 +117,7 @@ pub fn draw_building_part(
     let aerial = context
         .aerial
         .filter(|_| structure_fits_tile(&part.ring, part.min_height, part.height, context));
-    let base = building_color(
+    let roof_color = building_color(
         &part.ring,
         part.center,
         part.height,
@@ -120,23 +126,37 @@ pub fn draw_building_part(
         context.block_size,
     );
     let wall_top = (part.height - part.roof_height).max(part.min_height);
-    draw_walls(pixmap, &part.ring, part.min_height, wall_top, base, context);
+    let wall_color = part.facade_color.map_or(roof_color, |color| {
+        mix_color(
+            roof_color,
+            Color::from_rgba8(color[0], color[1], color[2], 255),
+            0.72,
+        )
+    });
+    draw_walls(
+        pixmap,
+        &part.ring,
+        part.min_height,
+        wall_top,
+        wall_color,
+        context,
+    );
     match part.roof_shape {
         RoofShape::Flat => {
             let roof = projected(&part.ring, part.height, context);
-            fill_shape(pixmap, &roof, base, context.texture);
-            draw_textured_roof(pixmap, &roof, part.height, context, base);
+            fill_shape(pixmap, &roof, roof_color, context.texture);
+            draw_textured_roof(pixmap, &roof, part.height, context, roof_color);
         }
         RoofShape::Gabled if part.ring.points.len() == 4 => {
-            draw_gabled_roof(pixmap, part, wall_top, base, context);
+            draw_gabled_roof(pixmap, part, wall_top, roof_color, context);
         }
         RoofShape::Hipped if part.ring.points.len() == 4 => {
-            draw_hipped_roof(pixmap, part, wall_top, base, context);
+            draw_hipped_roof(pixmap, part, wall_top, roof_color, context);
         }
-        RoofShape::Dome => draw_tiered_roof(pixmap, part, wall_top, base, 0.55, context),
-        RoofShape::Mansard => draw_mansard_roof(pixmap, part, wall_top, base, context),
+        RoofShape::Dome => draw_tiered_roof(pixmap, part, wall_top, roof_color, 0.55, context),
+        RoofShape::Mansard => draw_mansard_roof(pixmap, part, wall_top, roof_color, context),
         RoofShape::Gabled | RoofShape::Hipped | RoofShape::Pyramidal | RoofShape::Cone => {
-            draw_pointed_roof(pixmap, part, wall_top, base, context)
+            draw_pointed_roof(pixmap, part, wall_top, roof_color, context)
         }
     }
 }
@@ -494,7 +514,11 @@ fn projected(ring: &Ring, height: f32, context: &RenderContext<'_>) -> Vec<(f32,
         .collect()
 }
 
-fn projected_point(point: (f32, f32), height: f32, context: &RenderContext<'_>) -> (f32, f32) {
+pub(crate) fn projected_point(
+    point: (f32, f32),
+    height: f32,
+    context: &RenderContext<'_>,
+) -> (f32, f32) {
     let screen = pixel(
         isometric(point.0, point.1, height),
         context.bounds,
@@ -518,7 +542,12 @@ fn structure_fits_tile(
     })
 }
 
-fn fill_shape(pixmap: &mut Pixmap, points: &[(f32, f32)], color: Color, texture: TextureMode) {
+pub(crate) fn fill_shape(
+    pixmap: &mut Pixmap,
+    points: &[(f32, f32)],
+    color: Color,
+    texture: TextureMode,
+) {
     if points.len() < 3 {
         return;
     }

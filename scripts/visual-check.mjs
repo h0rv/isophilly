@@ -199,6 +199,12 @@ try {
   if (!Number.isInteger(meta.counts?.building_parts) || meta.counts.building_parts < 1) {
     throw new Error(`server has no detailed building parts: ${JSON.stringify(meta.counts)}`);
   }
+  if (!Number.isInteger(meta.counts?.building_meshes) || meta.counts.building_meshes < 1) {
+    throw new Error(`server has no detailed building meshes: ${JSON.stringify(meta.counts)}`);
+  }
+  if (!Array.isArray(meta.city_hall) || meta.city_hall.length !== 2) {
+    throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
+  }
   const rendering = await profile(meta);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",

@@ -1,11 +1,11 @@
 # Data pipeline
 
 `uv run poe ingest` downloads content-addressed snapshots of five City of
-Philadelphia ArcGIS layers and one OpenStreetMap query. It processes them
-offline and writes:
+Philadelphia ArcGIS layers, the official 2015 Center City 3D model, and one
+OpenStreetMap query. It processes them offline and writes:
 
-- `data/clean/philly.bin`: the version 2 building, building part, water, and park
-  world read by the Rust server.
+- `data/clean/philly.bin`: the version 4 building, building part, building mesh,
+  water, and park world read by the Rust server.
 - `data/clean/streets.bin`: a separate optional street-centerline artifact.
 - `data/clean/meta.json`: source URLs, request times, HTTP validators, SHA-256
   checksums, CRS, bounds, counts, and output checksums.
@@ -36,6 +36,10 @@ snapshot.
   `building:part`. An explicit height takes priority over a level count, and
   one level is estimated as 3.2 metres. Parts without either value are skipped.
   The renderer retains the City footprint under incomplete part sets.
+- the 2015 Center City File Geodatabase contains 859 multipatch buildings. The
+  source metadata labels the coordinates as EPSG:2272, but the observed XY and
+  height values are already metres in the EPSG:32129 range. The importer checks
+  finite coordinates and a 400 metre height ceiling before packing the faces.
 
 ## World binary format
 
@@ -43,10 +47,11 @@ All integers and floats are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (2)
+u32      version (4)
 u32      EPSG (32129)
 u32      building count
 u32      building part count
+u32      building mesh count
 u32      water ring count
 u32      park ring count
 f64 x 4  official city bounds: min_x, min_y, max_x, max_y
@@ -59,7 +64,16 @@ repeat building part count times:
   f32    minimum height
   f32    roof height
   u8     roof shape
+  u8 x 4 facade RGBA; alpha 0 means no sourced color
   ring
+repeat building mesh count times:
+  u32    PASDA model ID
+  f32    height
+  u32    face count
+  ring   footprint used for indexing
+  repeat face count times:
+    u32  point count
+    repeat point count times: f32 x, f32 y, f32 z
 repeat water and park counts:
   ring
 
@@ -71,6 +85,11 @@ ring:
 Roof shape values are 0 flat, 1 gabled, 2 hipped, 3 pyramidal, 4 dome, 5 cone,
 and 6 mansard. The clean metadata stores the Overpass generator, data timestamp,
 query URL, response checksum, and part count.
+
+The official mesh archive also contains texture atlases. The open geometry
+reader does not expose the per-face texture coordinates, so the app does not
+ship or guess those facade textures. The renderer uses the real 3D faces,
+stable wall colors, and current PASDA roof imagery instead.
 
 ## Street binary format
 

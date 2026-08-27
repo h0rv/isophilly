@@ -7,6 +7,7 @@ use tiny_skia::{
 
 use crate::{
     building_render::{RenderContext, building_color, draw_building, draw_building_part},
+    mesh_render::draw_building_meshes,
     texture::{AerialTile, TextureMode},
     world::{Bounds, Building, BuildingPart, Ring, Street, World, inverse_isometric, isometric},
 };
@@ -14,6 +15,7 @@ use crate::{
 const TILE_SIZE: u32 = 256;
 const OVERVIEW_ZOOM: u8 = 3;
 const EXTRUSION_ZOOM: u8 = 5;
+const MESH_ZOOM: u8 = 7;
 const OVERVIEW_LIMIT: usize = 60_000;
 
 enum Structure<'a> {
@@ -23,14 +25,15 @@ enum Structure<'a> {
 
 impl Structure<'_> {
     fn depth(&self) -> f32 {
-        let ring = match self {
-            Self::Building(_, building) => &building.ring,
-            Self::Part(part) => &part.ring,
+        let (ring, height) = match self {
+            Self::Building(_, building) => (&building.ring, building.height),
+            Self::Part(part) => (&part.ring, part.height),
         };
         ring.points
             .iter()
             .map(|(x, y)| x + y)
             .fold(f32::NEG_INFINITY, f32::max)
+            + height
     }
 
     fn stable_id(&self) -> u64 {
@@ -125,15 +128,19 @@ pub fn render_tile(
     } else {
         let mut structures: Vec<Structure<'_>> = buildings
             .drain(..)
-            .filter(|(index, _)| !world.detailed_buildings[*index])
+            .filter(|(index, _)| {
+                !(world.detailed_buildings[*index]
+                    || z >= MESH_ZOOM && world.meshed_buildings[*index])
+            })
             .map(|(index, building)| Structure::Building(index, building))
-            .chain(
-                world
-                    .building_part_tree
-                    .locate_in_envelope_intersecting(&query)
-                    .map(|item| Structure::Part(&world.building_parts[item.index])),
-            )
             .collect();
+        structures.extend(
+            world
+                .building_part_tree
+                .locate_in_envelope_intersecting(&query)
+                .filter(|item| !(z >= MESH_ZOOM && world.meshed_parts[item.index]))
+                .map(|item| Structure::Part(&world.building_parts[item.index])),
+        );
         structures.sort_by(|left, right| {
             left.depth()
                 .total_cmp(&right.depth())
@@ -147,6 +154,16 @@ pub fn render_tile(
                 }
                 Structure::Part(part) => draw_building_part(&mut pixmap, part, &mut context),
             }
+        }
+        if z >= MESH_ZOOM {
+            draw_building_meshes(
+                &mut pixmap,
+                world
+                    .building_mesh_tree
+                    .locate_in_envelope_intersecting(&query)
+                    .map(|item| &world.building_meshes[item.index]),
+                &context,
+            );
         }
     }
     pixmap.encode_png().map_err(io::Error::other)

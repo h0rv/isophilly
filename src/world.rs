@@ -162,8 +162,22 @@ pub struct BuildingPart {
     pub min_height: f32,
     pub roof_height: f32,
     pub roof_shape: RoofShape,
+    pub facade_color: Option<[u8; 3]>,
     pub ring: Ring,
     pub center: (f32, f32),
+}
+#[derive(Clone)]
+pub struct MeshFace {
+    pub points: Vec<(f32, f32, f32)>,
+}
+#[derive(Clone)]
+pub struct BuildingMesh {
+    pub source_id: u32,
+    pub height: f32,
+    pub footprint: Ring,
+    pub faces: Vec<MeshFace>,
+    pub center: (f32, f32),
+    pub facade_color: Option<[u8; 3]>,
 }
 #[derive(Clone)]
 pub struct Street {
@@ -186,12 +200,16 @@ impl RTreeObject for Indexed {
 pub struct World {
     pub buildings: Vec<Building>,
     pub building_parts: Vec<BuildingPart>,
+    pub building_meshes: Vec<BuildingMesh>,
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
     pub streets: Vec<Street>,
     pub building_tree: RTree<Indexed>,
     pub building_part_tree: RTree<Indexed>,
+    pub building_mesh_tree: RTree<Indexed>,
     pub detailed_buildings: Vec<bool>,
+    pub meshed_buildings: Vec<bool>,
+    pub meshed_parts: Vec<bool>,
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
     pub street_tree: RTree<Indexed>,
@@ -216,6 +234,11 @@ impl World {
                 .next()
                 .is_some()
             || self
+                .building_mesh_tree
+                .locate_in_envelope_intersecting(query)
+                .next()
+                .is_some()
+            || self
                 .water_tree
                 .locate_in_envelope_intersecting(query)
                 .next()
@@ -230,6 +253,22 @@ impl World {
                 .locate_in_envelope_intersecting(query)
                 .next()
                 .is_some()
+    }
+
+    pub fn city_hall_focus(&self) -> Option<[f32; 2]> {
+        self.building_meshes
+            .iter()
+            .find(|mesh| mesh.source_id == 855)
+            .and_then(|mesh| {
+                mesh.faces
+                    .iter()
+                    .flat_map(|face| &face.points)
+                    .max_by(|left, right| left.2.total_cmp(&right.2))
+            })
+            .map(|&(x, y, z)| {
+                let point = isometric(x, y, z);
+                [point.0, point.1]
+            })
     }
 }
 
@@ -255,7 +294,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             "not geo-philly data",
         ));
     }
-    if cursor.u32()? != 2 {
+    if cursor.u32()? != 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -264,6 +303,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
     let _epsg = cursor.u32()?;
     let building_count = cursor.u32()? as usize;
     let building_part_count = cursor.u32()? as usize;
+    let building_mesh_count = cursor.u32()? as usize;
     let water_count = cursor.u32()? as usize;
     let park_count = cursor.u32()? as usize;
     let bounds = Bounds {
@@ -293,6 +333,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         let min_height = cursor.f32()?;
         let roof_height = cursor.f32()?;
         let roof_shape = RoofShape::try_from(cursor.u8()?)?;
+        let facade_color = cursor.optional_rgb()?;
         let ring = cursor.ring()?;
         let center = (
             (ring.bounds.min_x + ring.bounds.max_x) * 0.5,
@@ -304,8 +345,50 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             min_height,
             roof_height,
             roof_shape,
+            facade_color,
             ring,
             center,
+        });
+    }
+    let mut building_meshes = Vec::with_capacity(building_mesh_count);
+    for _ in 0..building_mesh_count {
+        let source_id = cursor.u32()?;
+        let height = cursor.f32()?;
+        if !(0.0..=400.0).contains(&height) || height == 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mesh height is outside the supported range",
+            ));
+        }
+        let face_count = cursor.u32()? as usize;
+        cursor.ensure_items(face_count, 40)?;
+        let footprint = cursor.ring()?;
+        let center = (
+            (footprint.bounds.min_x + footprint.bounds.max_x) * 0.5,
+            (footprint.bounds.min_y + footprint.bounds.max_y) * 0.5,
+        );
+        let mut faces = Vec::with_capacity(face_count);
+        for _ in 0..face_count {
+            let point_count = cursor.u32()? as usize;
+            if point_count < 3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mesh face needs at least three points",
+                ));
+            }
+            cursor.ensure_items(point_count, 12)?;
+            let points = (0..point_count)
+                .map(|_| cursor.point3())
+                .collect::<io::Result<Vec<_>>>()?;
+            faces.push(MeshFace { points });
+        }
+        building_meshes.push(BuildingMesh {
+            source_id,
+            height,
+            footprint,
+            faces,
+            center,
+            facade_color: None,
         });
     }
     let water = (0..water_count)
@@ -314,6 +397,12 @@ pub fn load_world(path: &Path) -> io::Result<World> {
     let parks = (0..park_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
+    if cursor.remaining() != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "world data contains trailing bytes",
+        ));
+    }
     let streets = street_bytes
         .as_deref()
         .map(parse_streets)
@@ -323,18 +412,29 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         .iter()
         .map(|building| building.height)
         .chain(building_parts.iter().map(|part| part.height))
+        .chain(building_meshes.iter().map(|mesh| mesh.height))
         .fold(0.0, f32::max);
     let building_tree = index_buildings(&buildings);
     let detailed_buildings = detailed_buildings(&buildings, &building_tree, &building_parts);
+    let (meshed_buildings, meshed_parts) = meshed_sources(
+        &buildings,
+        &building_tree,
+        &building_parts,
+        &mut building_meshes,
+    );
     Ok(World {
         building_tree,
         building_part_tree: index_building_parts(&building_parts),
+        building_mesh_tree: index_building_meshes(&building_meshes),
         detailed_buildings,
+        meshed_buildings,
+        meshed_parts,
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
         street_tree: index_streets(&streets),
         buildings,
         building_parts,
+        building_meshes,
         water,
         parks,
         streets,
@@ -422,6 +522,15 @@ fn index_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
             .collect(),
     )
 }
+fn index_building_meshes(meshes: &[BuildingMesh]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        meshes
+            .iter()
+            .enumerate()
+            .map(|(index, mesh)| indexed(index, mesh.footprint.bounds))
+            .collect(),
+    )
+}
 fn detailed_buildings(
     buildings: &[Building],
     building_tree: &RTree<Indexed>,
@@ -451,6 +560,38 @@ fn detailed_buildings(
         .zip(building_areas)
         .map(|(covered, area)| area > 0.0 && *covered >= area * 0.65)
         .collect()
+}
+
+fn meshed_sources(
+    buildings: &[Building],
+    building_tree: &RTree<Indexed>,
+    parts: &[BuildingPart],
+    meshes: &mut [BuildingMesh],
+) -> (Vec<bool>, Vec<bool>) {
+    let mut meshed_buildings = vec![false; buildings.len()];
+    let mut meshed_parts = vec![false; parts.len()];
+    for mesh in meshes {
+        let envelope = AABB::from_corners(
+            [mesh.footprint.bounds.min_x, mesh.footprint.bounds.min_y],
+            [mesh.footprint.bounds.max_x, mesh.footprint.bounds.max_y],
+        );
+        for item in building_tree.locate_in_envelope_intersecting(&envelope) {
+            if contains(&mesh.footprint, buildings[item.index].center) {
+                meshed_buildings[item.index] = true;
+            }
+        }
+        for (index, part) in parts.iter().enumerate() {
+            if contains(&mesh.footprint, part.center) {
+                meshed_parts[index] = true;
+            }
+        }
+        mesh.facade_color = parts
+            .iter()
+            .filter(|part| part.facade_color.is_some() && contains(&mesh.footprint, part.center))
+            .max_by(|left, right| left.height.total_cmp(&right.height))
+            .and_then(|part| part.facade_color);
+    }
+    (meshed_buildings, meshed_parts)
 }
 
 fn contains(ring: &Ring, point: (f32, f32)) -> bool {
@@ -515,6 +656,21 @@ struct Cursor<'a> {
     offset: usize,
 }
 impl<'a> Cursor<'a> {
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+    fn ensure_items(&self, count: usize, bytes_per_item: usize) -> io::Result<()> {
+        let required = count
+            .checked_mul(bytes_per_item)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "item count overflow"))?;
+        if required > self.remaining() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "item count exceeds the remaining data",
+            ));
+        }
+        Ok(())
+    }
     fn take(&mut self, len: usize) -> io::Result<&'a [u8]> {
         let end = self
             .offset
@@ -547,22 +703,51 @@ impl<'a> Cursor<'a> {
             .copied()
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated u8"))
     }
+    fn optional_rgb(&mut self) -> io::Result<Option<[u8; 3]>> {
+        let bytes = self.take(4)?;
+        match bytes[3] {
+            0 if bytes[..3] == [0, 0, 0] => Ok(None),
+            255 => Ok(Some([bytes[0], bytes[1], bytes[2]])),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid optional RGB value",
+            )),
+        }
+    }
     fn f32(&mut self) -> io::Result<f32> {
         let bytes: [u8; 4] = self
             .take(4)?
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid f32"))?;
-        Ok(f32::from_le_bytes(bytes))
+        let value = f32::from_le_bytes(bytes);
+        if !value.is_finite() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "non-finite f32"));
+        }
+        Ok(value)
+    }
+    fn point3(&mut self) -> io::Result<(f32, f32, f32)> {
+        Ok((self.f32()?, self.f32()?, self.f32()?))
     }
     fn f64(&mut self) -> io::Result<f64> {
         let bytes: [u8; 8] = self
             .take(8)?
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid f64"))?;
-        Ok(f64::from_le_bytes(bytes))
+        let value = f64::from_le_bytes(bytes);
+        if !value.is_finite() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "non-finite f64"));
+        }
+        Ok(value)
     }
     fn ring(&mut self) -> io::Result<Ring> {
         let count = self.u32()? as usize;
+        if count < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ring needs at least three points",
+            ));
+        }
+        self.ensure_items(count, 8)?;
         let mut points = Vec::with_capacity(count);
         let mut bounds = Bounds {
             min_x: f32::INFINITY,
@@ -617,6 +802,7 @@ mod tests {
             min_height: 0.0,
             roof_height: 0.0,
             roof_shape: RoofShape::Flat,
+            facade_color: None,
             ring: square(size),
             center: (size * 0.5, size * 0.5),
         }

@@ -17,6 +17,17 @@ METERS_PER_FOOT = 0.3048
 METERS_PER_LEVEL = 3.2
 DEFAULT_ROOF_HEIGHT_METERS = 2.4
 _NUMBER = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z']*)\s*$")
+_HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{6})$")
+_NAMED_COLORS = {"black": (30, 30, 28), "white": (225, 222, 214)}
+_MATERIAL_COLORS = {
+    "brick": (146, 101, 78),
+    "glass": (105, 124, 132),
+    "concrete": (145, 141, 133),
+    "stone": (155, 149, 138),
+    "marble": (174, 169, 158),
+    "metal": (119, 126, 128),
+    "steel": (111, 120, 124),
+}
 _ROOF_SHAPES = {
     "flat": RoofShape.FLAT,
     "gabled": RoofShape.GABLED,
@@ -33,7 +44,6 @@ _ROOF_SHAPES = {
     "mansard": RoofShape.MANSARD,
     "basilical": RoofShape.MANSARD,
 }
-_REPLACED_WILLIAM_PENN_VOLUME = 333316166
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
@@ -93,6 +103,38 @@ def parse_levels(value: str | None) -> float | None:
         return None
     levels = float(match.group(1))
     return levels if levels >= 0.0 else None
+
+
+def parse_color(value: str | None) -> tuple[int, int, int] | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _NAMED_COLORS:
+        return _NAMED_COLORS[normalized]
+    match = _HEX_COLOR.fullmatch(normalized)
+    if match is None:
+        return None
+    encoded = match.group(1)
+    return (
+        int(encoded[0:2], 16),
+        int(encoded[2:4], 16),
+        int(encoded[4:6], 16),
+    )
+
+
+def _facade_color(tags: Mapping[str, str]) -> tuple[int, int, int] | None:
+    explicit = parse_color(tags.get("building:colour"))
+    if explicit is not None:
+        return explicit
+    materials = tags.get("building:material", "").lower().split(";")
+    return next(
+        (
+            _MATERIAL_COLORS[material.strip()]
+            for material in materials
+            if material.strip() in _MATERIAL_COLORS
+        ),
+        None,
+    )
 
 
 def _levels(tags: Mapping[str, str], key: str) -> float | None:
@@ -157,8 +199,6 @@ def building_parts(snapshot: Snapshot) -> list[BuildingPart]:
         geometry = element.get("geometry")
         if not isinstance(osm_id, int) or isinstance(osm_id, bool) or geometry is None:
             continue
-        if osm_id == _REPLACED_WILLIAM_PENN_VOLUME:
-            continue
         tags = _tags(element.get("tags", {}))
         if "building:part" not in tags:
             continue
@@ -206,6 +246,7 @@ def building_parts(snapshot: Snapshot) -> list[BuildingPart]:
                         min_height=min_height,
                         roof_height=roof_height,
                         roof_shape=roof_shape,
+                        facade_color=_facade_color(tags),
                         ring=outline,
                     )
                 )

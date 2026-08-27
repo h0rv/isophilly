@@ -69,11 +69,11 @@ def city_rings(frame: gpd.GeoDataFrame) -> list[Ring]:
 
 
 def ground_rings(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[Ring]:
-    clipped = projected(frame).geometry.intersection(city)
     return [
         outline
-        for geometry in clipped
-        for polygon in polygons(geometry, GROUND_SIMPLIFY_METERS)
+        for geometry in projected(frame).geometry
+        for source_polygon in polygons(geometry, 0.0)
+        for polygon in polygons(source_polygon.intersection(city), GROUND_SIMPLIFY_METERS)
         if (outline := exterior(polygon))
     ]
 

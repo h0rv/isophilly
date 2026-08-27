@@ -10,7 +10,7 @@ import pandas as pd
 from geo_philly_ingest.config import DEFAULT_HEIGHT_METERS
 from geo_philly_ingest.geometry import building_height
 from geo_philly_ingest.models import Bounds, RoofShape, Snapshot
-from geo_philly_ingest.osm import building_parts, parse_length, parse_levels
+from geo_philly_ingest.osm import building_parts, parse_color, parse_length, parse_levels
 
 
 class BoundsTests(unittest.TestCase):
@@ -49,6 +49,11 @@ class OpenStreetMapTests(unittest.TestCase):
         self.assertEqual(parse_levels("3.5"), 3.5)
         self.assertIsNone(parse_levels("3m"))
 
+    def test_parses_strict_osm_colors(self) -> None:
+        self.assertEqual(parse_color("#A06040"), (160, 96, 64))
+        self.assertEqual(parse_color("white"), (225, 222, 214))
+        self.assertIsNone(parse_color("rgb(1, 2, 3)"))
+
     def test_building_part_preserves_height_and_roof_tags(self) -> None:
         payload = {
             "elements": [
@@ -61,6 +66,7 @@ class OpenStreetMapTests(unittest.TestCase):
                         "min_height": "3 m",
                         "roof:shape": "gabled",
                         "roof:height": "4 m",
+                        "building:colour": "#A06040",
                     },
                     "geometry": [
                         {"lat": 39.950, "lon": -75.165},
@@ -93,6 +99,7 @@ class OpenStreetMapTests(unittest.TestCase):
         self.assertEqual(parts[0].min_height, 3.0)
         self.assertEqual(parts[0].roof_height, 4.0)
         self.assertIs(parts[0].roof_shape, RoofShape.GABLED)
+        self.assertEqual(parts[0].facade_color, (160, 96, 64))
 
     def test_empty_building_part_response_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

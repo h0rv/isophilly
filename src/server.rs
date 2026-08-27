@@ -14,7 +14,6 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
-    landmarks::city_hall_focus,
     render::{render_blank_tile, render_tile},
     texture::{AerialSource, AerialTile, TextureMode},
     world::World,
@@ -33,7 +32,7 @@ struct AppState {
 #[derive(Serialize)]
 struct Meta {
     iso_bounds: [f32; 4],
-    city_hall: [f32; 2],
+    city_hall: Option<[f32; 2]>,
     counts: Counts,
     tile_version: String,
     max_zoom: u8,
@@ -44,6 +43,7 @@ struct Meta {
 struct Counts {
     buildings: usize,
     building_parts: usize,
+    building_meshes: usize,
     water: usize,
     parks: usize,
     streets: usize,
@@ -63,7 +63,7 @@ struct RenderedTile {
 
 const PLAIN_WARM_ZOOM: u8 = 4;
 const TEXTURED_WARM_ZOOM: u8 = 2;
-const RENDER_VERSION: &str = "v11";
+const RENDER_VERSION: &str = "v16";
 const MAX_ZOOM: u8 = 12;
 const HOME_ZOOM: u8 = 3;
 const PERSIST_MAX_ZOOM: u8 = 8;
@@ -181,10 +181,11 @@ async fn meta(State(state): State<AppState>) -> Json<Meta> {
     let bounds = state.world.iso_bounds;
     Json(Meta {
         iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
-        city_hall: city_hall_focus(),
+        city_hall: state.world.city_hall_focus(),
         counts: Counts {
             buildings: state.world.buildings.len(),
             building_parts: state.world.building_parts.len(),
+            building_meshes: state.world.building_meshes.len(),
             water: state.world.water.len(),
             parks: state.world.parks.len(),
             streets: state.world.streets.len(),

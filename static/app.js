@@ -3,8 +3,8 @@
 /**
  * @typedef {{
  *   iso_bounds: [number, number, number, number],
- *   city_hall: [number, number],
- *   counts: { buildings: number, building_parts: number, water: number, parks: number, streets: number },
+ *   city_hall: [number, number] | null,
+ *   counts: { buildings: number, building_parts: number, building_meshes: number, water: number, parks: number, streets: number },
  *   tile_version: string,
  *   max_zoom: number,
  *   home_zoom: number,
@@ -177,7 +177,7 @@ function drawNow() {
       }
     }
   }
-  drawCityHall(cityHall, panX, panY, scale);
+  if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   statusText.textContent = `${counts.buildings.toLocaleString()} buildings · ${texture} · z${z}`;
   canvas.dataset.zoom = String(z);
   canvas.dataset.requested = String(requested);
@@ -230,7 +230,13 @@ function setZoom(nextZoom) {
 
 /** @param {number} tileZoom */
 function centerCityHall(tileZoom = city().home_zoom) {
-  centerAt(city().city_hall, tileZoom);
+  centerAt(city().city_hall ?? boundsCenter(), tileZoom);
+}
+
+/** @returns {[number, number]} */
+function boundsCenter() {
+  const [minX, minY, maxX, maxY] = city().iso_bounds;
+  return [(minX + maxX) / 2, (minY + maxY) / 2];
 }
 
 /** @param {[number, number]} point @param {number} tileZoom */
@@ -254,7 +260,7 @@ function initialCenter() {
   const parameters = new URLSearchParams(location.search);
   const x = Number.parseFloat(parameters.get("cx") ?? "");
   const y = Number.parseFloat(parameters.get("cy") ?? "");
-  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : city().city_hall;
+  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : (city().city_hall ?? boundsCenter());
 }
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -339,12 +345,14 @@ function isMeta(value) {
     Array.isArray(candidate.iso_bounds) &&
     candidate.iso_bounds.length === 4 &&
     candidate.iso_bounds.every(Number.isFinite) &&
-    Array.isArray(candidate.city_hall) &&
-    candidate.city_hall.length === 2 &&
-    candidate.city_hall.every(Number.isFinite) &&
+    (candidate.city_hall === null ||
+      (Array.isArray(candidate.city_hall) &&
+        candidate.city_hall.length === 2 &&
+        candidate.city_hall.every(Number.isFinite))) &&
     typeof candidate.counts === "object" &&
     candidate.counts !== null &&
     Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_parts) &&
+    Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_meshes) &&
     typeof candidate.tile_version === "string" &&
     Number.isInteger(candidate.max_zoom) &&
     Number.isInteger(candidate.home_zoom) &&

@@ -1,6 +1,6 @@
 # Data quality audit
 
-Measured 2026-08-27 against the raw snapshots and version 2 clean binaries.
+Measured 2026-08-27 against the raw snapshots and version 4 clean binaries.
 Counts describe this snapshot, not permanent properties of the live services.
 Source URLs and full SHA-256 checksums are in
 `data/clean/meta.json`; the source rationale is in [RESEARCH.md](RESEARCH.md).
@@ -10,7 +10,8 @@ Source URLs and full SHA-256 checksums are in
 | Layer | Raw City records | Clean artifact | Notes |
 | --- | ---: | ---: | --- |
 | Building footprints | 546,084 | 545,672 polygons | Output is polygon parts after clipping, repair, multipart expansion, and the 10 m² cutoff—not a record join count. |
-| OSM Center City building parts | 1,039 ways | 826 polygons | Output keeps parts with a valid height or level count. It also rejects bad geometry and the replaced William Penn placeholder. |
+| OSM Center City building parts | 1,039 ways | 827 polygons | Output keeps parts with a valid height or level count and rejects bad geometry. Of these, 275 have a sourced facade color or material. |
+| Official 2015 Center City 3D buildings | 859 models | 859 meshes and 169,646 faces | Output keeps the source multipatch faces and normalizes each model to its minimum elevation. |
 | Hydrology polygons | 2,000 | 69 polygons | Exactly the 69 source records that intersect the official City Limits mask. |
 | PPR properties | 506 | 659 polygons | 505 records intersect; repair and multipart expansion produce more output polygons. |
 | Street centerlines | 41,271 | 40,418 lines | Selected classes are clipped and multipart lines can split at the boundary. |
@@ -20,8 +21,9 @@ the former layer-derived 31.91 × 41.93 km extent, so off-city hydrology no long
 creates a large empty map.
 
 The five raw GeoJSON snapshots total about 516 MB. The OSM JSON adds about 0.8
-MB. Building footprints alone are 476.4 MB in this capture. Runtime binaries
-remain small at about 36.8 MB for the world and 1.0 MB for streets.
+MB, and the 2015 mesh archive adds 182.9 MB. Building footprints alone are
+476.4 MB in this capture. Runtime binaries remain small at about 45.1 MB for
+the world and 1.0 MB for streets.
 
 ## Building heights
 
@@ -85,10 +87,16 @@ rules by class; the source does not provide measured curb-to-curb width.
 
 ## Known limitations
 
-- Binary version 2 still stores only exterior rings. The City source contains
+- Binary version 4 still stores only exterior rings for the citywide footprint
+  fallback. The City source contains
   609 footprint features with 1,006 interior rings, so courtyards and atria are
-  filled. It reduces each City footprint to one height. OSM parts can add roof
-  geometry in Center City when their tags provide enough data.
+  filled. It reduces each City footprint to one height. The 2015 Center City
+  meshes preserve their source faces, while OSM parts add roof geometry where
+  their tags provide enough data.
+- The 2015 mesh textures are not rendered. The File Geodatabase reader exposes
+  the 3D faces but drops the texture coordinates needed to map its atlases onto
+  those faces. The current renderer uses aerial roof color and stable shaded
+  walls without inventing a mapping.
 - The 0.35 m footprint and 1 m ground/street simplification tolerances are fixed,
   not zoom-specific. Coordinates become `f32` in the binaries.
 - City Limits is an official generalized cartographic mask, not a surveyed
@@ -101,13 +109,11 @@ rules by class; the source does not provide measured curb-to-curb width.
 - City centerlines describe street topology, not road surfaces. Driveways,
   walking connectors, and undocumented classes are intentionally absent.
 
-## Next three visible, non-AI upgrades
+## Next visible upgrades
 
-1. **Correct the skyline first.** Add a reviewed BIN-keyed landmark-height table
-   for the small set of visually dominant buildings, then validate those values
-   against robust 2022 LiDAR roof-minus-ground samples. This fixes recognizable
-   Center City errors without committing to a multi-gigabyte citywide point-cloud
-   pipeline.
+1. **Add sourced facade materials.** Resolve OpenStreetMap `building:colour`
+   and `building:material` tags during ingest. The current Center City snapshot
+   has usable facade data for about one third of its retained parts.
 2. **Preserve courtyard geometry.** Evolve the world format and rasterizer to
    retain polygon interior rings and multipart identity. Only 0.11% of source
    footprint features have holes, but they are disproportionately large campuses,
@@ -118,5 +124,5 @@ rules by class; the source does not provide measured curb-to-curb width.
    diagonal/grid character of Philadelphia would read more accurately than
    fixed-pixel centerline strokes.
 
-Tree canopy is the next layer after these three: it would add substantial visual
-texture, but geometry and skyline correctness should come first.
+Tree canopy can follow these changes. It would add useful visual texture, but
+the current street and facade data are larger sources of visible error.

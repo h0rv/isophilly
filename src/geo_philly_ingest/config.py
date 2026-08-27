@@ -41,6 +41,7 @@ class Sources:
     parks: Source
     streets: Source
     building_parts: Source
+    downtown_meshes: Source
 
     def all(self) -> tuple[Source, ...]:
         return (
@@ -50,6 +51,7 @@ class Sources:
             self.parks,
             self.streets,
             self.building_parts,
+            self.downtown_meshes,
         )
 
 
@@ -101,5 +103,12 @@ SOURCES = Sources(
         "center-city-building-parts",
         "https://overpass-api.de/api/interpreter?data=" + quote(_building_parts_query),
         "json",
+    ),
+    downtown_meshes=Source(
+        "Philadelphia 2015 Center City 3D Buildings",
+        "center-city-3d-buildings",
+        "https://www.pasda.psu.edu/download/philacity/data/3D_Models/2015/"
+        "Philadelphia2015_scene.gdb.zip",
+        "zip",
     ),
 )

@@ -6,6 +6,8 @@ from pathlib import Path
 
 type Point = tuple[float, float]
 type Ring = tuple[Point, ...]
+type Point3D = tuple[float, float, float]
+type Rgb = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +57,21 @@ class BuildingPart:
     min_height: float
     roof_height: float
     roof_shape: RoofShape
+    facade_color: Rgb | None
     ring: Ring
+
+
+@dataclass(frozen=True, slots=True)
+class MeshFace:
+    points: tuple[Point3D, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BuildingMesh:
+    source_id: int
+    height: float
+    footprint: Ring
+    faces: tuple[MeshFace, ...]
 
 
 @dataclass(frozen=True, slots=True)
