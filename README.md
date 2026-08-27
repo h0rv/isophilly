@@ -1,13 +1,13 @@
 # geo-philly
 
 A small, deterministic isometric map of Philadelphia built from public City
-geometry. Explore the whole city in a browser, from the regional silhouette to
-individual building footprints.
+geometry and 2025 City aerial photography. Explore the whole city in a browser,
+from the regional silhouette to individual building footprints.
 
 The expensive geospatial import happens once in Python. A compact Rust service
 loads that result, renders PNG tiles in parallel, and caches them on disk. The
-viewer is one typed JavaScript file and a canvas. No AI-generated imagery, API
-key, database, or browser framework is involved.
+viewer is one typed JavaScript file and a canvas. No AI-generated imagery,
+database, or browser framework is involved.
 
 ## Run it
 
@@ -20,13 +20,25 @@ uv run --locked poe prebuild
 uv run --locked poe serve
 ```
 
-Open <http://127.0.0.1:3000>. `ingest` downloads official City Limits, Building
+Open <http://127.0.0.1:3000>. The default is deterministic pixel processing.
+`ingest` downloads official City Limits, Building
 Footprints, Hydrology, PPR Properties, and Street Centerline snapshots. It
 writes the compact `philly.bin` and `streets.bin` inputs plus a `meta.json`
 provenance record. The download and conversion are the slow first-run step.
 `prebuild` creates the overview tiles. Requested tiles through z8 are reused
 from `data/tiles/`; z9+ render lazily and stay browser/edge-only so local disk
-usage remains bounded.
+usage remains bounded. Aerial source crops come from the native three-inch 2025
+PASDA service as a 1024 pixel crop of the exact ground extent for each requested
+isometric tile. The first visit needs network access. Source crops are reused by
+both texture modes under `data/aerial/`. The cache has a hard 1 GiB ceiling.
+
+```sh
+uv run --locked poe serve-full   # photographic aerial color
+uv run --locked poe serve-plain  # original geometry-only palette
+```
+
+The same setting is available directly as `--texture pixel|full|none` on both
+the `serve` and `prebuild` commands.
 
 After the first ingest, the usual development loop is only:
 
@@ -42,6 +54,8 @@ and attribution notes](docs/DATA.md) before publishing a build.
 ```sh
 npm ci
 uv run --locked poe check
+uv run --locked poe visual
+uv run --locked poe visual-full
 ```
 
 Install a current Node.js LTS release and
@@ -55,23 +69,24 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-OpenDataPhilly / official City ArcGIS snapshots
+OpenDataPhilly geometry + PASDA 2025 aerial crops
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
                                       |
                                       v
-Rust + rstar/tiny-skia      ->  cached 256 px PNG tiles
+Rust + rstar/tiny-skia      ->  full or pixel-textured 256 px PNG tiles
                                       |
                                       v
                               canvas deep-zoom viewer
 ```
 
 Python is not in the request path. The Rust server starts from one compact
-binary file, bounds concurrent tile renders, warms low zooms in the background,
-and serves the dependency-free viewer. The service binds to localhost by
-default; production deployment should put it behind a static/edge cache and
-version tile URLs when the data or renderer changes.
+geometry file, bounds concurrent source fetches and tile renders, warms low
+zooms in the background, and serves the dependency-free viewer. Source imagery
+and rendered tiles persist across runs within fixed cache limits. The service
+binds to localhost by default; production deployment should prebuild or put it
+behind a static/edge cache.
 
 ## Project status
 

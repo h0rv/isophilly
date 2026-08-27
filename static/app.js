@@ -8,6 +8,7 @@
  *   tile_version: string,
  *   max_zoom: number,
  *   home_zoom: number,
+ *   texture: "none" | "full" | "pixel",
  * }} Meta
  */
 
@@ -138,7 +139,7 @@ function draw() {
 
 function drawNow() {
   if (meta === undefined) return;
-  const { iso_bounds: bounds, city_hall: cityHall, counts, max_zoom: maxZoom } = city();
+  const { iso_bounds: bounds, city_hall: cityHall, counts, max_zoom: maxZoom, texture } = city();
   ctx.fillStyle = "#d9d1c3";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
   const z = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
@@ -177,7 +178,7 @@ function drawNow() {
     }
   }
   drawCityHall(cityHall, panX, panY, scale);
-  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${z}`;
+  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · ${texture} · z${z}`;
   canvas.dataset.zoom = String(z);
   canvas.dataset.requested = String(requested);
   canvas.dataset.pending = String(requested - loaded);
@@ -332,7 +333,8 @@ function isMeta(value) {
     candidate.counts !== null &&
     typeof candidate.tile_version === "string" &&
     Number.isInteger(candidate.max_zoom) &&
-    Number.isInteger(candidate.home_zoom)
+    Number.isInteger(candidate.home_zoom) &&
+    (candidate.texture === "none" || candidate.texture === "full" || candidate.texture === "pixel")
   );
 }
 

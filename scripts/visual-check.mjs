@@ -4,14 +4,32 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
+const texture = process.env.GEO_PHILLY_TEXTURE ?? "pixel";
+if (!new Set(["none", "full", "pixel"]).has(texture)) {
+  throw new Error(`invalid GEO_PHILLY_TEXTURE: ${texture}`);
+}
+const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9")
+  .split(",")
+  .map((value) => Number.parseInt(value, 10));
+if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 12)) {
+  throw new Error(`invalid GEO_PHILLY_VISUAL_ZOOMS: ${process.env.GEO_PHILLY_VISUAL_ZOOMS}`);
+}
+const artifactDir = fileURLToPath(new URL(`../artifacts/visual/${texture}`, import.meta.url));
 const port = Number.parseInt(process.env.GEO_PHILLY_VISUAL_PORT ?? "3107", 10);
+const tileTimeout = Number.parseInt(
+  process.env.GEO_PHILLY_VISUAL_TIMEOUT ?? (texture === "none" ? "60000" : "180000"),
+  10,
+);
 const origin = `http://127.0.0.1:${port}`;
-const server = spawn("target/release/geo-philly", ["serve", "--port", String(port)], {
-  cwd: root,
-  env: { ...process.env, RUST_LOG: "geo_philly=warn,tower_http=warn" },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  "target/release/geo-philly",
+  ["serve", "--port", String(port), "--texture", texture],
+  {
+    cwd: root,
+    env: { ...process.env, RUST_LOG: "geo_philly=warn,tower_http=warn" },
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
 let serverOutput = "";
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
@@ -63,7 +81,7 @@ async function capture(page, zoom) {
       return canvas instanceof HTMLCanvasElement && canvas.dataset.pending === "0";
     },
     undefined,
-    { timeout: 60_000 },
+    { timeout: tileTimeout },
   );
   await page.waitForTimeout(100);
   const screenshot = `z${zoom}.png`;
@@ -165,6 +183,9 @@ let browser;
 try {
   await mkdir(artifactDir, { recursive: true });
   const meta = await waitForServer();
+  if (meta.texture !== texture) {
+    throw new Error(`server texture mismatch: expected ${texture}, got ${meta.texture}`);
+  }
   const rendering = await profile(meta);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
@@ -172,7 +193,7 @@ try {
     args: ["--no-sandbox", "--disable-gpu"],
   });
   const results = [];
-  for (const zoom of [3, 4, 5, 7, 9]) {
+  for (const zoom of zooms) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     results.push(await capture(page, zoom));
     await page.close();
@@ -184,6 +205,9 @@ try {
   };
   await writeFile(`${artifactDir}/report.json`, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+} catch (error) {
+  process.stderr.write(`\nserver output:\n${serverOutput}\n`);
+  throw error;
 } finally {
   await browser?.close();
   server.kill("SIGTERM");

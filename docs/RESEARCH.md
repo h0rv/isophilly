@@ -8,14 +8,15 @@ recommendation, not a proposal to train or ship a generative-image product.
 Build the first full-city artifact from five City layers: (1) City Limits as a
 clip mask, (2) Building Footprints as the visual fabric, (3) Hydrology polygons
 for the Delaware/Schuylkill and creeks, (4) a simplified Street Centerline layer,
-and (5) a small, hand-maintained landmark-height override table. Render one
-deterministic orthographic/oblique master image, then publish a WebP deep-zoom
-pyramid with OpenSeadragon. It gives the recognizable Philadelphia result at a
-few hundred MB of local processing input, requires no paid imagery or live map
-API, and is reproducible from versioned source snapshots.
+and (5) a small, hand-maintained landmark-height override table. The implemented
+prototype renders deterministic PNG tiles and can add native detail 2025 PASDA
+aerial color per tile in either photographic or pixel form. A static
+WebP deep-zoom export remains the best public delivery target.
 
-Defer real building heights, aerial texture, vegetation, and an interactive 3-D
-map. The City footprint service has **546,084** features (count queried
+Defer real building heights, vegetation, and an interactive 3-D map. Treat the
+aerial layer as color, not geometry, because orthophotos and footprint edges can
+be slightly misaligned. The City footprint service has **546,084** features
+(count queried
 2026-08-26); it is large but tractable offline. The captured GeoJSON is
 **476.4 MB** on disk. The earlier 110 MB estimate incorrectly inferred size
 from its 22-part multipart ETag; the part count does not establish part size. A citywide
@@ -68,7 +69,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Water | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) (polygon GeoJSON/SHP/API links) | Philadelphia Water Department polygons for rivers, creeks, ponds, reservoirs, water under bridges and edge water. PASDA lists the current hydrographic polygon/arc data as 2025. | Small vector layer; trivial. | Use polygons, not a filled city-boundary void: it preserves river shape and islands. |
 | 1. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/), [GeoJSON download](https://hub.arcgis.com/api/v3/datasets/c36d828494cd44b5bd8b038be696c839_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1), [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Street_Centerline/FeatureServer/0) | Citywide reference base layer. The City explicitly says it is not exact engineering geometry. | Manageable linework, but visually noisy at full city scale. | Filter by class/name/length; render arterials and a low-opacity local grid rather than every segment. |
 | 2. Terrain/height | [2022 LiDAR/LAS catalog](https://opendataphilly.org/datasets/lidar-las-data/); [2022 DEM catalog/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7152); [NOAA tiled DEM](https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/PA_Phil_DEM_2022_9849/index.html) | Citywide ~196 sq mi, captured Apr. 2022, leaf-off/snow-free/normal water. DEM is ground; LAS contains surface/roof points. City also has 2008/2010/2015/2018 capture years. | DEM tiles are practical when selectively mosaicked; classified LAS citywide is multi-GB and demands PDAL/GDAL + robust sampling. | v2 only. Derive building height as DSM/LAS surface minus ground DEM; median/percentile sample per footprint and clamp outliers. Do not use DEM alone as building height. |
-| 3. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2023 MapServer](https://tiles.arcgis.com/tiles/fLeGjb7u4uXqeF9q/arcgis/rest/services/CityImagery_2023/MapServer); [2023 TIFF/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7000) | City offers 2023 TIFFs/tile index/MapServer plus historical years; catalog describes the online 2023 service as 3-inch imagery but contains a stale “2020” sentence, so verify metadata before production. | Tile service is cheap for a small reference crop; whole-city TIFF collection is large and needs mosaicking/storage. | Optional, local-only style reference; do not bake it into first public output until terms and recency are confirmed. |
+| 3. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025, three-inch orthophotography exposed through an export API and downloadable source TIFF tiles. | A 1024-pixel crop per isometric tile avoids a citywide mosaic. First visits pay network latency; a bounded shared disk cache makes repeats local. | Implemented as optional deterministic `full` and `pixel` color modes. Geometry remains authoritative City vectors. |
 
 ### Deterministic ingestion rules
 

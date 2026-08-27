@@ -21,7 +21,9 @@ unwrap_used = "deny"
 [dependencies]
 axum = "0.8"
 clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 rayon = "1.11"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls-no-alpn", "query"] }
 rstar = "0.12"
 serde = { version = "1", features = ["derive"] }
 tiny-skia = "0.11"

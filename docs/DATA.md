@@ -50,6 +50,22 @@ repeat line count times:
 The street artifact is deliberately separate so roads can be added or tuned
 without changing the stable `philly.bin` contract.
 
+## Aerial imagery
+
+Textured rendering requests 2025 Philadelphia orthophotography from the
+[PASDA ArcGIS image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer).
+The source advertises three inch imagery. The renderer asks for a 1024 by 1024
+JPEG in EPSG:32129 over the exact source footprint of each isometric tile. The
+crop includes a two pixel overlap. The renderer never stretches a whole city
+preview.
+
+The original photograph is cached once and shared by the two deterministic
+render modes. `full` uses bilinear color sampling. `pixel` snaps sampling to a
+global grid, averages a 3 by 3 source neighborhood, and posterizes each channel.
+Neither path generates imagery. Source crops persist under `data/aerial/` until
+the fixed 1 GiB cache ceiling is reached. Final PNG tiles through z8 have their
+own bounded cache. Deeper final tiles stay volatile.
+
 ## Provenance
 
 The sources and licensing caveat are documented in [RESEARCH.md](RESEARCH.md).

@@ -15,12 +15,15 @@ use tracing::{Level, info, warn};
 
 use crate::{
     render::{render_blank_tile, render_tile},
+    texture::{AerialSource, AerialTile, TextureMode},
     world::World,
 };
 
 #[derive(Clone)]
 struct AppState {
     world: Arc<World>,
+    aerial: Option<Arc<AerialSource>>,
+    texture: TextureMode,
     tile_dir: PathBuf,
     tile_version: String,
     blank_tile: Arc<Vec<u8>>,
@@ -34,6 +37,7 @@ struct Meta {
     tile_version: String,
     max_zoom: u8,
     home_zoom: u8,
+    texture: TextureMode,
 }
 #[derive(Serialize)]
 struct Counts {
@@ -43,20 +47,37 @@ struct Counts {
     streets: usize,
 }
 
-const WARM_ZOOM: u8 = 4;
+#[derive(Clone, Copy)]
+struct TileCoord {
+    z: u8,
+    x: u32,
+    y: u32,
+}
+
+const PLAIN_WARM_ZOOM: u8 = 4;
+const TEXTURED_WARM_ZOOM: u8 = 2;
 const CITY_HALL: [f32; 2] = [748_854.06, 446_419.38];
-const RENDER_VERSION: &str = "v4";
+const RENDER_VERSION: &str = "v10";
 const MAX_ZOOM: u8 = 12;
 const HOME_ZOOM: u8 = 3;
 const PERSIST_MAX_ZOOM: u8 = 8;
+const TEXTURED_CONTEXT_MAX_ZOOM: u8 = 5;
 
-pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
+pub async fn serve(
+    world: Arc<World>,
+    aerial: Option<Arc<AerialSource>>,
+    texture: TextureMode,
+    port: u16,
+) -> io::Result<()> {
     let warm_world = Arc::clone(&world);
-    let tile_version = tile_version(&world);
+    let warm_aerial = aerial.clone();
+    let tile_version = tile_version(&world, texture);
     let tile_dir = tile_cache_dir(&tile_version);
     let warm_tile_dir = tile_dir.clone();
     let state = AppState {
         world,
+        aerial,
+        texture,
         tile_dir,
         tile_version,
         blank_tile: Arc::new(render_blank_tile()?),
@@ -74,19 +95,48 @@ pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         );
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
-    println!("geo-philly http://127.0.0.1:{port}");
+    println!(
+        "geo-philly http://127.0.0.1:{port} texture={}",
+        texture.slug()
+    );
     let warm_task = tokio::task::spawn_blocking(move || {
-        warm_missing_tiles(&warm_world, &warm_tile_dir, WARM_ZOOM);
+        let warm_zoom = if texture == TextureMode::None {
+            PLAIN_WARM_ZOOM
+        } else {
+            TEXTURED_WARM_ZOOM
+        };
+        warm_missing_tiles(
+            &warm_world,
+            warm_aerial.as_deref(),
+            texture,
+            &warm_tile_dir,
+            warm_zoom,
+        );
     });
     drop(warm_task);
     axum::serve(listener, app).await.map_err(io::Error::other)
 }
-pub fn prebuild(world: &World, max_zoom: u8) -> io::Result<()> {
-    let tile_dir = tile_cache_dir(&tile_version(world));
+pub fn prebuild(
+    world: &World,
+    aerial: Option<&AerialSource>,
+    texture: TextureMode,
+    max_zoom: u8,
+) -> io::Result<()> {
+    let tile_dir = tile_cache_dir(&tile_version(world, texture));
     for z in 0..=max_zoom {
         let count = 1_u32 << z;
         (0..count).into_par_iter().try_for_each(|y| {
-            (0..count).try_for_each(|x| cache_tile(world, &tile_dir, z, x, y, true).map(|_| ()))
+            (0..count).try_for_each(|x| {
+                cache_tile(
+                    world,
+                    aerial,
+                    texture,
+                    &tile_dir,
+                    TileCoord { z, x, y },
+                    true,
+                )
+                .map(|_| ())
+            })
         })?;
         println!("prebuilt z{z}");
     }
@@ -135,6 +185,7 @@ async fn meta(State(state): State<AppState>) -> Json<Meta> {
         tile_version: state.tile_version.clone(),
         max_zoom: MAX_ZOOM,
         home_zoom: HOME_ZOOM,
+        texture: state.texture,
     })
 }
 async fn tile(
@@ -148,8 +199,12 @@ async fn tile(
     if z > MAX_ZOOM || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let coord = TileCoord { z, x, y };
     let tile_bounds = state.world.iso_bounds.tile(z, x, y);
-    if !state.world.has_content(&tile_bounds.source_envelope()) {
+    let has_content = state.world.has_content(&tile_bounds.source_envelope());
+    let render_context =
+        !has_content && state.texture != TextureMode::None && z <= TEXTURED_CONTEXT_MAX_ZOOM;
+    if !has_content && !render_context {
         return png_response(state.blank_tile.as_ref().clone(), "empty");
     }
     let path = state
@@ -157,7 +212,8 @@ async fn tile(
         .join(z.to_string())
         .join(x.to_string())
         .join(format!("{y}.png"));
-    let cached = if should_persist(z) {
+    let persist = has_content && should_persist(z);
+    let cached = if persist {
         Some(tokio::fs::read(&path).await)
     } else {
         None
@@ -168,12 +224,16 @@ async fn tile(
             if error.kind() != io::ErrorKind::NotFound {
                 warn!(?error, path = %path.display(), "tile cache read failed");
             }
-            match render_requested_tile(&state, &path, z, x, y, started).await {
+            match render_requested_tile(&state, &path, coord, render_context, persist, started)
+                .await
+            {
                 Ok(rendered) => rendered,
                 Err(status) => return status.into_response(),
             }
         }
-        None => match render_requested_tile(&state, &path, z, x, y, started).await {
+        None => match render_requested_tile(&state, &path, coord, render_context, persist, started)
+            .await
+        {
             Ok(rendered) => rendered,
             Err(status) => return status.into_response(),
         },
@@ -192,11 +252,12 @@ async fn tile(
 async fn render_requested_tile(
     state: &AppState,
     path: &std::path::Path,
-    z: u8,
-    x: u32,
-    y: u32,
+    coord: TileCoord,
+    render_context: bool,
+    persist: bool,
     started: Instant,
 ) -> Result<(Vec<u8>, &'static str), StatusCode> {
+    let TileCoord { z, x, y } = coord;
     let queued = Instant::now();
     let render_slot = match state.render_slots.acquire().await {
         Ok(slot) => slot,
@@ -206,7 +267,19 @@ async fn render_requested_tile(
         }
     };
     let world = Arc::clone(&state.world);
-    let png = match tokio::task::spawn_blocking(move || render_tile(&world, z, x, y)).await {
+    let aerial = state.aerial.clone();
+    let texture = state.texture;
+    let png = match tokio::task::spawn_blocking(move || {
+        render(
+            world.as_ref(),
+            aerial.as_deref(),
+            texture,
+            coord,
+            render_context,
+        )
+    })
+    .await
+    {
         Ok(Ok(png)) => png,
         Ok(Err(error)) => {
             warn!(?error, z, x, y, "tile render failed");
@@ -219,9 +292,7 @@ async fn render_requested_tile(
     };
     let queue_ms = queued.elapsed().as_millis();
     drop(render_slot);
-    if should_persist(z)
-        && let Some(parent) = path.parent()
-    {
+    if persist && let Some(parent) = path.parent() {
         if let Err(error) = tokio::fs::create_dir_all(parent).await {
             warn!(?error, path = %parent.display(), "tile cache directory failed");
         } else if let Err(error) = tokio::fs::write(path, &png).await {
@@ -236,14 +307,7 @@ async fn render_requested_tile(
         elapsed_ms = started.elapsed().as_millis(),
         "tile rendered"
     );
-    Ok((
-        png,
-        if should_persist(z) {
-            "rendered"
-        } else {
-            "volatile"
-        },
-    ))
+    Ok((png, if persist { "rendered" } else { "volatile" }))
 }
 
 fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
@@ -258,7 +322,13 @@ fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
         .into_response()
 }
 
-fn warm_missing_tiles(world: &World, tile_dir: &std::path::Path, max_zoom: u8) {
+fn warm_missing_tiles(
+    world: &World,
+    aerial: Option<&AerialSource>,
+    texture: TextureMode,
+    tile_dir: &std::path::Path,
+    max_zoom: u8,
+) {
     let started = Instant::now();
     let pool = match rayon::ThreadPoolBuilder::new()
         .num_threads(render_workers().min(2))
@@ -278,11 +348,20 @@ fn warm_missing_tiles(world: &World, tile_dir: &std::path::Path, max_zoom: u8) {
                 .into_par_iter()
                 .map(|y| {
                     (0..count)
-                        .filter_map(|x| match cache_tile(world, tile_dir, z, x, y, false) {
-                            Ok(rendered) => Some(u32::from(rendered)),
-                            Err(error) => {
-                                warn!(?error, z, x, y, "tile warm failed");
-                                None
+                        .filter_map(|x| {
+                            match cache_tile(
+                                world,
+                                aerial,
+                                texture,
+                                tile_dir,
+                                TileCoord { z, x, y },
+                                false,
+                            ) {
+                                Ok(rendered) => Some(u32::from(rendered)),
+                                Err(error) => {
+                                    warn!(?error, z, x, y, "tile warm failed");
+                                    None
+                                }
                             }
                         })
                         .sum::<u32>()
@@ -300,13 +379,17 @@ fn warm_missing_tiles(world: &World, tile_dir: &std::path::Path, max_zoom: u8) {
 
 fn cache_tile(
     world: &World,
+    aerial: Option<&AerialSource>,
+    texture: TextureMode,
     tile_dir: &std::path::Path,
-    z: u8,
-    x: u32,
-    y: u32,
+    coord: TileCoord,
     overwrite: bool,
 ) -> io::Result<bool> {
-    let path = tile_path(tile_dir, z, x, y);
+    let bounds = world.iso_bounds.tile(coord.z, coord.x, coord.y);
+    if !world.has_content(&bounds.source_envelope()) {
+        return Ok(false);
+    }
+    let path = tile_path(tile_dir, coord.z, coord.x, coord.y);
     if !overwrite && path.exists() {
         return Ok(false);
     }
@@ -314,8 +397,26 @@ fn cache_tile(
         .parent()
         .ok_or_else(|| io::Error::other("tile path has no parent"))?;
     fs::create_dir_all(parent)?;
-    fs::write(path, render_tile(world, z, x, y)?)?;
+    fs::write(path, render(world, aerial, texture, coord, false)?)?;
     Ok(true)
+}
+
+fn render(
+    world: &World,
+    aerial: Option<&AerialSource>,
+    texture: TextureMode,
+    coord: TileCoord,
+    render_context: bool,
+) -> io::Result<Vec<u8>> {
+    let TileCoord { z, x, y } = coord;
+    let bounds = world.iso_bounds.tile(z, x, y);
+    if !render_context && !world.has_content(&bounds.source_envelope()) {
+        return render_blank_tile();
+    }
+    let aerial_tile = aerial
+        .map(|source| AerialTile::for_isometric_tile(source, bounds, z, x, y))
+        .transpose()?;
+    render_tile(world, aerial_tile.as_ref(), texture, z, x, y)
 }
 
 fn render_workers() -> usize {
@@ -333,8 +434,12 @@ fn tile_path(tile_dir: &std::path::Path, z: u8, x: u32, y: u32) -> PathBuf {
         .join(format!("{y}.png"))
 }
 
-fn tile_version(world: &World) -> String {
-    format!("{RENDER_VERSION}-{:016x}", world.data_version)
+fn tile_version(world: &World, texture: TextureMode) -> String {
+    format!(
+        "{RENDER_VERSION}-{}-{:016x}",
+        texture.slug(),
+        world.data_version
+    )
 }
 
 fn tile_cache_dir(tile_version: &str) -> PathBuf {

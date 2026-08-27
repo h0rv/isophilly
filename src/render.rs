@@ -5,18 +5,29 @@ use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform,
 };
 
-use crate::world::{Bounds, Building, Ring, Street, World, isometric};
+use crate::{
+    texture::{AerialTile, TextureMode},
+    world::{Bounds, Building, Ring, Street, World, inverse_isometric, isometric},
+};
 
 const TILE_SIZE: u32 = 256;
 const OVERVIEW_ZOOM: u8 = 3;
 const EXTRUSION_ZOOM: u8 = 5;
 const OVERVIEW_LIMIT: usize = 60_000;
 
-pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> {
+pub fn render_tile(
+    world: &World,
+    aerial: Option<&AerialTile>,
+    texture: TextureMode,
+    z: u8,
+    x: u32,
+    y: u32,
+) -> io::Result<Vec<u8>> {
     let bounds = world.iso_bounds.tile(z, x, y);
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
-    pixmap.fill(ground());
+    let block_size = bounds.width() / 96.0;
+    draw_ground(&mut pixmap, bounds, scale, aerial, texture, block_size, z);
     let query = bounds.source_envelope();
     draw_rings(
         &mut pixmap,
@@ -25,7 +36,7 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
         query,
         bounds,
         scale,
-        Color::from_rgba8(93, 132, 144, 255),
+        thematic_color(93, 132, 144, texture),
     );
     draw_rings(
         &mut pixmap,
@@ -34,7 +45,7 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
         query,
         bounds,
         scale,
-        Color::from_rgba8(119, 146, 103, 255),
+        thematic_color(119, 146, 103, texture),
     );
     draw_streets(&mut pixmap, world, query, bounds, scale, z);
     let mut buildings: Vec<&Building> = world
@@ -54,7 +65,7 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
                 .ok_or_else(|| io::Error::other("overview dot"))?;
             pixmap.fill_rect(
                 dot,
-                &paint(building_color(building)),
+                &paint(building_color(building, aerial, texture, block_size)),
                 Transform::identity(),
                 None,
             );
@@ -67,7 +78,7 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
                 building.height,
                 bounds,
                 scale,
-                building_color(building),
+                building_color(building, aerial, texture, block_size),
             );
         }
     } else {
@@ -77,7 +88,13 @@ pub fn render_tile(world: &World, z: u8, x: u32, y: u32) -> io::Result<Vec<u8>> 
                 .unwrap_or(Ordering::Equal)
         });
         for building in buildings {
-            draw_building(&mut pixmap, building, bounds, scale);
+            draw_building(
+                &mut pixmap,
+                building,
+                bounds,
+                scale,
+                building_color(building, aerial, texture, block_size),
+            );
         }
     }
     pixmap.encode_png().map_err(io::Error::other)
@@ -169,10 +186,15 @@ fn draw_rings(
         fill_projected_ring(pixmap, &rings[item.index], 0.0, bounds, scale, color);
     }
 }
-fn draw_building(pixmap: &mut Pixmap, building: &Building, bounds: Bounds, scale: f32) {
+fn draw_building(
+    pixmap: &mut Pixmap,
+    building: &Building,
+    bounds: Bounds,
+    scale: f32,
+    roof_color: Color,
+) {
     let roof = projected(&building.ring, building.height, bounds, scale);
     let ground = projected(&building.ring, 0.0, bounds, scale);
-    let roof_color = building_color(building);
     for index in 0..roof.len() {
         let next = (index + 1) % roof.len();
         let (x1, y1) = building.ring.points[index];
@@ -237,9 +259,14 @@ fn paint(color: Color) -> Paint<'static> {
     paint.set_color(color);
     paint
 }
-fn building_color(building: &Building) -> Color {
+fn building_color(
+    building: &Building,
+    aerial: Option<&AerialTile>,
+    texture: TextureMode,
+    block_size: f32,
+) -> Color {
     let variation = color_variation(building.center);
-    if building.height >= 80.0 {
+    let base = if building.height >= 80.0 {
         palette(
             variation,
             &[(104, 108, 129), (115, 116, 137), (123, 122, 139)],
@@ -248,7 +275,24 @@ fn building_color(building: &Building) -> Color {
         palette(variation, &[(149, 96, 75), (158, 104, 80), (166, 112, 85)])
     } else {
         palette(variation, &[(170, 82, 55), (181, 91, 59), (188, 101, 67)])
+    };
+    let Some(aerial) = aerial else {
+        return base;
+    };
+    let sampled = aerial.sample(building.center.0, building.center.1, texture, block_size);
+    if missing_imagery(sampled) {
+        return base;
     }
+    let texture_color = Color::from_rgba8(sampled[0], sampled[1], sampled[2], 255);
+    mix_color(
+        base,
+        texture_color,
+        if texture == TextureMode::Full {
+            0.72
+        } else {
+            0.58
+        },
+    )
 }
 fn color_variation((x, y): (f32, f32)) -> usize {
     let x = x.to_bits();
@@ -267,4 +311,81 @@ fn shade(color: Color, factor: f32) -> Color {
         1.0,
     )
     .unwrap_or(color)
+}
+
+fn draw_ground(
+    pixmap: &mut Pixmap,
+    bounds: Bounds,
+    scale: f32,
+    aerial: Option<&AerialTile>,
+    texture: TextureMode,
+    block_size: f32,
+    zoom: u8,
+) {
+    let Some(aerial) = aerial else {
+        pixmap.fill(ground());
+        return;
+    };
+    let ground = [217_u8, 209, 195];
+    for py in 0..TILE_SIZE {
+        for px in 0..TILE_SIZE {
+            let iso_x = (f32::from(px as u16) + 0.5).mul_add(1.0 / scale, bounds.min_x);
+            let iso_y = (f32::from(py as u16) + 0.5).mul_add(1.0 / scale, bounds.min_y);
+            let (source_x, source_y) = inverse_isometric(iso_x, iso_y);
+            let sampled = aerial.sample(source_x, source_y, texture, block_size);
+            let color = if missing_imagery(sampled) {
+                ground
+            } else {
+                mix_rgb(ground, sampled, texture_amount(texture, zoom))
+            };
+            let offset = ((py * TILE_SIZE + px) * 4) as usize;
+            pixmap.data_mut()[offset..offset + 4]
+                .copy_from_slice(&[color[0], color[1], color[2], 255]);
+        }
+    }
+}
+
+fn texture_amount(texture: TextureMode, zoom: u8) -> f32 {
+    match (texture, zoom) {
+        (TextureMode::None, _) => 0.0,
+        (TextureMode::Pixel, 0..=3) => 0.34,
+        (TextureMode::Pixel, 4) => 0.56,
+        (TextureMode::Pixel, _) => 0.76,
+        (TextureMode::Full, 0..=3) => 0.44,
+        (TextureMode::Full, 4) => 0.68,
+        (TextureMode::Full, _) => 0.9,
+    }
+}
+
+fn thematic_color(red: u8, green: u8, blue: u8, texture: TextureMode) -> Color {
+    Color::from_rgba8(
+        red,
+        green,
+        blue,
+        if texture == TextureMode::None {
+            255
+        } else {
+            132
+        },
+    )
+}
+
+fn missing_imagery(color: [u8; 3]) -> bool {
+    color.iter().all(|channel| *channel >= 246)
+}
+
+fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
+    std::array::from_fn(|index| {
+        (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount).round() as u8
+    })
+}
+
+fn mix_color(left: Color, right: Color, amount: f32) -> Color {
+    Color::from_rgba(
+        left.red() * (1.0 - amount) + right.red() * amount,
+        left.green() * (1.0 - amount) + right.green() * amount,
+        left.blue() * (1.0 - amount) + right.blue() * amount,
+        1.0,
+    )
+    .unwrap_or(left)
 }

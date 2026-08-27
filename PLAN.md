@@ -19,9 +19,12 @@ official City Limits polygon defines the extent and clips all edge geometry.
 
 ```sh
 uv run poe ingest     # snapshot sources; refresh clean binaries + provenance
-uv run poe prebuild   # materialize z0-z5 to data/tiles
-uv run poe serve      # http://127.0.0.1:3000
-uv run poe visual     # screenshot + tile-gap/performance QA
+uv run poe prebuild    # materialize pixel-textured z0-z5 to data/tiles
+uv run poe serve       # pixel texture, http://127.0.0.1:3000
+uv run poe serve-full  # photographic texture
+uv run poe serve-plain # geometry only
+uv run poe visual      # pixel screenshot + tile-gap/performance QA
+uv run poe visual-full # full-texture QA
 uv run poe check      # Python + Rust checks
 ```
 
@@ -36,6 +39,9 @@ Empty tiles are shared rather than persisted; z9+ stays browser/edge-only.
 - z3: sampled fabric plus expressways and ramps.
 - z4: height-aligned roofs plus major streets.
 - z5+: full painter-sorted 2.5D footprints plus street centerlines.
-- Palette: warm ground, varied brick rowhouses, cool towers, blue water, green parks.
+- Texture modes: native detail 2025 PASDA aerial crops, deterministic pixel
+  processing, or plain geometry.
+- Palette overlays keep water, parks, streets, and building massing readable over imagery.
 
-No 3D engine, textures, satellite imagery, or AI rendering.
+No 3D engine or AI rendering. Aerial source crops and final tiles persist across
+runs within fixed cache limits.

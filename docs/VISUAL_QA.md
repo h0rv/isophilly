@@ -2,7 +2,8 @@
 
 `uv run poe visual` builds and boots the real release server, opens fixed City
 Hall views in system Chromium, and writes screenshots plus a JSON report to
-`artifacts/visual/`.
+mode-specific directories under `artifacts/visual/`. Run `uv run poe visual`
+for pixel processing and `uv run poe visual-full` for full photography.
 
 The check covers z3, z4, z5, z7, and z9. It fails on browser errors, HTTP tile
 errors, blank canvases, uncovered parent-fallback gaps, or tiles that do not
@@ -13,8 +14,8 @@ cache.
 
 The server namespaces disk tiles by both renderer revision and a fingerprint of
 the clean data. Empty tiles never reach the render queue or disk, and z9+ tiles
-stay browser/edge-only so arbitrary public URLs cannot grow the local cache
-without bound.
+stay browser/edge-only so arbitrary public URLs cannot grow the final-tile cache
+without bound. The shared aerial source cache has a separate hard 1 GiB ceiling.
 
 Use `?z=7` on the viewer URL to open any deterministic QA zoom. Tiles display
 near their native 256-pixel size, keeping visible requests bounded. The

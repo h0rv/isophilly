@@ -49,6 +49,34 @@ impl Bounds {
             max_y: self.min_y + (y + 1) as f32 * side,
         }
     }
+    pub fn pad(self, amount: f32) -> Self {
+        Self {
+            min_x: self.min_x - amount,
+            min_y: self.min_y - amount,
+            max_x: self.max_x + amount,
+            max_y: self.max_y + amount,
+        }
+    }
+    pub fn ground_source_bounds(self) -> Self {
+        let corners = [
+            inverse_isometric(self.min_x, self.min_y),
+            inverse_isometric(self.max_x, self.min_y),
+            inverse_isometric(self.max_x, self.max_y),
+            inverse_isometric(self.min_x, self.max_y),
+        ];
+        Self {
+            min_x: corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
+            min_y: corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min),
+            max_x: corners
+                .iter()
+                .map(|p| p.0)
+                .fold(f32::NEG_INFINITY, f32::max),
+            max_y: corners
+                .iter()
+                .map(|p| p.1)
+                .fold(f32::NEG_INFINITY, f32::max),
+        }
+    }
     pub fn source_envelope(self) -> AABB<[f32; 2]> {
         let corners = [
             (
@@ -395,9 +423,13 @@ pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
     (x - y, (x + y) * 0.5 - height)
 }
 
+pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
+    ((x + 2.0 * y) * 0.5, (2.0 * y - x) * 0.5)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, Cursor, fingerprint, fingerprint_pair};
+    use super::{Bounds, Cursor, fingerprint, fingerprint_pair, inverse_isometric, isometric};
 
     #[test]
     fn isometric_bounds_cover_ground_and_height() {
@@ -429,6 +461,16 @@ mod tests {
         assert_eq!(tile.max_x, 10.0);
         assert_eq!(tile.min_y, -5.0);
         assert_eq!(tile.max_y, 10.0);
+    }
+
+    #[test]
+    fn isometric_projection_round_trips_on_the_ground() {
+        let projected = isometric(820_983.0, 71_996.0, 0.0);
+
+        assert_eq!(
+            inverse_isometric(projected.0, projected.1),
+            (820_983.0, 71_996.0)
+        );
     }
 
     #[test]
