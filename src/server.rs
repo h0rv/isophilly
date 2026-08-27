@@ -211,8 +211,7 @@ async fn tile(
     let has_content = state
         .world
         .has_content(&state.world.source_envelope(tile_bounds));
-    let render_context =
-        !has_content && state.texture != TextureMode::None && z <= TEXTURED_CONTEXT_MAX_ZOOM;
+    let render_context = should_render_context(state.texture, z, has_content);
     if !has_content && !render_context {
         return png_response(state.blank_tile.as_ref().clone(), "empty");
     }
@@ -221,7 +220,7 @@ async fn tile(
         .join(z.to_string())
         .join(x.to_string())
         .join(format!("{y}.png"));
-    let persist = has_content && should_persist(z);
+    let persist = should_persist_tile(z, has_content, render_context);
     let cached = if persist {
         Some(tokio::fs::read(&path).await)
     } else {
@@ -275,6 +274,8 @@ async fn render_requested_tile(
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
+    let queue_ms = queued.elapsed().as_millis();
+    let rendering = Instant::now();
     let world = Arc::clone(&state.world);
     let aerial = state.aerial.clone();
     let texture = state.texture;
@@ -299,7 +300,7 @@ async fn render_requested_tile(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let queue_ms = queued.elapsed().as_millis();
+    let render_ms = rendering.elapsed().as_millis();
     drop(render_slot);
     let persist = persist && rendered.cacheable;
     if persist && let Some(parent) = path.parent() {
@@ -314,6 +315,7 @@ async fn render_requested_tile(
         x,
         y,
         queue_ms,
+        render_ms,
         elapsed_ms = started.elapsed().as_millis(),
         "tile rendered"
     );
@@ -403,7 +405,9 @@ fn cache_tile(
     overwrite: bool,
 ) -> io::Result<bool> {
     let bounds = world.iso_bounds.tile(coord.z, coord.x, coord.y);
-    if !world.has_content(&world.source_envelope(bounds)) {
+    let has_content = world.has_content(&world.source_envelope(bounds));
+    let render_context = should_render_context(texture, coord.z, has_content);
+    if !has_content && !render_context {
         return Ok(false);
     }
     let path = tile_path(tile_dir, coord.z, coord.x, coord.y);
@@ -414,7 +418,7 @@ fn cache_tile(
         .parent()
         .ok_or_else(|| io::Error::other("tile path has no parent"))?;
     fs::create_dir_all(parent)?;
-    let rendered = render(world, aerial, texture, coord, false)?;
+    let rendered = render(world, aerial, texture, coord, render_context)?;
     if !rendered.cacheable {
         return Ok(false);
     }
@@ -463,6 +467,14 @@ const fn should_persist(z: u8) -> bool {
     z <= PERSIST_MAX_ZOOM
 }
 
+const fn should_persist_tile(z: u8, has_content: bool, render_context: bool) -> bool {
+    should_persist(z) && (has_content || render_context)
+}
+
+fn should_render_context(texture: TextureMode, z: u8, has_content: bool) -> bool {
+    !has_content && texture != TextureMode::None && z <= TEXTURED_CONTEXT_MAX_ZOOM
+}
+
 fn tile_path(tile_dir: &std::path::Path, z: u8, x: u32, y: u32) -> PathBuf {
     tile_dir
         .join(z.to_string())
@@ -484,11 +496,26 @@ fn tile_cache_dir(tile_version: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{PERSIST_MAX_ZOOM, should_persist};
+    use super::{
+        PERSIST_MAX_ZOOM, TEXTURED_CONTEXT_MAX_ZOOM, should_persist, should_persist_tile,
+        should_render_context,
+    };
+    use crate::texture::TextureMode;
 
     #[test]
     fn deep_zoom_tiles_do_not_fill_the_disk_cache() {
         assert!(should_persist(PERSIST_MAX_ZOOM));
         assert!(!should_persist(PERSIST_MAX_ZOOM + 1));
+    }
+
+    #[test]
+    fn textured_context_tiles_are_prebuilt_and_persisted() {
+        let z = TEXTURED_CONTEXT_MAX_ZOOM;
+        let render_context = should_render_context(TextureMode::Pixel, z, false);
+
+        assert!(render_context);
+        assert!(should_persist_tile(z, false, render_context));
+        assert!(!should_render_context(TextureMode::None, z, false));
+        assert!(!should_render_context(TextureMode::Pixel, z + 1, false));
     }
 }

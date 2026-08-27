@@ -19,6 +19,7 @@ const SOURCE_CACHE_VERSION: &str = "2025-1024-v2";
 const SOURCE_SIZE: u32 = 1024;
 const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
 const SOURCE_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const DOWNLOAD_CONCURRENCY: usize = 4;
 const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer/export";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, ValueEnum)]
@@ -45,7 +46,7 @@ pub struct AerialSource {
     root: PathBuf,
     cached_bytes: AtomicU64,
     temporary_id: AtomicU64,
-    download_lock: Mutex<()>,
+    download_locks: [Mutex<()>; DOWNLOAD_CONCURRENCY],
 }
 
 impl AerialSource {
@@ -62,7 +63,7 @@ impl AerialSource {
             root,
             cached_bytes: AtomicU64::new(cached_bytes),
             temporary_id: AtomicU64::new(0),
-            download_lock: Mutex::new(()),
+            download_locks: std::array::from_fn(|_| Mutex::new(())),
         })
     }
 
@@ -76,8 +77,7 @@ impl AerialSource {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let _guard = self
-                    .download_lock
+                let _guard = self.download_locks[download_shard(z, x, y)]
                     .lock()
                     .map_err(|_| io::Error::other("aerial download lock poisoned"))?;
                 match fs::read(&path) {
@@ -187,6 +187,14 @@ fn retryable(error: &reqwest::Error) -> bool {
         || error
             .status()
             .is_some_and(|status| status.is_server_error())
+}
+
+fn download_shard(z: u8, x: u32, y: u32) -> usize {
+    let hash = x
+        .wrapping_mul(31)
+        .wrapping_add(y.wrapping_mul(17))
+        .wrapping_add(u32::from(z));
+    hash as usize % DOWNLOAD_CONCURRENCY
 }
 
 fn decode_source(bytes: &[u8]) -> io::Result<RgbImage> {
@@ -332,7 +340,10 @@ fn posterize(channel: u8) -> u8 {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{AerialSource, SOURCE_CACHE_MAX_BYTES, TextureMode, posterize};
+    use super::{
+        AerialSource, DOWNLOAD_CONCURRENCY, SOURCE_CACHE_MAX_BYTES, TextureMode, download_shard,
+        posterize,
+    };
 
     #[test]
     fn modes_have_stable_cache_slugs() {
@@ -357,6 +368,32 @@ mod tests {
             .store(SOURCE_CACHE_MAX_BYTES - 1, Ordering::Relaxed);
         assert!(source.reserve_cache_bytes(1));
         assert!(!source.reserve_cache_bytes(1));
+        Ok(())
+    }
+
+    #[test]
+    fn downloads_are_bounded_and_same_tile_is_single_flight() -> std::io::Result<()> {
+        let first = download_shard(5, 12, 8);
+
+        assert!(first < DOWNLOAD_CONCURRENCY);
+        assert_eq!(first, download_shard(5, 12, 8));
+        assert_eq!(
+            (0..DOWNLOAD_CONCURRENCY)
+                .map(|x| download_shard(5, x as u32, 8))
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            DOWNLOAD_CONCURRENCY
+        );
+        let source = AerialSource::open("target/nonexistent-aerial-lock-test-cache")?;
+        let guard = source.download_locks[first]
+            .lock()
+            .map_err(|_| std::io::Error::other("test download lock poisoned"))?;
+        assert!(
+            source.download_locks[download_shard(5, 12, 8)]
+                .try_lock()
+                .is_err()
+        );
+        drop(guard);
         Ok(())
     }
 }
