@@ -15,11 +15,11 @@ use serde::Serialize;
 
 use crate::world::Bounds;
 
-const SOURCE_CACHE_VERSION: &str = "2025-1024-v2";
-const SOURCE_SIZE: u32 = 1024;
+const SOURCE_CACHE_VERSION: &str = "2025-512-v3-broad-north";
+const SOURCE_SIZE: u32 = 512;
 const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
 const SOURCE_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
-const DOWNLOAD_CONCURRENCY: usize = 4;
+const DOWNLOAD_CONCURRENCY: usize = 8;
 const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer/export";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, ValueEnum)]

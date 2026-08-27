@@ -63,7 +63,7 @@ struct RenderedTile {
 
 const PLAIN_WARM_ZOOM: u8 = 4;
 const TEXTURED_WARM_ZOOM: u8 = 2;
-const RENDER_VERSION: &str = "v16";
+const RENDER_VERSION: &str = "v18-broad-north-aerial";
 const MAX_ZOOM: u8 = 12;
 const HOME_ZOOM: u8 = 3;
 const PERSIST_MAX_ZOOM: u8 = 8;

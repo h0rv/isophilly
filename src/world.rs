@@ -78,39 +78,11 @@ impl Bounds {
         }
     }
     pub fn source_envelope(self, max_height: f32) -> AABB<[f32; 2]> {
-        let corners = [
-            (
-                (self.min_x + 2.0 * self.min_y) * 0.5,
-                (2.0 * self.min_y - self.min_x) * 0.5,
-            ),
-            (
-                (self.max_x + 2.0 * self.min_y) * 0.5,
-                (2.0 * self.min_y - self.max_x) * 0.5,
-            ),
-            (
-                (self.max_x + 2.0 * self.max_y) * 0.5,
-                (2.0 * self.max_y - self.max_x) * 0.5,
-            ),
-            (
-                (self.min_x + 2.0 * self.max_y) * 0.5,
-                (2.0 * self.max_y - self.min_x) * 0.5,
-            ),
-        ];
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = (
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        );
-        for (x, y) in corners {
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
+        let ground = self.ground_source_bounds();
+        let height_margin = max_height / NORTH_SCREEN_SCALE;
         AABB::from_corners(
-            [min_x - max_height, min_y - max_height],
-            [max_x + max_height, max_y + max_height],
+            [ground.min_x - height_margin, ground.min_y - height_margin],
+            [ground.max_x + height_margin, ground.max_y + height_margin],
         )
     }
 }
@@ -768,19 +740,44 @@ impl<'a> Cursor<'a> {
     }
 }
 
+// Broad Street runs 7.79 degrees east of grid north in EPSG:32129. Keeping that
+// local axis vertical makes the fixed view read like Philadelphia: north is up,
+// south is down, west (including Rittenhouse) is left, and the visible faces are
+// viewed from the southeast.
+const BROAD_NORTH_EAST: f32 = 0.135_556_46;
+const BROAD_NORTH_NORTH: f32 = 0.990_769_6;
+const EAST_DEPTH_SLOPE: f32 = 0.28;
+const NORTH_SCREEN_SCALE: f32 = 0.55;
+
 pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
-    (x - y, (x + y) * 0.5 - height)
+    let broad_east = BROAD_NORTH_NORTH.mul_add(x, -(BROAD_NORTH_EAST * y));
+    let broad_north = BROAD_NORTH_EAST.mul_add(x, BROAD_NORTH_NORTH * y);
+    (
+        broad_east,
+        EAST_DEPTH_SLOPE.mul_add(broad_east, -(NORTH_SCREEN_SCALE * broad_north)) - height,
+    )
 }
 
 pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
-    ((x + 2.0 * y) * 0.5, (2.0 * y - x) * 0.5)
+    let broad_east = x;
+    let broad_north = (EAST_DEPTH_SLOPE.mul_add(broad_east, -y)) / NORTH_SCREEN_SCALE;
+    (
+        BROAD_NORTH_NORTH.mul_add(broad_east, BROAD_NORTH_EAST * broad_north),
+        (-BROAD_NORTH_EAST).mul_add(broad_east, BROAD_NORTH_NORTH * broad_north),
+    )
+}
+
+pub fn view_depth(x: f32, y: f32, height: f32) -> f32 {
+    let projected = isometric(x, y, 0.0);
+    projected.1 + height
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounds, Building, BuildingPart, Cursor, Ring, RoofShape, detailed_buildings, fingerprint,
-        fingerprint_pair, index_buildings, inverse_isometric, isometric,
+        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingPart, Cursor, Ring,
+        RoofShape, detailed_buildings, fingerprint, fingerprint_pair, index_buildings,
+        inverse_isometric, isometric,
     };
 
     fn square(size: f32) -> Ring {
@@ -818,10 +815,13 @@ mod tests {
         };
         let projected = source.isometric(5.0);
 
-        assert_eq!(projected.min_x, -20.0);
-        assert_eq!(projected.max_x, 10.0);
-        assert_eq!(projected.min_y, -5.0);
-        assert_eq!(projected.max_y, 15.0);
+        for (x, y) in [(0.0, 0.0), (0.0, 20.0), (10.0, 0.0), (10.0, 20.0)] {
+            let ground = isometric(x, y, 0.0);
+            let roof = isometric(x, y, 5.0);
+            assert!((projected.min_x..=projected.max_x).contains(&ground.0));
+            assert!((projected.min_y..=projected.max_y).contains(&ground.1));
+            assert!((projected.min_y..=projected.max_y).contains(&roof.1));
+        }
     }
 
     #[test]
@@ -844,9 +844,39 @@ mod tests {
     fn isometric_projection_round_trips_on_the_ground() {
         let projected = isometric(820_983.0, 71_996.0, 0.0);
 
-        assert_eq!(
-            inverse_isometric(projected.0, projected.1),
-            (820_983.0, 71_996.0)
+        let source = inverse_isometric(projected.0, projected.1);
+        assert!((source.0 - 820_983.0).abs() < 0.1);
+        assert!((source.1 - 71_996.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn broad_street_is_vertical_with_north_at_the_top() {
+        let city_hall = (821_700.0, 75_000.0);
+        let north = (
+            city_hall.0 + BROAD_NORTH_EAST * 1_000.0,
+            city_hall.1 + BROAD_NORTH_NORTH * 1_000.0,
+        );
+        let hall_screen = isometric(city_hall.0, city_hall.1, 0.0);
+        let north_screen = isometric(north.0, north.1, 0.0);
+
+        assert!((north_screen.0 - hall_screen.0).abs() < 0.1);
+        assert!(north_screen.1 < hall_screen.1);
+    }
+
+    #[test]
+    fn known_landmarks_have_a_familiar_orientation() {
+        let city_hall = isometric(820_983.06, 71_996.36, 0.0);
+        let rittenhouse = isometric(820_283.8, 71_642.66, 0.0);
+        let lincoln_financial_field = isometric(820_818.1, 66_237.54, 0.0);
+
+        assert!(
+            rittenhouse.0 < city_hall.0,
+            "Rittenhouse is west of City Hall"
+        );
+        assert!(rittenhouse.1 > city_hall.1, "Rittenhouse is slightly south");
+        assert!(
+            lincoln_financial_field.1 > city_hall.1,
+            "the stadium complex is south of Center City"
         );
     }
 

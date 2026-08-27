@@ -17,6 +17,7 @@
     header { top: 0; left: 0; right: 0; display: flex; gap: .75rem; align-items: center; min-height: 2.75rem; padding: .5rem .85rem; }
     h1 { margin: 0; font-size: 1.05rem; letter-spacing: -.025em; }
     #status { color: #c7bfb2; font-size: .8rem; }
+    .orientation { color: #9f978c; font-size: .72rem; white-space: nowrap; }
     .controls { display: flex; gap: .3rem; margin-left: auto; }
     button { min-width: 1.8rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .25rem .5rem; cursor: pointer; font: inherit; }
     button:hover { background: #464039; }
@@ -31,6 +32,7 @@
     @media (max-width: 620px) {
       header { gap: .5rem; }
       #status { max-width: 9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .orientation span { display: none; }
       .controls { margin-left: auto; }
     }
   </style>
@@ -40,6 +42,7 @@
   <header>
     <h1>geo-philly</h1>
     <span id="status" aria-live="polite">loading city geometry…</span>
+    <span class="orientation" title="North is up and Broad Street is vertical">↑ N <span>· Broad St</span></span>
     <nav class="controls" aria-label="Map controls">
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>

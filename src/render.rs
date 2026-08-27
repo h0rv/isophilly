@@ -9,7 +9,10 @@ use crate::{
     building_render::{RenderContext, building_color, draw_building, draw_building_part},
     mesh_render::draw_building_meshes,
     texture::{AerialTile, TextureMode},
-    world::{Bounds, Building, BuildingPart, Ring, Street, World, inverse_isometric, isometric},
+    world::{
+        Bounds, Building, BuildingPart, Ring, Street, World, inverse_isometric, isometric,
+        view_depth,
+    },
 };
 
 const TILE_SIZE: u32 = 256;
@@ -31,9 +34,8 @@ impl Structure<'_> {
         };
         ring.points
             .iter()
-            .map(|(x, y)| x + y)
+            .map(|(x, y)| view_depth(*x, *y, height))
             .fold(f32::NEG_INFINITY, f32::max)
-            + height
     }
 
     fn stable_id(&self) -> u64 {

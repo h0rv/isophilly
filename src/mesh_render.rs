@@ -4,13 +4,12 @@ use crate::{
     building_render::{RenderContext, building_color, projected_point},
     render::{missing_imagery, mix_color, shade},
     texture::AerialTile,
-    world::{BuildingMesh, MeshFace},
+    world::{BuildingMesh, MeshFace, view_depth},
 };
 
 const TILE_SIZE: usize = 256;
 const ROOF_NORMAL: f32 = 0.55;
 const MIN_TRIANGLE_AREA: f32 = 0.35;
-const DEPTH_ORIGIN: f32 = 1_600_000.0;
 
 pub fn draw_building_meshes<'a>(
     pixmap: &mut Pixmap,
@@ -75,7 +74,7 @@ impl Rasterizer<'_, '_> {
             Vertex {
                 x: screen.0,
                 y: screen.1,
-                depth: x + y + z - DEPTH_ORIGIN,
+                depth: view_depth(x, y, z),
             }
         });
         let area = edge(projected[0], projected[1], projected[2]);
