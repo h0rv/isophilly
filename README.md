@@ -36,8 +36,8 @@ those tiles. This gives every overview the same textured scene instead of a
 different drawing style. The command uses four times the available logical CPU
 count, capped at 32 workers. The extra workers keep downloads and image writes
 moving while CPU work runs. It resumes from existing z8 tiles and writes a
-completion marker only after the whole pyramid is ready. Run `cargo run
---release -- prebuild --jobs N` to choose a different worker count.
+completion marker only after the whole pyramid is ready. Run
+`uv run --locked poe prebuild --jobs N` to choose a different worker count.
 
 The server reads z0 through z8 from `data/tiles/`. It renders z9 through z12 on
 demand and saves those tiles for later runs. The browser shows the textured z8

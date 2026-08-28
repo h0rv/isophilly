@@ -49,6 +49,9 @@ check-web = "npm run check"
 audit = { shell = "uv audit --locked --preview-features audit-command && npm audit --audit-level=high && cargo deny check" }
 check = { shell = "poe check-python && poe check-web && poe check-rust && poe audit" }
 ingest = "python -m geo_philly_ingest.ingest"
-prebuild = "cargo run --release -- prebuild"
 serve = "cargo run --release -- serve --port 3000"
 visual = { shell = "cargo build --release --locked && npm run visual" }
+
+[tool.poe.tasks.prebuild]
+cmd = "cargo run --release -- prebuild"
+help = "Build the tile pyramid; pass --jobs N to override worker count"
