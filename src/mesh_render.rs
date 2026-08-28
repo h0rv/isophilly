@@ -3,7 +3,6 @@ use tiny_skia::{Color, Pixmap};
 use crate::{
     building_render::{RenderContext, building_color, projected_point},
     render::{missing_imagery, mix_color, shade},
-    texture::AerialTile,
     world::{BuildingMesh, MeshFace, view_depth},
 };
 
@@ -39,7 +38,6 @@ impl Rasterizer<'_, '_> {
             mesh.center,
             mesh.height,
             None,
-            self.context.texture,
             self.context.block_size,
         );
         let base = mesh.facade_color.map_or(fallback, |color| {
@@ -50,16 +48,16 @@ impl Rasterizer<'_, '_> {
             )
         });
         for face in &mesh.faces {
-            self.draw_face(face, base, self.context.aerial);
+            self.draw_face(face, base);
         }
     }
 
-    fn draw_face(&mut self, face: &MeshFace, base: Color, aerial: Option<&AerialTile>) {
+    fn draw_face(&mut self, face: &MeshFace, base: Color) {
         let Some(normal) = normal(face) else {
             return;
         };
         let center = center(face);
-        let color = face_color(normal, center, base, aerial, self.context);
+        let color = face_color(face, normal, center, base, self.context);
         let Some(&first) = face.points.first() else {
             return;
         };
@@ -153,17 +151,22 @@ fn edge(left: Vertex, right: Vertex, point: Vertex) -> f32 {
 }
 
 fn face_color(
+    face: &MeshFace,
     normal: (f32, f32, f32),
     center: (f32, f32, f32),
     base: Color,
-    aerial: Option<&AerialTile>,
     context: &RenderContext<'_>,
 ) -> Color {
     let roof = normal.2.abs() >= ROOF_NORMAL;
-    let color = if roof {
-        aerial
-            .filter(|aerial| aerial.contains(center.0, center.1))
-            .map(|aerial| aerial.sample(center.0, center.1, context.texture, context.block_size))
+    let color = if roof && face_fits_tile(face, context) {
+        context
+            .aerial
+            .contains(center.0, center.1)
+            .then(|| {
+                context
+                    .aerial
+                    .sample(center.0, center.1, context.block_size)
+            })
             .filter(|sample| !missing_imagery(*sample))
             .map_or(base, |sample| {
                 let photo = Color::from_rgba8(sample[0], sample[1], sample[2], 255);
@@ -179,6 +182,13 @@ fn face_color(
         0.68 + 0.2 * directional.clamp(0.0, 1.0)
     };
     shade(color, light)
+}
+
+fn face_fits_tile(face: &MeshFace, context: &RenderContext<'_>) -> bool {
+    face.points.iter().all(|&(x, y, z)| {
+        let (screen_x, screen_y) = projected_point((x, y), z, context);
+        (0.0..=TILE_SIZE as f32).contains(&screen_x) && (0.0..=TILE_SIZE as f32).contains(&screen_y)
+    })
 }
 
 fn center(face: &MeshFace) -> (f32, f32, f32) {

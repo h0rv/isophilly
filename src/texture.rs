@@ -8,38 +8,17 @@ use std::{
     time::Duration,
 };
 
-use clap::ValueEnum;
 use image::RgbImage;
 use reqwest::blocking::Client;
-use serde::Serialize;
 
 use crate::world::Bounds;
 
-const SOURCE_CACHE_VERSION: &str = "2025-512-v3-broad-north";
+const SOURCE_CACHE_VERSION: &str = "2025-512-v4-classic-iso";
 const SOURCE_SIZE: u32 = 512;
 const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
 const SOURCE_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const DOWNLOAD_CONCURRENCY: usize = 8;
 const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer/export";
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum TextureMode {
-    None,
-    Full,
-    #[default]
-    Pixel,
-}
-
-impl TextureMode {
-    pub const fn slug(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Full => "full",
-            Self::Pixel => "pixel",
-        }
-    }
-}
 
 pub struct AerialSource {
     client: Client,
@@ -57,7 +36,7 @@ impl AerialSource {
             .build()
             .map_err(io::Error::other)?;
         let root = root.into();
-        let cached_bytes = directory_size(&root)?;
+        let cached_bytes = directory_size(&root.join(SOURCE_CACHE_VERSION))?;
         Ok(Self {
             client,
             root,
@@ -119,30 +98,30 @@ impl AerialSource {
             ("transparent", "false"),
             ("f", "image"),
         ];
-        let response = (0..3)
-            .find_map(|attempt| {
-                match self
-                    .client
-                    .get(SOURCE_URL)
-                    .query(&query)
-                    .send()
-                    .and_then(reqwest::blocking::Response::error_for_status)
-                {
-                    Ok(response) => Some(Ok(response)),
-                    Err(error) if attempt < 2 && retryable(&error) => {
-                        std::thread::sleep(Duration::from_millis(250_u64 << attempt));
-                        None
-                    }
-                    Err(error) => Some(Err(error)),
+        let mut last_error = None;
+        for attempt in 0..6 {
+            let result = self
+                .client
+                .get(SOURCE_URL)
+                .query(&query)
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .and_then(reqwest::blocking::Response::bytes)
+                .map_err(io::Error::other)
+                .and_then(|bytes| {
+                    let bytes = bytes.to_vec();
+                    decode_source(&bytes).map(|_| bytes)
+                });
+            match result {
+                Ok(response) => return Ok(response),
+                Err(error) if attempt < 5 => {
+                    last_error = Some(error);
+                    std::thread::sleep(Duration::from_millis(250_u64 << attempt));
                 }
-            })
-            .ok_or_else(|| io::Error::other("aerial request exhausted its retries"))?
-            .map_err(io::Error::other)?
-            .bytes()
-            .map_err(io::Error::other)?
-            .to_vec();
-        let _image = decode_source(&response)?;
-        Ok(response)
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| io::Error::other("aerial request failed")))
     }
 
     fn write_cached(&self, path: &Path, response: &[u8]) -> io::Result<bool> {
@@ -179,14 +158,6 @@ impl AerialSource {
             })
             .is_ok()
     }
-}
-
-fn retryable(error: &reqwest::Error) -> bool {
-    error.is_timeout()
-        || error.is_connect()
-        || error
-            .status()
-            .is_some_and(|status| status.is_server_error())
 }
 
 fn download_shard(z: u8, x: u32, y: u32) -> usize {
@@ -229,33 +200,20 @@ impl AerialTile {
         source.tile(source_bounds.pad(overlap), z, x, y)
     }
 
-    pub fn sample(&self, x: f32, y: f32, mode: TextureMode, block_size: f32) -> [u8; 3] {
-        let (x, y) = match mode {
-            TextureMode::Pixel => (
-                (x / block_size)
-                    .floor()
-                    .mul_add(block_size, block_size * 0.5),
-                (y / block_size)
-                    .floor()
-                    .mul_add(block_size, block_size * 0.5),
-            ),
-            TextureMode::Full | TextureMode::None => (x, y),
-        };
+    pub fn sample(&self, x: f32, y: f32, block_size: f32) -> [u8; 3] {
+        let x = (x / block_size)
+            .floor()
+            .mul_add(block_size, block_size * 0.5);
+        let y = (y / block_size)
+            .floor()
+            .mul_add(block_size, block_size * 0.5);
         let u = ((x - self.bounds.min_x) / self.bounds.width())
             .clamp(0.0, 1.0)
             .mul_add(self.image.width().saturating_sub(1) as f32, 0.0);
         let v = ((self.bounds.max_y - y) / self.bounds.height())
             .clamp(0.0, 1.0)
             .mul_add(self.image.height().saturating_sub(1) as f32, 0.0);
-        let sampled = match mode {
-            TextureMode::Full | TextureMode::None => self.bilinear(u, v),
-            TextureMode::Pixel => self.box_average(u, v),
-        };
-        if mode == TextureMode::Pixel {
-            sampled.map(posterize)
-        } else {
-            sampled
-        }
+        self.box_average(u, v).map(posterize)
     }
 
     pub fn contains(&self, x: f32, y: f32) -> bool {
@@ -263,26 +221,6 @@ impl AerialTile {
             && x <= self.bounds.max_x
             && y >= self.bounds.min_y
             && y <= self.bounds.max_y
-    }
-
-    fn bilinear(&self, u: f32, v: f32) -> [u8; 3] {
-        let x0 = u.floor() as u32;
-        let y0 = v.floor() as u32;
-        let x1 = (x0 + 1).min(self.image.width() - 1);
-        let y1 = (y0 + 1).min(self.image.height() - 1);
-        let tx = u - x0 as f32;
-        let ty = v - y0 as f32;
-        let top = mix_pixel(
-            *self.image.get_pixel(x0, y0),
-            *self.image.get_pixel(x1, y0),
-            tx,
-        );
-        let bottom = mix_pixel(
-            *self.image.get_pixel(x0, y1),
-            *self.image.get_pixel(x1, y1),
-            tx,
-        );
-        mix_rgb(top, bottom, ty)
     }
 
     fn box_average(&self, u: f32, v: f32) -> [u8; 3] {
@@ -322,16 +260,6 @@ fn directory_size(path: &Path) -> io::Result<u64> {
     Ok(bytes)
 }
 
-fn mix_pixel(left: image::Rgb<u8>, right: image::Rgb<u8>, amount: f32) -> [u8; 3] {
-    mix_rgb(left.0, right.0, amount)
-}
-
-fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
-    std::array::from_fn(|index| {
-        (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount).round() as u8
-    })
-}
-
 fn posterize(channel: u8) -> u8 {
     ((u16::from(channel) + 16) / 32 * 32).min(255) as u8
 }
@@ -341,16 +269,8 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::{
-        AerialSource, DOWNLOAD_CONCURRENCY, SOURCE_CACHE_MAX_BYTES, TextureMode, download_shard,
-        posterize,
+        AerialSource, DOWNLOAD_CONCURRENCY, SOURCE_CACHE_MAX_BYTES, download_shard, posterize,
     };
-
-    #[test]
-    fn modes_have_stable_cache_slugs() {
-        assert_eq!(TextureMode::None.slug(), "none");
-        assert_eq!(TextureMode::Full.slug(), "full");
-        assert_eq!(TextureMode::Pixel.slug(), "pixel");
-    }
 
     #[test]
     fn posterize_uses_fixed_thirty_two_value_steps() {

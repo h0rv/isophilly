@@ -79,7 +79,7 @@ impl Bounds {
     }
     pub fn source_envelope(self, max_height: f32) -> AABB<[f32; 2]> {
         let ground = self.ground_source_bounds();
-        let height_margin = max_height / NORTH_SCREEN_SCALE;
+        let height_margin = max_height * 1.2;
         AABB::from_corners(
             [ground.min_x - height_margin, ground.min_y - height_margin],
             [ground.max_x + height_margin, ground.max_y + height_margin],
@@ -740,27 +740,25 @@ impl<'a> Cursor<'a> {
     }
 }
 
-// Broad Street runs 7.79 degrees east of grid north in EPSG:32129. Keeping that
-// local axis vertical makes the fixed view read like Philadelphia: north is up,
-// south is down, west (including Rittenhouse) is left, and the visible faces are
-// viewed from the southeast.
+// Broad Street runs 7.79 degrees east of grid north in EPSG:32129. Treat it as
+// Philadelphia's local north axis, then use the classic two-axis isometric view:
+// north runs up-right, south runs down-left, and both main facade directions are
+// visible instead of looking straight down the street grid.
 const BROAD_NORTH_EAST: f32 = 0.135_556_46;
 const BROAD_NORTH_NORTH: f32 = 0.990_769_6;
-const EAST_DEPTH_SLOPE: f32 = 0.28;
-const NORTH_SCREEN_SCALE: f32 = 0.55;
 
 pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
     let broad_east = BROAD_NORTH_NORTH.mul_add(x, -(BROAD_NORTH_EAST * y));
     let broad_north = BROAD_NORTH_EAST.mul_add(x, BROAD_NORTH_NORTH * y);
     (
-        broad_east,
-        EAST_DEPTH_SLOPE.mul_add(broad_east, -(NORTH_SCREEN_SCALE * broad_north)) - height,
+        broad_east + broad_north,
+        (broad_east - broad_north).mul_add(0.5, -height),
     )
 }
 
 pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
-    let broad_east = x;
-    let broad_north = (EAST_DEPTH_SLOPE.mul_add(broad_east, -y)) / NORTH_SCREEN_SCALE;
+    let broad_east = (x + 2.0 * y) * 0.5;
+    let broad_north = (x - 2.0 * y) * 0.5;
     (
         BROAD_NORTH_NORTH.mul_add(broad_east, BROAD_NORTH_EAST * broad_north),
         (-BROAD_NORTH_EAST).mul_add(broad_east, BROAD_NORTH_NORTH * broad_north),
@@ -850,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn broad_street_is_vertical_with_north_at_the_top() {
+    fn local_north_uses_the_classic_isometric_angle() {
         let city_hall = (821_700.0, 75_000.0);
         let north = (
             city_hall.0 + BROAD_NORTH_EAST * 1_000.0,
@@ -859,8 +857,11 @@ mod tests {
         let hall_screen = isometric(city_hall.0, city_hall.1, 0.0);
         let north_screen = isometric(north.0, north.1, 0.0);
 
-        assert!((north_screen.0 - hall_screen.0).abs() < 0.1);
+        let delta_x = north_screen.0 - hall_screen.0;
+        let delta_y = north_screen.1 - hall_screen.1;
+        assert!(delta_x > 0.0);
         assert!(north_screen.1 < hall_screen.1);
+        assert!((delta_y / delta_x + 0.5).abs() < 0.01);
     }
 
     #[test]
@@ -873,10 +874,13 @@ mod tests {
             rittenhouse.0 < city_hall.0,
             "Rittenhouse is west of City Hall"
         );
-        assert!(rittenhouse.1 > city_hall.1, "Rittenhouse is slightly south");
         assert!(
             lincoln_financial_field.1 > city_hall.1,
             "the stadium complex is south of Center City"
+        );
+        assert!(
+            lincoln_financial_field.0 < city_hall.0,
+            "south points down-left in the isometric view"
         );
     }
 

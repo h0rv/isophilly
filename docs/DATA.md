@@ -114,21 +114,24 @@ without changing the stable `philly.bin` contract.
 
 Textured rendering requests 2025 Philadelphia orthophotography from the
 [PASDA ArcGIS image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer).
-The source advertises three inch imagery. The renderer asks for a 1024 by 1024
+The source advertises three inch imagery. The renderer asks for a 512 by 512
 JPEG in EPSG:32129 over the exact source footprint of each isometric tile. The
 crop includes a two pixel overlap. The renderer never stretches a whole city
 preview.
 
-The original photograph is cached once and shared by the two deterministic
-render modes. `full` uses bilinear color sampling. `pixel` snaps sampling to a
-global grid, averages a 3 by 3 source neighborhood, and posterizes each channel.
-Neither path generates imagery. Source crops persist under `data/aerial/` until
-the fixed 1 GiB cache ceiling is reached. Final PNG tiles through z8 have their
-own bounded cache. Deeper final tiles stay volatile.
+The renderer snaps sampling to a global grid, averages a 3 by 3 source
+neighborhood, and posterizes each channel. It does not generate imagery. Source
+crops persist under `data/aerial/` until the fixed 1 GiB cache ceiling is
+reached. The prebuild renders z8 and derives the lower levels from it. Requested
+z9 through z12 tiles are also saved for later runs.
 
 ## Provenance
 
 The sources and licensing caveat are documented in [RESEARCH.md](RESEARCH.md).
+The building source must contain at least 300 MB and produce at least 500,000
+usable footprints. If the live Hub export returns a short HTTP 200 response,
+ingest uses the newest complete content-addressed snapshot. It stops before
+overwriting the clean artifact when neither source is complete.
 The City catalog describes the building footprints as weekly-updated public
 data, the hydrology as current surface-water geometry, the street centerline as
 a reference base layer, and City Limits as the generalized standard boundary.

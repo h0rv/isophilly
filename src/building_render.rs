@@ -2,7 +2,7 @@ use tiny_skia::{Color, FillRule, LineCap, LineJoin, PathBuilder, Pixmap, Stroke,
 
 use crate::{
     render::{missing_imagery, mix_color, paint, palette, pixel, shade},
-    texture::{AerialTile, TextureMode},
+    texture::AerialTile,
     world::{Bounds, Building, BuildingPart, Ring, RoofShape, inverse_isometric, isometric},
 };
 
@@ -11,10 +11,8 @@ const MAX_TEXTURED_ROOF_PIXELS: usize = 100_000;
 const MAX_FACADE_MARKS: usize = 20_000;
 
 pub struct RenderContext<'a> {
-    pub aerial: Option<&'a AerialTile>,
-    pub texture: TextureMode,
+    pub aerial: &'a AerialTile,
     pub block_size: f32,
-    pub zoom: u8,
     pub bounds: Bounds,
     pub scale: f32,
     roof_pixels: usize,
@@ -22,19 +20,10 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    pub fn new(
-        aerial: Option<&'a AerialTile>,
-        texture: TextureMode,
-        block_size: f32,
-        zoom: u8,
-        bounds: Bounds,
-        scale: f32,
-    ) -> Self {
+    pub fn new(aerial: &'a AerialTile, block_size: f32, bounds: Bounds, scale: f32) -> Self {
         Self {
             aerial,
-            texture,
             block_size,
-            zoom,
             bounds,
             scale,
             roof_pixels: 0,
@@ -48,7 +37,6 @@ pub fn building_color(
     center: (f32, f32),
     height: f32,
     aerial: Option<&AerialTile>,
-    texture: TextureMode,
     block_size: f32,
 ) -> Color {
     let variation = color_variation(center);
@@ -71,41 +59,31 @@ pub fn building_color(
     let Some(aerial) = aerial else {
         return fallback;
     };
-    if texture == TextureMode::None {
-        return fallback;
-    }
     let sample_point = roof_sample_point(ring, center);
     if !aerial.contains(sample_point.0, sample_point.1) {
         return fallback;
     }
-    let sampled = aerial.sample(sample_point.0, sample_point.1, texture, block_size);
+    let sampled = aerial.sample(sample_point.0, sample_point.1, block_size);
     if missing_imagery(sampled) {
         return fallback;
     }
     let roof = Color::from_rgba8(sampled[0], sampled[1], sampled[2], 255);
-    let amount = if texture == TextureMode::Pixel {
-        0.84
-    } else {
-        0.74
-    };
-    mix_color(fallback, roof, amount)
+    mix_color(fallback, roof, 0.84)
 }
 
 pub fn draw_building(pixmap: &mut Pixmap, building: &Building, context: &mut RenderContext<'_>) {
-    let aerial = context
-        .aerial
-        .filter(|_| structure_fits_tile(&building.ring, 0.0, building.height, context));
+    let aerial = structure_fits_tile(&building.ring, 0.0, building.height, context)
+        .then_some(context.aerial);
     let color = building_color(
         &building.ring,
         building.center,
         building.height,
         aerial,
-        context.texture,
         context.block_size,
     );
     draw_walls(pixmap, &building.ring, 0.0, building.height, color, context);
     let roof = projected(&building.ring, building.height, context);
-    fill_shape(pixmap, &roof, color, context.texture);
+    fill_shape(pixmap, &roof, color);
     draw_textured_roof(pixmap, &roof, building.height, context, color);
 }
 
@@ -114,15 +92,13 @@ pub fn draw_building_part(
     part: &BuildingPart,
     context: &mut RenderContext<'_>,
 ) {
-    let aerial = context
-        .aerial
-        .filter(|_| structure_fits_tile(&part.ring, part.min_height, part.height, context));
+    let aerial = structure_fits_tile(&part.ring, part.min_height, part.height, context)
+        .then_some(context.aerial);
     let roof_color = building_color(
         &part.ring,
         part.center,
         part.height,
         aerial,
-        context.texture,
         context.block_size,
     );
     let wall_top = (part.height - part.roof_height).max(part.min_height);
@@ -144,7 +120,7 @@ pub fn draw_building_part(
     match part.roof_shape {
         RoofShape::Flat => {
             let roof = projected(&part.ring, part.height, context);
-            fill_shape(pixmap, &roof, roof_color, context.texture);
+            fill_shape(pixmap, &roof, roof_color);
             draw_textured_roof(pixmap, &roof, part.height, context, roof_color);
         }
         RoofShape::Gabled if part.ring.points.len() == 4 => {
@@ -182,8 +158,8 @@ fn draw_walls(
         };
         let face = [bottom[index], bottom[next], top[next], top[index]];
         let wall_color = shade(color, light);
-        fill_shape(pixmap, &face, wall_color, context.texture);
-        if context.zoom >= 8 && context.facade_marks < MAX_FACADE_MARKS {
+        fill_shape(pixmap, &face, wall_color);
+        if context.facade_marks < MAX_FACADE_MARKS {
             draw_facade_grid(
                 pixmap,
                 face,
@@ -221,7 +197,6 @@ fn draw_facade_grid(
             lerp(face[0], face[3], t),
             lerp(face[1], face[2], t),
             grid,
-            context.texture,
         );
         context.facade_marks += 1;
     }
@@ -234,14 +209,8 @@ fn draw_textured_roof(
     context: &mut RenderContext<'_>,
     base: Color,
 ) {
-    let Some(aerial) = context.aerial else {
-        return;
-    };
-    if context.texture == TextureMode::None
-        || context.zoom < 7
-        || roof.len() < 3
-        || context.roof_pixels >= MAX_TEXTURED_ROOF_PIXELS
-    {
+    let aerial = context.aerial;
+    if roof.len() < 3 || context.roof_pixels >= MAX_TEXTURED_ROOF_PIXELS {
         return;
     }
     let min_x = roof
@@ -279,17 +248,12 @@ fn draw_textured_roof(
             if !aerial.contains(source.0, source.1) {
                 continue;
             }
-            let sampled = aerial.sample(source.0, source.1, context.texture, context.block_size);
+            let sampled = aerial.sample(source.0, source.1, context.block_size);
             if missing_imagery(sampled) {
                 continue;
             }
             let photo = Color::from_rgba8(sampled[0], sampled[1], sampled[2], 255);
-            let amount = if context.texture == TextureMode::Full {
-                0.86
-            } else {
-                0.74
-            };
-            let color = mix_color(base, photo, amount);
+            let color = mix_color(base, photo, 0.74);
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
             pixmap.data_mut()[offset..offset + 4].copy_from_slice(&[
                 (color.red() * 255.0).round() as u8,
@@ -314,12 +278,7 @@ fn draw_pointed_roof(
     for index in 0..rim.len() {
         let next = (index + 1) % rim.len();
         let light = if index % 2 == 0 { 0.95 } else { 0.78 };
-        fill_shape(
-            pixmap,
-            &[rim[index], rim[next], apex],
-            shade(color, light),
-            context.texture,
-        );
+        fill_shape(pixmap, &[rim[index], rim[next], apex], shade(color, light));
     }
 }
 
@@ -341,7 +300,6 @@ fn draw_tiered_roof(
             pixmap,
             &[rim[index], rim[next], middle[next], middle[index]],
             shade(color, if index % 2 == 0 { 0.9 } else { 0.74 }),
-            context.texture,
         );
     }
     let apex = projected_point(part.center, part.height, context);
@@ -351,7 +309,6 @@ fn draw_tiered_roof(
             pixmap,
             &[middle[index], middle[next], apex],
             shade(color, 0.92),
-            context.texture,
         );
     }
 }
@@ -385,26 +342,22 @@ fn draw_gabled_roof(
             pixmap,
             &[rim[0], rim[1], ridge_right, ridge_left],
             shade(color, 0.94),
-            context.texture,
         );
         fill_shape(
             pixmap,
             &[rim[3], rim[2], ridge_right, ridge_left],
             shade(color, 0.78),
-            context.texture,
         );
     } else {
         fill_shape(
             pixmap,
             &[rim[0], rim[3], ridge_left, ridge_right],
             shade(color, 0.94),
-            context.texture,
         );
         fill_shape(
             pixmap,
             &[rim[1], rim[2], ridge_left, ridge_right],
             shade(color, 0.78),
-            context.texture,
         );
     }
 }
@@ -449,7 +402,7 @@ fn draw_hipped_roof(
         ]
     };
     for (face, light) in faces {
-        fill_shape(pixmap, face, shade(color, light), context.texture);
+        fill_shape(pixmap, face, shade(color, light));
     }
 }
 
@@ -469,23 +422,15 @@ fn draw_mansard_roof(
             pixmap,
             &[rim[index], rim[next], upper[next], upper[index]],
             shade(color, if index % 2 == 0 { 0.9 } else { 0.74 }),
-            context.texture,
         );
     }
-    fill_shape(pixmap, &upper, color, context.texture);
+    fill_shape(pixmap, &upper, color);
     draw_textured_roof(pixmap, &upper, part.height, context, color);
 }
 
-fn stroke_line(
-    pixmap: &mut Pixmap,
-    start: (f32, f32),
-    end: (f32, f32),
-    color: Color,
-    texture: TextureMode,
-) {
-    let crisp = texture == TextureMode::Pixel;
-    let start = snap(start, crisp);
-    let end = snap(end, crisp);
+fn stroke_line(pixmap: &mut Pixmap, start: (f32, f32), end: (f32, f32), color: Color) {
+    let start = snap(start);
+    let end = snap(end);
     let mut path = PathBuilder::new();
     path.move_to(start.0, start.1);
     path.line_to(end.0, end.1);
@@ -493,17 +438,13 @@ fn stroke_line(
         return;
     };
     let stroke = Stroke {
-        width: if crisp { 1.0 } else { 0.55 },
-        line_cap: if crisp { LineCap::Butt } else { LineCap::Round },
-        line_join: if crisp {
-            LineJoin::Bevel
-        } else {
-            LineJoin::Round
-        },
+        width: 1.0,
+        line_cap: LineCap::Butt,
+        line_join: LineJoin::Bevel,
         ..Stroke::default()
     };
     let mut stroke_paint = paint(color);
-    stroke_paint.anti_alias = !crisp;
+    stroke_paint.anti_alias = false;
     pixmap.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
 }
 
@@ -524,7 +465,7 @@ pub(crate) fn projected_point(
         context.bounds,
         context.scale,
     );
-    snap(screen, context.texture == TextureMode::Pixel)
+    snap(screen)
 }
 
 fn structure_fits_tile(
@@ -542,12 +483,7 @@ fn structure_fits_tile(
     })
 }
 
-pub(crate) fn fill_shape(
-    pixmap: &mut Pixmap,
-    points: &[(f32, f32)],
-    color: Color,
-    texture: TextureMode,
-) {
+pub(crate) fn fill_shape(pixmap: &mut Pixmap, points: &[(f32, f32)], color: Color) {
     if points.len() < 3 {
         return;
     }
@@ -561,16 +497,12 @@ pub(crate) fn fill_shape(
         return;
     };
     let mut fill = paint(color);
-    fill.anti_alias = texture != TextureMode::Pixel;
+    fill.anti_alias = false;
     pixmap.fill_path(&path, &fill, FillRule::Winding, Transform::identity(), None);
 }
 
-fn snap(point: (f32, f32), crisp: bool) -> (f32, f32) {
-    if crisp {
-        (point.0.round(), point.1.round())
-    } else {
-        point
-    }
+fn snap(point: (f32, f32)) -> (f32, f32) {
+    (point.0.round(), point.1.round())
 }
 
 fn scaled_ring(ring: &Ring, center: (f32, f32), factor: f32) -> Ring {

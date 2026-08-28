@@ -11,7 +11,15 @@ import geopandas as gpd
 from shapely import union_all
 from shapely.geometry.base import BaseGeometry
 
-from .config import CLEAN_DIR, EPSG, METADATA_JSON, SOURCES, STREETS_BIN, WORLD_BIN
+from .config import (
+    CLEAN_DIR,
+    EPSG,
+    METADATA_JSON,
+    MIN_BUILDING_COUNT,
+    SOURCES,
+    STREETS_BIN,
+    WORLD_BIN,
+)
 from .download import download_all
 from .geometry import buildings, city_rings, ground_rings, projected, streets
 from .mesh import building_meshes
@@ -178,6 +186,11 @@ async def main_async() -> None:
     snapshots = await download_all(SOURCES.all())
     city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city)
+    if len(packed_buildings) < MIN_BUILDING_COUNT:
+        raise ValueError(
+            f"building source produced only {len(packed_buildings):,} usable footprints; "
+            f"expected at least {MIN_BUILDING_COUNT:,}"
+        )
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
     meshes = building_meshes(snapshots[SOURCES.downtown_meshes.filename])
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)

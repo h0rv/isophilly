@@ -59,6 +59,34 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(snapshot.path, cached)
         self.assertEqual(snapshot.sha256, sha256)
 
+    def test_uses_complete_cache_after_short_successful_response(self) -> None:
+        payload = b"complete"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        source = Source(
+            "Test data",
+            "test-data",
+            "https://example.test/data",
+            "bin",
+            minimum_bytes=len(payload),
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"short", request=request)
+
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        cached = root / f"test-data-{sha256[:12]}.bin"
+        cached.write_bytes(payload)
+        with (
+            patch("geo_philly_ingest.download.RAW_DIR", root),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            snapshot = _download_with_client(source, client)
+
+        self.assertEqual(snapshot.path, cached)
+        self.assertEqual(snapshot.sha256, sha256)
+
 
 if __name__ == "__main__":
     unittest.main()

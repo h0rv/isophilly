@@ -39,6 +39,8 @@ def _cached(source: Source) -> Snapshot | None:
         reverse=True,
     )
     for path in candidates:
+        if not source.accepts_size(path.stat().st_size):
+            continue
         sha256 = _digest(path)
         if path.stem.removeprefix(prefix) != sha256[:12]:
             continue
@@ -105,7 +107,21 @@ def _download_with_client(source: Source, client: httpx.Client) -> Snapshot:
         try:
             with client.stream("GET", source.url) as response:
                 response.raise_for_status()
-                return _save_response(source, response)
+                snapshot = _save_response(source, response)
+                if source.accepts_size(snapshot.size):
+                    return snapshot
+                cached = _cached(source)
+                if cached is None:
+                    raise DownloadError(
+                        f"{source.name} returned only {snapshot.size:,} bytes; "
+                        f"expected at least {source.minimum_bytes:,}"
+                    )
+                print(
+                    f"warning: {source.name} refresh was incomplete "
+                    f"({snapshot.size:,} bytes); using cached {cached.path.name}",
+                    file=sys.stderr,
+                )
+                return cached
         except httpx.HTTPError as error:
             if not _retryable(error):
                 raise DownloadError(f"failed to download {source.name}: {error}") from error

@@ -4,32 +4,21 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const texture = process.env.GEO_PHILLY_TEXTURE ?? "pixel";
-if (!new Set(["none", "full", "pixel"]).has(texture)) {
-  throw new Error(`invalid GEO_PHILLY_TEXTURE: ${texture}`);
-}
 const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9")
   .split(",")
   .map((value) => Number.parseInt(value, 10));
 if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 12)) {
   throw new Error(`invalid GEO_PHILLY_VISUAL_ZOOMS: ${process.env.GEO_PHILLY_VISUAL_ZOOMS}`);
 }
-const artifactDir = fileURLToPath(new URL(`../artifacts/visual/${texture}`, import.meta.url));
+const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
 const port = Number.parseInt(process.env.GEO_PHILLY_VISUAL_PORT ?? "3107", 10);
-const tileTimeout = Number.parseInt(
-  process.env.GEO_PHILLY_VISUAL_TIMEOUT ?? (texture === "none" ? "60000" : "180000"),
-  10,
-);
+const tileTimeout = Number.parseInt(process.env.GEO_PHILLY_VISUAL_TIMEOUT ?? "180000", 10);
 const origin = `http://127.0.0.1:${port}`;
-const server = spawn(
-  "target/release/geo-philly",
-  ["serve", "--port", String(port), "--texture", texture],
-  {
-    cwd: root,
-    env: { ...process.env, RUST_LOG: "geo_philly=warn,tower_http=warn" },
-    stdio: ["ignore", "pipe", "pipe"],
-  },
-);
+const server = spawn("target/release/geo-philly", ["serve", "--port", String(port)], {
+  cwd: root,
+  env: { ...process.env, RUST_LOG: "geo_philly=warn,tower_http=warn" },
+  stdio: ["ignore", "pipe", "pipe"],
+});
 let serverOutput = "";
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
@@ -138,7 +127,6 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       total: tileRequests.length,
       rendered: tileRequests.filter((request) => request.cache === "rendered").length,
       disk: tileRequests.filter((request) => request.cache === "disk").length,
-      volatile: tileRequests.filter((request) => request.cache === "volatile").length,
       empty: tileRequests.filter((request) => request.cache === "empty").length,
     },
   };
@@ -183,7 +171,7 @@ async function profile(meta) {
     empty: emptyResponse.headers.get("x-tile-cache"),
   };
   await Promise.all([deepResponse.arrayBuffer(), emptyResponse.arrayBuffer()]);
-  if (policy.deep !== "volatile" || policy.empty !== "empty") {
+  if (!new Set(["rendered", "disk"]).has(policy.deep) || policy.empty !== "empty") {
     throw new Error(`tile cache policy failed: ${JSON.stringify(policy)}`);
   }
   return { zoom, x, y, first, second, policy };
@@ -193,9 +181,6 @@ let browser;
 try {
   await mkdir(artifactDir, { recursive: true });
   const meta = await waitForServer();
-  if (meta.texture !== texture) {
-    throw new Error(`server texture mismatch: expected ${texture}, got ${meta.texture}`);
-  }
   if (!Number.isInteger(meta.counts?.building_parts) || meta.counts.building_parts < 1) {
     throw new Error(`server has no detailed building parts: ${JSON.stringify(meta.counts)}`);
   }

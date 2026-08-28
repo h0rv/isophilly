@@ -23,6 +23,7 @@ BUILDING_SIMPLIFY_METERS = 0.35
 GROUND_SIMPLIFY_METERS = 1.0
 STREET_SIMPLIFY_METERS = 1.0
 MIN_BUILDING_AREA_METERS = 10.0
+MIN_BUILDING_COUNT = 500_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,10 @@ class Source:
     filename: str
     url: str
     extension: str = "geojson"
+    minimum_bytes: int = 1
+
+    def accepts_size(self, size: int) -> bool:
+        return size >= self.minimum_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,7 @@ SOURCES = Sources(
         "https://hub.arcgis.com/api/v3/datasets/"
         "ab9e89e1273f445bb265846c90b38a96_0/downloads/data?"
         "format=geojson&spatialRefId=4326&where=1%3D1",
+        minimum_bytes=300_000_000,
     ),
     water=Source(
         "Hydrology Polygons",

@@ -21,30 +21,31 @@ uv run --locked poe prebuild
 uv run --locked poe serve
 ```
 
-Open <http://127.0.0.1:3000>. The default is deterministic pixel processing.
+Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
 `ingest` downloads official City Limits, Building Footprints, Hydrology, PPR
 Properties, and Street Centerline snapshots. It also downloads height-backed
 OpenStreetMap building parts and the official 2015 Center City 3D model. It
 writes the compact `philly.bin` and `streets.bin` inputs plus a `meta.json`
 provenance record. The download and conversion are the slow first run step.
+The ingest rejects short building exports and uses the newest verified complete
+snapshot instead of replacing a full city artifact with partial live data.
 Existing checkouts must rerun `ingest` because world format version 4 adds the
 3D mesh records and sourced facade colors.
-`prebuild` creates the overview tiles. Requested tiles through z8 are reused
-from `data/tiles/`; z9+ render lazily and stay browser/edge-only so local disk
-usage remains bounded. Aerial source crops come from the native three-inch 2025
-PASDA service as a 1024 pixel crop of the exact ground extent for each requested
-isometric tile. The first visit needs network access. Cold source requests are
-serialized so the public image service is not overloaded. A failed image request
-returns a temporary geometry tile and is retried later. Source crops are reused
-by both texture modes under `data/aerial/`. The cache has a hard 1 GiB ceiling.
+`prebuild` renders the detailed z8 scene and creates z0 through z7 by resizing
+those tiles. This gives every overview the same textured scene instead of a
+different drawing style. The command uses all available processors, resumes
+from existing z8 tiles, and writes a completion marker only after the whole
+pyramid is ready.
 
-```sh
-uv run --locked poe serve-full   # photographic aerial color
-uv run --locked poe serve-plain  # original geometry-only palette
-```
+The server reads z0 through z8 from `data/tiles/`. It renders z9 through z12 on
+demand and saves those tiles for later runs. The browser shows the textured z8
+parent while a deeper tile loads. It never replaces a missing texture with a
+plain geometry tile.
 
-The same setting is available directly as `--texture pixel|full|none` on both
-the `serve` and `prebuild` commands.
+Aerial crops come from the native three inch 2025 PASDA service. Each request
+uses a 512 pixel crop of the exact ground area for one isometric tile. Up to
+eight source requests and tile renders can run at once. Source crops are stored
+under `data/aerial/` with a hard 1 GiB limit.
 
 After the first ingest, the usual development loop is only:
 
@@ -61,7 +62,6 @@ and attribution notes](docs/DATA.md) before publishing a build.
 npm ci
 uv run --locked poe check
 uv run --locked poe visual
-uv run --locked poe visual-full
 ```
 
 Install a current Node.js LTS release and
@@ -81,18 +81,20 @@ OpenDataPhilly geometry + official Center City meshes + OSM parts + PASDA aerial
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
                                       |
                                       v
-Rust + rstar/tiny-skia      ->  full or pixel-textured 256 px PNG tiles
+Rust + rstar/tiny-skia      ->  textured pixel z8 tiles
+                                      |
+                                      v
+Rust + image               ->  z0 through z7 image pyramid
                                       |
                                       v
                               canvas deep-zoom viewer
 ```
 
 Python is not in the request path. The Rust server starts from one compact
-geometry file, bounds concurrent source fetches and tile renders, warms low
-zooms in the background, and serves the dependency-free viewer. Source imagery
-and rendered tiles persist across runs within fixed cache limits. The service
-binds to localhost by default; production deployment should prebuild or put it
-behind a static/edge cache.
+geometry file and serves the completed image pyramid. It only renders deeper
+tiles when they are requested. Source imagery and rendered tiles persist across
+runs. The service binds to localhost by default. A production deployment can
+serve the pyramid as static files from an edge cache.
 
 ## Project status
 

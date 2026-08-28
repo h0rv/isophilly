@@ -32,7 +32,6 @@
     @media (max-width: 620px) {
       header { gap: .5rem; }
       #status { max-width: 9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .orientation span { display: none; }
       .controls { margin-left: auto; }
     }
   </style>
@@ -42,7 +41,7 @@
   <header>
     <h1>geo-philly</h1>
     <span id="status" aria-live="polite">loading city geometry…</span>
-    <span class="orientation" title="North is up and Broad Street is vertical">↑ N <span>· Broad St</span></span>
+    <span class="orientation" title="North points up and right">↗ N</span>
     <nav class="controls" aria-label="Map controls">
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
