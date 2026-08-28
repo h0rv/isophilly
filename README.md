@@ -39,15 +39,13 @@ moving while CPU work runs. It resumes from existing z8 tiles and writes a
 completion marker only after the whole pyramid is ready. Run
 `uv run --locked poe prebuild --jobs N` to choose a different worker count.
 
-The server reads z0 through z8 from `data/tiles/`. It renders z9 through z12 on
-demand and saves those tiles for later runs. The browser shows the textured z8
-parent while a deeper tile loads. It never replaces a missing texture with a
-plain geometry tile.
+The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
+the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
+It does not switch to another renderer or replace textures with plain geometry.
 
 Aerial crops come from the native three inch 2025 PASDA service. Each z8 request
-uses a 512 pixel crop of the source area for one isometric tile. Deeper tiles
-reuse and crop that z8 source image. Up to 32 prebuild jobs can fetch source
-requests at once. Source crops are stored under
+uses a 512 pixel crop of the source area for one isometric tile. Up to 32
+prebuild jobs can fetch source requests at once. Source crops are stored under
 `data/aerial/` with a hard 2 GiB limit.
 
 After the first ingest, the usual development loop is only:
@@ -94,11 +92,11 @@ Rust + image               ->  z0 through z7 image pyramid
 ```
 
 Python is not in the request path. The Rust server starts from one compact
-geometry file plus 367 texture atlases and serves the completed image pyramid.
-It only renders deeper tiles when they are requested. Source imagery and
-rendered tiles persist across runs. The service binds to localhost by default.
-A production deployment can serve the pyramid as static files from an edge
-cache.
+geometry file and serves the completed image pyramid. It does not load aerial
+sources or texture atlases and does not render during requests. Source imagery
+and rendered tiles persist across runs. The service binds to localhost by
+default. A production deployment can serve the pyramid as static files from an
+edge cache.
 
 ## Project status
 

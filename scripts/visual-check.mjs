@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,12")
+const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,10")
   .split(",")
   .map((value) => Number.parseInt(value, 10));
-if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 12)) {
+if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 10)) {
   throw new Error(`invalid GEO_PHILLY_VISUAL_ZOOMS: ${process.env.GEO_PHILLY_VISUAL_ZOOMS}`);
 }
 const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
@@ -20,6 +20,7 @@ const server = spawn("target/release/geo-philly", ["serve", "--port", String(por
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOutput = "";
+let tileZoomLimit = 0;
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
 });
@@ -105,6 +106,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     }
     return {
       requested: Number(element.dataset.requested),
+      tileZoom: Number(element.dataset.tileZoom),
       pending: Number(element.dataset.pending),
       uncovered: Number(element.dataset.uncovered),
       failed: Number(element.dataset.failed),
@@ -115,6 +117,12 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   if (errors.length > 0) throw new Error(`z${zoom} browser errors:\n${errors.join("\n")}`);
   if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
+  }
+  const expectedTileZoom = Math.min(zoom, tileZoomLimit);
+  if (canvas.tileZoom !== expectedTileZoom) {
+    throw new Error(
+      `z${zoom} used tile z${canvas.tileZoom}; expected canonical z${expectedTileZoom}`,
+    );
   }
   if (canvas.sampledColors < 8 || canvas.nonGroundRatio < 0.01) {
     throw new Error(`z${zoom} appears blank: ${JSON.stringify(canvas)}`);
@@ -181,7 +189,7 @@ async function interactions(browser, meta) {
 async function profile(meta) {
   const bounds = /** @type {number[]} */ (meta.iso_bounds);
   const hall = /** @type {number[]} */ (meta.city_hall);
-  const zoom = Math.min(8, /** @type {number} */ (meta.max_zoom));
+  const zoom = /** @type {number} */ (meta.max_tile_zoom);
   const side = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
   const count = 2 ** zoom;
   const x = Math.floor(((hall[0] - bounds[0]) / side) * count);
@@ -200,23 +208,17 @@ async function profile(meta) {
   };
   const first = await timedFetch();
   const second = await timedFetch();
-  const tileCoordinates = (level) => ({
-    x: Math.floor(((hall[0] - bounds[0]) / side) * 2 ** level),
-    y: Math.floor(((hall[1] - bounds[1]) / side) * 2 ** level),
-  });
-  const deepZoom = Math.min(9, /** @type {number} */ (meta.max_zoom));
-  const deep = tileCoordinates(deepZoom);
-  const deepResponse = await fetch(
-    `${origin}/tiles/${deepZoom}/${deep.x}/${deep.y}.png?v=${meta.tile_version}`,
+  const overzoomResponse = await fetch(
+    `${origin}/tiles/${zoom + 1}/${x * 2}/${y * 2}.png?v=${meta.tile_version}`,
   );
-  const emptyZoom = /** @type {number} */ (meta.max_zoom);
-  const emptyResponse = await fetch(`${origin}/tiles/${emptyZoom}/0/0.png?v=${meta.tile_version}`);
+  const emptyResponse = await fetch(`${origin}/tiles/${zoom}/0/0.png?v=${meta.tile_version}`);
   const policy = {
-    deep: deepResponse.headers.get("x-tile-cache"),
+    canonical: second.source,
+    overzoom: overzoomResponse.status,
     empty: emptyResponse.headers.get("x-tile-cache"),
   };
-  await Promise.all([deepResponse.arrayBuffer(), emptyResponse.arrayBuffer()]);
-  if (!new Set(["rendered", "disk"]).has(policy.deep) || policy.empty !== "empty") {
+  await Promise.all([overzoomResponse.arrayBuffer(), emptyResponse.arrayBuffer()]);
+  if (policy.canonical !== "disk" || policy.overzoom !== 404 || policy.empty !== "empty") {
     throw new Error(`tile cache policy failed: ${JSON.stringify(policy)}`);
   }
   return { zoom, x, y, first, second, policy };
@@ -226,6 +228,10 @@ let browser;
 try {
   await mkdir(artifactDir, { recursive: true });
   const meta = await waitForServer();
+  tileZoomLimit = meta.max_tile_zoom;
+  if (!Number.isInteger(tileZoomLimit) || tileZoomLimit < 0 || tileZoomLimit > meta.max_zoom) {
+    throw new Error(`server has an invalid tile zoom limit: ${JSON.stringify(meta)}`);
+  }
   if (!Number.isInteger(meta.counts?.building_parts) || meta.counts.building_parts < 1) {
     throw new Error(`server has no detailed building parts: ${JSON.stringify(meta.counts)}`);
   }

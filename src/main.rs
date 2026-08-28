@@ -48,14 +48,14 @@ async fn main() -> io::Result<()> {
         .init();
     let cli = Cli::parse();
     let world = Arc::new(load_world(Path::new("data/clean/philly.bin"))?);
-    let aerial = Arc::new(AerialSource::open("data/aerial")?);
-    let mesh_textures = Arc::new(MeshTextureSource::open(
-        "data/clean/mesh-textures",
-        &world.texture_ids,
-        world.texture_sha256,
-    )?);
     match cli.command {
         Command::Prebuild { jobs } => {
+            let aerial = AerialSource::open("data/aerial")?;
+            let mesh_textures = MeshTextureSource::open(
+                "data/clean/mesh-textures",
+                &world.texture_ids,
+                world.texture_sha256,
+            )?;
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(jobs.get())
                 .build()
@@ -63,7 +63,7 @@ async fn main() -> io::Result<()> {
             println!("prebuild using {jobs} workers");
             pool.install(|| prebuild(&world, &aerial, &mesh_textures))
         }
-        Command::Serve { port } => serve(world, aerial, mesh_textures, port).await,
+        Command::Serve { port } => serve(world, port).await,
     }
 }
 

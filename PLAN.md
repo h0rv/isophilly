@@ -29,8 +29,8 @@ uv run poe check
 
 Generated data stays under the ignored `data/` directory. `prebuild` is
 restartable and uses all available processors. The server requires a completed
-z0 through z8 pyramid. Z9 through z12 use the same textured renderer, load only
-when requested, and persist across runs.
+z0 through z8 pyramid. The two closer view levels magnify the canonical z8 pixels and
+never invoke a second renderer.
 
 ## Rendering rules
 
@@ -38,7 +38,7 @@ when requested, and persist across runs.
 - Draw only the official textured Center City triangles as 3D geometry.
 - Use 2025 PASDA aerial crops for the ground across the rest of the city.
 - Do not draw untextured buildings, streets, parks, or water over the imagery.
-- Show a lower resolution parent while a deep tile loads.
+- Show a lower resolution parent while a canonical pyramid tile loads.
 - Never substitute a plain geometry tile for a missing texture.
 
 There is no 3D engine, runtime Python, or generated imagery.

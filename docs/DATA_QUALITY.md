@@ -107,6 +107,6 @@ image for roads instead of drawing these centerlines.
 
 1. Get written permission to redistribute tiles that include the City texture
    atlases.
-2. Precompute the most visited z9 through z12 Center City tiles for production.
+2. Validate that the canonical z8 pixels stay aligned during every zoom step.
 3. Find a newer official textured 3D scene that can replace the 2015 capture
    without losing the current geometry and facade detail.

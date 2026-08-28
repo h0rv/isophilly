@@ -7,6 +7,7 @@
  *   landmarks: { name: string, point: [number, number], min_zoom: number, color: string }[],
  *   counts: { buildings: number, building_parts: number, building_meshes: number, water: number, parks: number, streets: number },
  *   tile_version: string,
+ *   max_tile_zoom: number,
  *   max_zoom: number,
  *   home_zoom: number,
  * }} Meta
@@ -169,10 +170,17 @@ function draw() {
 
 function drawNow() {
   if (meta === undefined) return;
-  const { iso_bounds: bounds, city_hall: cityHall, counts, max_zoom: maxZoom } = city();
+  const {
+    iso_bounds: bounds,
+    city_hall: cityHall,
+    counts,
+    max_tile_zoom: maxTileZoom,
+    max_zoom: maxZoom,
+  } = city();
   ctx.fillStyle = "#d9d1c3";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
-  const z = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
+  const viewZoom = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
+  const z = Math.min(viewZoom, maxTileZoom);
   const side = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
   const scale = worldScale();
   const count = 2 ** z;
@@ -223,10 +231,11 @@ function drawNow() {
     }
   }
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
-  drawLandmarks(z, panX, panY, scale);
+  drawLandmarks(viewZoom, panX, panY, scale);
   const pending = requested - loaded - failed;
-  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${z}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
-  canvas.dataset.zoom = String(z);
+  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${viewZoom}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
+  canvas.dataset.zoom = String(viewZoom);
+  canvas.dataset.tileZoom = String(z);
   canvas.dataset.requested = String(requested);
   canvas.dataset.pending = String(pending);
   canvas.dataset.uncovered = String(uncovered);

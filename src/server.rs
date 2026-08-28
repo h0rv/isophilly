@@ -1,12 +1,4 @@
-use std::{
-    fs, io,
-    path::{Path as FsPath, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
+use std::{io, path::PathBuf, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -16,28 +8,23 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use tokio::sync::{Mutex, Semaphore};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, tile_path},
-    render::{render_blank_tile, render_tile},
-    texture::{AerialSource, AerialTile},
+    render::render_blank_tile,
+    texture::AerialSource,
     world::{World, isometric},
 };
 
 #[derive(Clone)]
 struct AppState {
     world: Arc<World>,
-    aerial: Arc<AerialSource>,
-    mesh_textures: Arc<MeshTextureSource>,
     tile_dir: PathBuf,
     tile_version: String,
     blank_tile: Arc<Vec<u8>>,
-    render_slots: Arc<Semaphore>,
-    render_locks: Arc<Vec<Arc<Mutex<()>>>>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +34,7 @@ struct Meta {
     landmarks: Vec<Landmark>,
     counts: Counts,
     tile_version: String,
+    max_tile_zoom: u8,
     max_zoom: u8,
     home_zoom: u8,
 }
@@ -69,26 +57,12 @@ struct Counts {
     streets: usize,
 }
 
-#[derive(Clone, Copy)]
-struct TileCoord {
-    z: u8,
-    x: u32,
-    y: u32,
-}
-
-const RENDER_VERSION: &str = "v22-real-facades";
-const MAX_ZOOM: u8 = 12;
+const PYRAMID_VERSION: &str = "v23-one-textured-pyramid";
+const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
-const RENDER_LOCKS: usize = 64;
 const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);
-static TEMPORARY_TILE_ID: AtomicU64 = AtomicU64::new(0);
 
-pub async fn serve(
-    world: Arc<World>,
-    aerial: Arc<AerialSource>,
-    mesh_textures: Arc<MeshTextureSource>,
-    port: u16,
-) -> io::Result<()> {
+pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
     let tile_version = tile_version(&world);
     let tile_dir = tile_cache_dir(&tile_version);
     if !pyramid::is_complete(&tile_dir) {
@@ -99,17 +73,9 @@ pub async fn serve(
     }
     let state = AppState {
         world,
-        aerial,
-        mesh_textures,
         tile_dir,
         tile_version,
         blank_tile: Arc::new(render_blank_tile()?),
-        render_slots: Arc::new(Semaphore::new(render_workers())),
-        render_locks: Arc::new(
-            (0..RENDER_LOCKS)
-                .map(|_| Arc::new(Mutex::new(())))
-                .collect(),
-        ),
     };
     let app = Router::new()
         .route("/", get(index))
@@ -183,7 +149,8 @@ async fn meta(State(state): State<AppState>) -> Json<Meta> {
             streets: state.world.streets.len(),
         },
         tile_version: state.tile_version.clone(),
-        max_zoom: MAX_ZOOM,
+        max_tile_zoom: ART_ZOOM,
+        max_zoom: MAX_VIEW_ZOOM,
         home_zoom: HOME_ZOOM,
     })
 }
@@ -196,133 +163,20 @@ async fn tile(
     let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if z > MAX_ZOOM || x >= 1 << z || y >= 1 << z {
+    if z > ART_ZOOM || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
     let path = tile_path(&state.tile_dir, z, x, y);
     match tokio::fs::read(&path).await {
-        Ok(png) => return logged_png(png, "disk", z, x, y, started),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(png) => logged_png(png, "disk", z, x, y, started),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            logged_png(state.blank_tile.as_ref().clone(), "empty", z, x, y, started)
+        }
         Err(error) => {
             warn!(?error, path = %path.display(), "tile cache read failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
-    if z <= ART_ZOOM {
-        return logged_png(state.blank_tile.as_ref().clone(), "empty", z, x, y, started);
-    }
-    let bounds = state.world.iso_bounds.tile(z, x, y);
-    if !state
-        .world
-        .has_content(&state.world.source_envelope(bounds))
-    {
-        return logged_png(state.blank_tile.as_ref().clone(), "empty", z, x, y, started);
-    }
-    match render_requested_tile(&state, &path, TileCoord { z, x, y }, started).await {
-        Ok((png, cache)) => logged_png(png, cache, z, x, y, started),
-        Err(status) => status.into_response(),
-    }
-}
-
-async fn render_requested_tile(
-    state: &AppState,
-    path: &std::path::Path,
-    coord: TileCoord,
-    started: Instant,
-) -> Result<(Vec<u8>, &'static str), StatusCode> {
-    let TileCoord { z, x, y } = coord;
-    let queued = Instant::now();
-    let lock = Arc::clone(&state.render_locks[tile_lock_index(coord)]);
-    let tile_guard = lock.lock_owned().await;
-    match tokio::fs::read(path).await {
-        Ok(png) => return Ok((png, "disk")),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            warn!(?error, path = %path.display(), "tile cache read failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-    let render_slot = Arc::clone(&state.render_slots)
-        .acquire_owned()
-        .await
-        .map_err(|error| {
-            warn!(?error, z, x, y, "tile render queue closed");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
-    let queue_ms = queued.elapsed().as_millis();
-    let rendering = Instant::now();
-    let world = Arc::clone(&state.world);
-    let aerial = Arc::clone(&state.aerial);
-    let mesh_textures = Arc::clone(&state.mesh_textures);
-    let path = path.to_owned();
-    let rendered = tokio::task::spawn_blocking(move || {
-        let _tile_guard = tile_guard;
-        let _render_slot = render_slot;
-        let rendered = render(&world, &aerial, &mesh_textures, coord)?;
-        write_tile_atomically(&path, &rendered)?;
-        Ok::<_, io::Error>(rendered)
-    })
-    .await
-    .map_err(|error| {
-        warn!(?error, z, x, y, "tile worker failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .map_err(|error| {
-        warn!(?error, z, x, y, "textured tile unavailable");
-        StatusCode::SERVICE_UNAVAILABLE
-    })?;
-    let render_ms = rendering.elapsed().as_millis();
-    info!(
-        z,
-        x,
-        y,
-        queue_ms,
-        render_ms,
-        elapsed_ms = started.elapsed().as_millis(),
-        "tile rendered"
-    );
-    Ok((rendered, "rendered"))
-}
-
-fn tile_lock_index(coord: TileCoord) -> usize {
-    let TileCoord { z, x, y } = coord;
-    x.wrapping_mul(31)
-        .wrapping_add(y.wrapping_mul(17))
-        .wrapping_add(u32::from(z)) as usize
-        % RENDER_LOCKS
-}
-
-fn write_tile_atomically(path: &FsPath, png: &[u8]) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("tile cache path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let id = TEMPORARY_TILE_ID.fetch_add(1, Ordering::Relaxed);
-    let temporary = path.with_extension(format!("png.part-{}-{id}", std::process::id()));
-    fs::write(&temporary, png)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(_) if path.exists() => {
-            let _removed = fs::remove_file(temporary);
-            Ok(())
-        }
-        Err(error) => {
-            let _removed = fs::remove_file(temporary);
-            Err(error)
-        }
-    }
-}
-
-fn render(
-    world: &World,
-    aerial: &AerialSource,
-    mesh_textures: &MeshTextureSource,
-    coord: TileCoord,
-) -> io::Result<Vec<u8>> {
-    let TileCoord { z, x, y } = coord;
-    let bounds = world.iso_bounds.tile(z, x, y);
-    let aerial = AerialTile::for_isometric_tile(aerial, bounds, z, x, y)?;
-    render_tile(world, &aerial, mesh_textures, z, x, y)
 }
 
 fn logged_png(
@@ -341,10 +195,6 @@ fn logged_png(
         elapsed_ms = started.elapsed().as_millis(),
         "tile served"
     );
-    png_response(png, cache)
-}
-
-fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
     (
         [
             (header::CONTENT_TYPE, "image/png"),
@@ -356,12 +206,8 @@ fn png_response(png: Vec<u8>, cache: &'static str) -> Response {
         .into_response()
 }
 
-fn render_workers() -> usize {
-    std::thread::available_parallelism().map_or(2, |count| count.get().clamp(1, 8))
-}
-
 fn tile_version(world: &World) -> String {
-    format!("{RENDER_VERSION}-{:016x}", world.data_version)
+    format!("{PYRAMID_VERSION}-{:016x}", world.data_version)
 }
 
 fn tile_cache_dir(tile_version: &str) -> PathBuf {

@@ -126,14 +126,14 @@ Textured rendering requests 2025 Philadelphia orthophotography from the
 [PASDA ArcGIS image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer).
 The source advertises three inch imagery. The renderer asks for a 512 by 512
 JPEG in EPSG:32129 over the source footprint of each z8 isometric tile. The crop
-includes a two pixel overlap. Z9 through z12 reuse and crop that z8 source
-image. The renderer never stretches a whole city preview.
+includes a two pixel overlap. The renderer never stretches a whole city
+preview.
 
 The renderer snaps sampling to a global grid, averages a 3 by 3 source
 neighborhood, and posterizes each channel. It does not generate imagery. Source
 crops persist under `data/aerial/` until the fixed 2 GiB cache ceiling is
-reached. The prebuild renders z8 and derives the lower levels from it. Requested
-z9 through z12 tiles are also saved for later runs.
+reached. The prebuild renders z8 and derives the lower levels from it. The
+browser magnifies z8 for closer views instead of generating more tiles.
 
 ## Provenance
 

@@ -36,9 +36,8 @@
   cover source data or tiles.
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to
   localhost and is a development origin, not a hardened public edge server.
-- Prefer fully prebuilt static tiles for an untrusted public audience. If the
-  dynamic z9 through z12 renderer remains reachable, enforce request rate
-  limits and a disk quota at the edge.
+- Serve the fully prebuilt static pyramid for an untrusted public audience. No
+  dynamic tile renderer is needed in production.
 - Serve immutable, versioned tile URLs with long cache lifetimes. Serve the HTML
   entry point with revalidation so a deployment cannot strand users on stale
   tile versions.
