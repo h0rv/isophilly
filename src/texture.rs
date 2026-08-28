@@ -1,8 +1,9 @@
 use std::{
+    collections::{HashMap, VecDeque},
     fs, io,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -15,9 +16,11 @@ use crate::world::Bounds;
 
 const SOURCE_CACHE_VERSION: &str = "2025-512-v4-classic-iso";
 const SOURCE_SIZE: u32 = 512;
+const SOURCE_ZOOM: u8 = 8;
 const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
-const SOURCE_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
-const DOWNLOAD_CONCURRENCY: usize = 8;
+const SOURCE_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DOWNLOAD_LOCKS: usize = 256;
+const DECODED_CACHE_IMAGES: usize = 64;
 const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer/export";
 
 pub struct AerialSource {
@@ -25,7 +28,14 @@ pub struct AerialSource {
     root: PathBuf,
     cached_bytes: AtomicU64,
     temporary_id: AtomicU64,
-    download_locks: [Mutex<()>; DOWNLOAD_CONCURRENCY],
+    download_locks: [Mutex<()>; DOWNLOAD_LOCKS],
+    decoded: Mutex<DecodedCache>,
+}
+
+#[derive(Default)]
+struct DecodedCache {
+    images: HashMap<PathBuf, Arc<RgbImage>>,
+    order: VecDeque<PathBuf>,
 }
 
 impl AerialSource {
@@ -43,6 +53,7 @@ impl AerialSource {
             cached_bytes: AtomicU64::new(cached_bytes),
             temporary_id: AtomicU64::new(0),
             download_locks: std::array::from_fn(|_| Mutex::new(())),
+            decoded: Mutex::new(DecodedCache::default()),
         })
     }
 
@@ -53,24 +64,49 @@ impl AerialSource {
             .join(z.to_string())
             .join(x.to_string())
             .join(format!("{y}.jpg"));
+        let _guard = self.download_locks[download_shard(z, x, y)]
+            .lock()
+            .map_err(|_| io::Error::other("aerial download lock poisoned"))?;
+        if let Some(image) = self.decoded(&path)? {
+            return Ok(AerialTile { bounds, image });
+        }
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let _guard = self.download_locks[download_shard(z, x, y)]
-                    .lock()
-                    .map_err(|_| io::Error::other("aerial download lock poisoned"))?;
-                match fs::read(&path) {
-                    Ok(bytes) => bytes,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        self.download(&path, bounds)?
-                    }
-                    Err(error) => return Err(error),
-                }
+                self.download(&path, bounds)?
             }
             Err(error) => return Err(error),
         };
-        let image = decode_source(&bytes)?;
+        let image = Arc::new(decode_source(&bytes)?);
+        self.remember(path, Arc::clone(&image))?;
         Ok(AerialTile { bounds, image })
+    }
+
+    fn decoded(&self, path: &Path) -> io::Result<Option<Arc<RgbImage>>> {
+        let cache = self
+            .decoded
+            .lock()
+            .map_err(|_| io::Error::other("decoded aerial cache poisoned"))?;
+        Ok(cache.images.get(path).cloned())
+    }
+
+    fn remember(&self, path: PathBuf, image: Arc<RgbImage>) -> io::Result<()> {
+        let mut cache = self
+            .decoded
+            .lock()
+            .map_err(|_| io::Error::other("decoded aerial cache poisoned"))?;
+        if cache.images.contains_key(&path) {
+            return Ok(());
+        }
+        while cache.images.len() >= DECODED_CACHE_IMAGES {
+            let Some(oldest) = cache.order.pop_front() else {
+                break;
+            };
+            cache.images.remove(&oldest);
+        }
+        cache.order.push_back(path.clone());
+        cache.images.insert(path, image);
+        Ok(())
     }
 
     fn download(&self, path: &Path, bounds: Bounds) -> io::Result<Vec<u8>> {
@@ -165,7 +201,7 @@ fn download_shard(z: u8, x: u32, y: u32) -> usize {
         .wrapping_mul(31)
         .wrapping_add(y.wrapping_mul(17))
         .wrapping_add(u32::from(z));
-    hash as usize % DOWNLOAD_CONCURRENCY
+    hash as usize % DOWNLOAD_LOCKS
 }
 
 fn decode_source(bytes: &[u8]) -> io::Result<RgbImage> {
@@ -183,7 +219,7 @@ fn decode_source(bytes: &[u8]) -> io::Result<RgbImage> {
 
 pub struct AerialTile {
     bounds: Bounds,
-    image: RgbImage,
+    image: Arc<RgbImage>,
 }
 
 impl AerialTile {
@@ -194,10 +230,30 @@ impl AerialTile {
         x: u32,
         y: u32,
     ) -> io::Result<Self> {
-        let source_bounds = iso_bounds.ground_source_bounds();
+        let (source_bounds, source_z, source_x, source_y) = if z <= SOURCE_ZOOM {
+            (iso_bounds, z, x, y)
+        } else {
+            let factor = 1_u32 << (z - SOURCE_ZOOM);
+            let width = iso_bounds.width();
+            let height = iso_bounds.height();
+            let offset_x = (x % factor) as f32;
+            let offset_y = (y % factor) as f32;
+            (
+                Bounds {
+                    min_x: iso_bounds.min_x - offset_x * width,
+                    min_y: iso_bounds.min_y - offset_y * height,
+                    max_x: iso_bounds.min_x + (factor as f32 - offset_x) * width,
+                    max_y: iso_bounds.min_y + (factor as f32 - offset_y) * height,
+                },
+                SOURCE_ZOOM,
+                x / factor,
+                y / factor,
+            )
+        };
+        let source_bounds = source_bounds.ground_source_bounds();
         let overlap = source_bounds.width().max(source_bounds.height()) / SOURCE_SIZE as f32
             * SOURCE_OVERLAP_PIXELS;
-        source.tile(source_bounds.pad(overlap), z, x, y)
+        source.tile(source_bounds.pad(overlap), source_z, source_x, source_y)
     }
 
     pub fn sample(&self, x: f32, y: f32, block_size: f32) -> [u8; 3] {
@@ -214,13 +270,6 @@ impl AerialTile {
             .clamp(0.0, 1.0)
             .mul_add(self.image.height().saturating_sub(1) as f32, 0.0);
         self.box_average(u, v).map(posterize)
-    }
-
-    pub fn contains(&self, x: f32, y: f32) -> bool {
-        x >= self.bounds.min_x
-            && x <= self.bounds.max_x
-            && y >= self.bounds.min_y
-            && y <= self.bounds.max_y
     }
 
     fn box_average(&self, u: f32, v: f32) -> [u8; 3] {
@@ -268,9 +317,7 @@ fn posterize(channel: u8) -> u8 {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{
-        AerialSource, DOWNLOAD_CONCURRENCY, SOURCE_CACHE_MAX_BYTES, download_shard, posterize,
-    };
+    use super::{AerialSource, DOWNLOAD_LOCKS, SOURCE_CACHE_MAX_BYTES, download_shard, posterize};
 
     #[test]
     fn posterize_uses_fixed_thirty_two_value_steps() {
@@ -280,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn source_cache_has_a_fixed_one_gibibyte_limit() -> std::io::Result<()> {
-        assert_eq!(SOURCE_CACHE_MAX_BYTES, 1_073_741_824);
+    fn source_cache_has_a_fixed_two_gibibyte_limit() -> std::io::Result<()> {
+        assert_eq!(SOURCE_CACHE_MAX_BYTES, 2_147_483_648);
         let source = AerialSource::open("target/nonexistent-aerial-test-cache")?;
         source
             .cached_bytes
@@ -292,17 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn downloads_are_bounded_and_same_tile_is_single_flight() -> std::io::Result<()> {
+    fn download_locks_keep_the_same_tile_single_flight() -> std::io::Result<()> {
         let first = download_shard(5, 12, 8);
 
-        assert!(first < DOWNLOAD_CONCURRENCY);
+        assert!(first < DOWNLOAD_LOCKS);
         assert_eq!(first, download_shard(5, 12, 8));
         assert_eq!(
-            (0..DOWNLOAD_CONCURRENCY)
+            (0..DOWNLOAD_LOCKS)
                 .map(|x| download_shard(5, x as u32, 8))
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
-            DOWNLOAD_CONCURRENCY
+            DOWNLOAD_LOCKS
         );
         let source = AerialSource::open("target/nonexistent-aerial-lock-test-cache")?;
         let guard = source.download_locks[first]

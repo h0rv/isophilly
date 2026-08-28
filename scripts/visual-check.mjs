@@ -1,10 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9")
+const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,12")
   .split(",")
   .map((value) => Number.parseInt(value, 10));
 if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 12)) {
@@ -107,12 +107,13 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       requested: Number(element.dataset.requested),
       pending: Number(element.dataset.pending),
       uncovered: Number(element.dataset.uncovered),
+      failed: Number(element.dataset.failed),
       nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
       sampledColors: colors.size,
     };
   });
   if (errors.length > 0) throw new Error(`z${zoom} browser errors:\n${errors.join("\n")}`);
-  if (canvas.pending !== 0 || canvas.uncovered !== 0) {
+  if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
   }
   if (canvas.sampledColors < 8 || canvas.nonGroundRatio < 0.01) {
@@ -130,6 +131,50 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       empty: tileRequests.filter((request) => request.cache === "empty").length,
     },
   };
+}
+
+/**
+ * @param {import("playwright-core").Browser} browser
+ * @param {Record<string, unknown>} meta
+ */
+async function interactions(browser, meta) {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(`${origin}/?z=8`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
+    timeout: tileTimeout,
+  });
+  const controls = await page.locator(".controls button").evaluateAll((buttons) =>
+    buttons
+      .filter((button) => !button.hidden)
+      .map((button) => {
+        const bounds = button.getBoundingClientRect();
+        return { id: button.id, width: bounds.width, height: bounds.height };
+      }),
+  );
+  if (controls.some((control) => control.width < 44 || control.height < 44)) {
+    throw new Error(`mobile controls are too small: ${JSON.stringify(controls)}`);
+  }
+  await page.locator("#zoom-in").click();
+  await page.waitForSelector('canvas[data-zoom="9"]');
+  const canvas = page.locator("#map");
+  await canvas.focus();
+  const cameraBefore = Number(await canvas.getAttribute("data-camera-x"));
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (before) => Number(document.querySelector("#map")?.dataset.cameraX) > before,
+    cameraBefore,
+  );
+  const cameraAfter = Number(await canvas.getAttribute("data-camera-x"));
+  if (!(cameraAfter > cameraBefore)) throw new Error("keyboard pan did not move the camera");
+  await page.locator("#home").click();
+  await page.locator("details").click();
+  await page.screenshot({ path: `${artifactDir}/mobile.png` });
+
+  const landmarks = /** @type {{ name: string }[]} */ (meta.landmarks);
+  if (!landmarks.some((landmark) => landmark.name === "Rocky")) {
+    throw new Error("Rocky landmark is missing");
+  }
+  return { viewport: [390, 844], controls, keyboardPan: true, rocky: true };
 }
 
 /** @param {Record<string, unknown>} meta */
@@ -190,6 +235,7 @@ try {
   if (!Array.isArray(meta.city_hall) || meta.city_hall.length !== 2) {
     throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
   }
+  if (!Array.isArray(meta.landmarks)) throw new Error("server has no landmarks");
   const rendering = await profile(meta);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
@@ -212,11 +258,30 @@ try {
       }),
     );
     await page.close();
+    const rocky = /** @type {{ name: string, point: [number, number] }[]} */ (meta.landmarks).find(
+      (landmark) => landmark.name === "Rocky",
+    );
+    if (rocky === undefined) throw new Error("Rocky landmark is missing");
+    const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    results.push(await capture(rockyPage, 8, { name: "rocky", center: rocky.point }));
+    await rockyPage.close();
   }
+  const interactionResults = await interactions(browser, meta);
+  const gitStatus = execFileSync("git", ["status", "--porcelain"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
   const report = {
     generatedAt: new Date().toISOString(),
+    gitSha: execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim(),
+    gitDirty: gitStatus.length > 0,
+    tileVersion: meta.tile_version,
     rendering,
     views: results,
+    interactions: interactionResults,
   };
   await writeFile(`${artifactDir}/report.json`, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

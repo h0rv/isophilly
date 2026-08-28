@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28",
     "pyarrow>=20",
     "pyogrio>=0.10",
+    "pyproj>=3.7",
 ]
 
 [dependency-groups]

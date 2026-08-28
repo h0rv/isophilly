@@ -3,16 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Explore Philadelphia as a fast isometric map built from public city geometry and 2025 aerial photography.">
+  <meta name="description" content="Explore Philadelphia through the City's textured 3D scene and 2025 aerial photography.">
   <meta name="theme-color" content="#191714">
   <title>geo-philly</title>
   <link rel="icon" href="data:,">
   <style>
     :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
     canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
     canvas.dragging { cursor: grabbing; }
+    canvas:focus-visible { outline: 3px solid #b8754f; outline-offset: -3px; }
     header { position: fixed; z-index: 1; background: #191714eb; color: #f6f0e6; backdrop-filter: blur(6px); }
     header { top: 0; left: 0; right: 0; display: flex; gap: .75rem; align-items: center; min-height: 2.75rem; padding: .5rem .85rem; }
     h1 { margin: 0; font-size: 1.05rem; letter-spacing: -.025em; }
@@ -28,11 +30,15 @@
     .legend a { color: #c7bfb2; }
     footer { position: fixed; right: .45rem; bottom: .35rem; z-index: 1; padding: .2rem .35rem; background: #191714d9; border-radius: .15rem; font-size: .65rem; }
     footer a { color: #ded6ca; }
-    i { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem; vertical-align: -.08rem; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     @media (max-width: 620px) {
-      header { gap: .5rem; }
-      #status { max-width: 9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      header { gap: .4rem; padding: .35rem .45rem; }
+      h1 { font-size: .95rem; }
+      #status { max-width: 7.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .orientation { display: none; }
       .controls { margin-left: auto; }
+      button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; }
+      .legend { max-width: calc(100vw - 1rem); white-space: normal; }
     }
   </style>
   <script src="/app.js" defer></script>
@@ -46,25 +52,25 @@
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
       <button id="home">City Hall</button>
+      <button id="retry" hidden>Retry</button>
     </nav>
     <details>
-      <summary>Legend</summary>
+      <summary>Info</summary>
       <div class="legend">
-        <div><i style="background:#9c4e36"></i>rowhouses</div>
-        <div><i style="background:#76778c"></i>towers</div>
-        <div><i style="background:#5d8490"></i>water</div>
-        <div><i style="background:#779267"></i>parks</div>
-        <div><i style="background:#beb29f"></i>streets</div>
-        <div>drag to explore · wheel to zoom</div>
+        <div>Drag or use arrow keys to explore.</div>
+        <div>Wheel, pinch, or use + and − to zoom.</div>
+        <div>Press 0 to return to City Hall.</div>
         <div><a href="https://www.pasda.psu.edu/uci/SearchResults.aspx?searchType=mapserver&amp;keyword=Philadelphia+Imagery" target="_blank" rel="noreferrer">2025 aerial: City of Philadelphia / PASDA</a></div>
-        <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">geometry: City of Philadelphia</a></div>
-        <div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">3D parts: © OpenStreetMap contributors</a></div>
+        <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 textured buildings: City of Philadelphia</a></div>
+        <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">city data: City of Philadelphia</a></div>
+        <div><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">additional data: © OpenStreetMap contributors</a></div>
       </div>
     </details>
   </header>
-  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia">
+  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press zero to return to City Hall.</p>
+  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>
-  <footer><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></footer>
+  <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a> · <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></footer>
 </body>
 </html>

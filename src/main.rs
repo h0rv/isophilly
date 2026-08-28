@@ -1,17 +1,19 @@
-mod building_render;
 mod mesh_render;
+mod mesh_texture;
+mod projection;
 mod pyramid;
 mod render;
 mod server;
 mod texture;
 mod world;
 
-use std::{io, path::Path, sync::Arc};
+use std::{io, num::NonZeroUsize, path::Path, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
+    mesh_texture::MeshTextureSource,
     server::{prebuild, serve},
     texture::AerialSource,
     world::load_world,
@@ -29,7 +31,10 @@ enum Command {
         #[arg(long, default_value_t = 3000)]
         port: u16,
     },
-    Prebuild,
+    Prebuild {
+        #[arg(long, default_value_t = default_jobs())]
+        jobs: NonZeroUsize,
+    },
 }
 
 #[tokio::main]
@@ -44,8 +49,27 @@ async fn main() -> io::Result<()> {
     let cli = Cli::parse();
     let world = Arc::new(load_world(Path::new("data/clean/philly.bin"))?);
     let aerial = Arc::new(AerialSource::open("data/aerial")?);
+    let mesh_textures = Arc::new(MeshTextureSource::open(
+        "data/clean/mesh-textures",
+        &world.texture_ids,
+        world.texture_sha256,
+    )?);
     match cli.command {
-        Command::Prebuild => prebuild(&world, &aerial),
-        Command::Serve { port } => serve(world, aerial, port).await,
+        Command::Prebuild { jobs } => {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(jobs.get())
+                .build()
+                .map_err(io::Error::other)?;
+            println!("prebuild using {jobs} workers");
+            pool.install(|| prebuild(&world, &aerial, &mesh_textures))
+        }
+        Command::Serve { port } => serve(world, aerial, mesh_textures, port).await,
     }
+}
+
+fn default_jobs() -> NonZeroUsize {
+    std::thread::available_parallelism()
+        .ok()
+        .and_then(|jobs| NonZeroUsize::new(jobs.get().saturating_mul(4).min(32)))
+        .unwrap_or(NonZeroUsize::MIN)
 }

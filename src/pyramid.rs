@@ -1,13 +1,16 @@
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
 };
 
 use image::{Rgba, RgbaImage, imageops::FilterType};
 use rayon::prelude::*;
 
 use crate::{
+    mesh_texture::MeshTextureSource,
     render::render_tile,
     texture::{AerialSource, AerialTile},
     world::World,
@@ -18,16 +21,21 @@ const TILE_SIZE: u32 = 256;
 const COMPLETE_FILE: &str = ".complete";
 const GROUND: Rgba<u8> = Rgba([217, 209, 195, 255]);
 
-pub fn build(world: &World, aerial: &AerialSource, root: &Path) -> io::Result<()> {
+pub fn build(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    root: &Path,
+) -> io::Result<()> {
     if is_complete(root) {
         println!("tile pyramid is already complete");
         return Ok(());
     }
     fs::create_dir_all(root)?;
-    render_leaves(world, aerial, root)?;
+    let mut changed = render_leaves(world, aerial, mesh_textures, root)?;
     for z in (0..ART_ZOOM).rev() {
-        derive_level(root, z)?;
-        println!("built z{z} from z{}", z + 1);
+        changed = derive_level(root, z, &changed)?;
+        println!("built z{z} from z{}: {} written", z + 1, changed.len());
     }
     fs::write(root.join(COMPLETE_FILE), b"complete\n")?;
     println!("tile pyramid complete");
@@ -44,9 +52,14 @@ pub fn tile_path(root: &Path, z: u8, x: u32, y: u32) -> PathBuf {
         .join(format!("{y}.png"))
 }
 
-fn render_leaves(world: &World, aerial: &AerialSource, root: &Path) -> io::Result<()> {
+fn render_leaves(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    root: &Path,
+) -> io::Result<Vec<u32>> {
     let count = 1_u32 << ART_ZOOM;
-    let tiles: Vec<u32> = (0..count * count)
+    let mut tiles: Vec<u32> = (0..count * count)
         .into_par_iter()
         .filter(|index| {
             let bounds = world
@@ -55,25 +68,47 @@ fn render_leaves(world: &World, aerial: &AerialSource, root: &Path) -> io::Resul
             world.has_content(&world.source_envelope(bounds))
         })
         .collect();
+    if let Some([focus_x, focus_y]) = world.city_hall_focus() {
+        tiles.par_sort_unstable_by_key(|index| {
+            let bounds = world
+                .iso_bounds
+                .tile(ART_ZOOM, index % count, index / count);
+            let dx = (bounds.min_x + bounds.max_x).mul_add(0.5, -focus_x);
+            let dy = (bounds.min_y + bounds.max_y).mul_add(0.5, -focus_y);
+            dx.mul_add(dx, dy * dy).to_bits()
+        });
+    }
     println!("z{ART_ZOOM} contains {} tiles", tiles.len());
+    let started = Instant::now();
     let rendered = AtomicUsize::new(0);
     let skipped = AtomicUsize::new(0);
+    let builder = LeafBuilder {
+        world,
+        aerial,
+        mesh_textures,
+        root,
+        count,
+        rendered: &rendered,
+        skipped: &skipped,
+        started,
+    };
     let mut pending = tiles;
+    let mut changed = Vec::new();
     for pass in 1..=3 {
-        let results: Vec<(u32, io::Result<()>)> = pending
+        let results: Vec<(u32, io::Result<bool>)> = pending
             .into_par_iter()
-            .map(|index| {
-                (
-                    index,
-                    render_leaf(world, aerial, root, count, index, &rendered, &skipped),
-                )
-            })
+            .map(|index| (index, builder.render(index)))
             .collect();
         let mut first_error = None;
         pending = results
             .into_iter()
             .filter_map(|(index, result)| match result {
-                Ok(()) => None,
+                Ok(written) => {
+                    if written {
+                        changed.push(index);
+                    }
+                    None
+                }
                 Err(error) => {
                     if first_error.is_none() {
                         first_error = Some(error);
@@ -98,41 +133,71 @@ fn render_leaves(world: &World, aerial: &AerialSource, root: &Path) -> io::Resul
         rendered.load(Ordering::Relaxed),
         skipped.load(Ordering::Relaxed)
     );
-    Ok(())
+    Ok(changed)
 }
 
-fn render_leaf(
-    world: &World,
-    aerial: &AerialSource,
-    root: &Path,
+struct LeafBuilder<'a> {
+    world: &'a World,
+    aerial: &'a AerialSource,
+    mesh_textures: &'a MeshTextureSource,
+    root: &'a Path,
     count: u32,
-    index: u32,
-    rendered: &AtomicUsize,
-    skipped: &AtomicUsize,
-) -> io::Result<()> {
-    let x = index % count;
-    let y = index / count;
-    let path = tile_path(root, ART_ZOOM, x, y);
-    if path.is_file() {
-        skipped.fetch_add(1, Ordering::Relaxed);
-        return Ok(());
-    }
-    let bounds = world.iso_bounds.tile(ART_ZOOM, x, y);
-    let aerial = AerialTile::for_isometric_tile(aerial, bounds, ART_ZOOM, x, y)?;
-    let png = render_tile(world, &aerial, ART_ZOOM, x, y)?;
-    write_atomic(&path, &png)?;
-    let done = rendered.fetch_add(1, Ordering::Relaxed) + 1;
-    if done.is_multiple_of(256) {
-        println!("rendered {done} z{ART_ZOOM} tiles");
-    }
-    Ok(())
+    rendered: &'a AtomicUsize,
+    skipped: &'a AtomicUsize,
+    started: Instant,
 }
 
-fn derive_level(root: &Path, z: u8) -> io::Result<()> {
+impl LeafBuilder<'_> {
+    fn render(&self, index: u32) -> io::Result<bool> {
+        let x = index % self.count;
+        let y = index / self.count;
+        let path = tile_path(self.root, ART_ZOOM, x, y);
+        if path.is_file() {
+            self.skipped.fetch_add(1, Ordering::Relaxed);
+            return Ok(false);
+        }
+        let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
+        let aerial = AerialTile::for_isometric_tile(self.aerial, bounds, ART_ZOOM, x, y)?;
+        let png = render_tile(self.world, &aerial, self.mesh_textures, ART_ZOOM, x, y)?;
+        write_atomic(&path, &png)?;
+        let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
+        if done.is_multiple_of(128) {
+            let seconds = self.started.elapsed().as_secs_f64().max(0.001);
+            println!(
+                "rendered {done} new z{ART_ZOOM} tiles ({:.1}/s)",
+                done as f64 / seconds
+            );
+        }
+        Ok(true)
+    }
+}
+
+fn derive_level(root: &Path, z: u8, dirty_children: &[u32]) -> io::Result<Vec<u32>> {
     let count = 1_u32 << z;
-    (0..count * count)
+    let child_count = count * 2;
+    let dirty: HashSet<u32> = dirty_children
+        .iter()
+        .map(|index| {
+            let child_x = index % child_count;
+            let child_y = index / child_count;
+            child_y.div_euclid(2) * count + child_x.div_euclid(2)
+        })
+        .collect();
+    let results: Vec<(u32, io::Result<bool>)> = (0..count * count)
         .into_par_iter()
-        .try_for_each(|index| derive_parent(root, z, index % count, index / count).map(|_| ()))
+        .filter(|index| {
+            dirty.contains(index) || !tile_path(root, z, index % count, index / count).is_file()
+        })
+        .map(|index| (index, derive_parent(root, z, index % count, index / count)))
+        .collect();
+    results
+        .into_iter()
+        .filter_map(|(index, result)| match result {
+            Ok(true) => Some(Ok(index)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }
 
 fn derive_parent(root: &Path, z: u8, x: u32, y: u32) -> io::Result<bool> {
@@ -195,7 +260,7 @@ mod tests {
 
     use image::{Rgba, RgbaImage};
 
-    use super::{derive_parent, tile_path};
+    use super::{derive_level, derive_parent, tile_path};
 
     #[test]
     fn parent_combines_available_children_and_fills_missing_quadrants()
@@ -217,6 +282,32 @@ mod tests {
         let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
         assert_eq!(parent.get_pixel(32, 32).0, [255, 0, 0, 255]);
         assert_eq!(parent.get_pixel(224, 224).0, [217, 209, 195, 255]);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_child_rebuilds_only_its_existing_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "geo-philly-pyramid-dirty-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        let path = tile_path(&root, 1, 0, 0);
+        let Some(parent_dir) = path.parent() else {
+            return Err("child has no parent directory".into());
+        };
+        fs::create_dir_all(parent_dir)?;
+        RgbaImage::from_pixel(256, 256, Rgba([255, 0, 0, 255])).save(&path)?;
+        assert_eq!(derive_level(&root, 0, &[])?, vec![0]);
+
+        RgbaImage::from_pixel(256, 256, Rgba([0, 255, 0, 255])).save(&path)?;
+        assert_eq!(derive_level(&root, 0, &[0])?, vec![0]);
+        let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
+        assert_eq!(parent.get_pixel(32, 32).0, [0, 255, 0, 255]);
 
         fs::remove_dir_all(root)?;
         Ok(())

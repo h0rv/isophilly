@@ -1,208 +1,298 @@
 from __future__ import annotations
 
-import re
+import asyncio
+import hashlib
+import json
+import os
 import struct
-from collections.abc import Iterable
-from math import isfinite
-from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
-from zipfile import ZipFile
+import tempfile
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
-import pyogrio
+import httpx
+from pyproj import Transformer
 from shapely.geometry import MultiPoint, Polygon
 
-from .models import BuildingMesh, MeshFace, Point3D, Ring, Snapshot
+from .config import MESH_TEXTURE_DIR, RAW_DIR
+from .download import RETRY_DELAYS_SECONDS, RETRYABLE_HTTP_STATUS, USER_AGENT
+from .models import BuildingMesh, MeshFace, MeshImport, Point, Point3D, Ring, Snapshot
 
-_MODEL_NAME = re.compile(r"PHIL(\d+)\.flt", re.IGNORECASE)
-_COLLECTION_TYPES = frozenset({4, 5, 6, 7, 15, 16})
-_SURFACE_TYPES = frozenset({3, 17})
-_SOURCE_X_RANGE = (750_000.0, 900_000.0)
-_SOURCE_Y_RANGE = (0.0, 200_000.0)
+_MAX_DOWNLOADS = 12
+_EXPECTED_LAYER_VERSION = "1.7"
+_EXPECTED_LEAF_COUNT = 367
+_GEOMETRY_HEADER_BYTES = 8
 
 
 class MeshParseError(ValueError):
     pass
 
 
-class _Cursor:
-    __slots__ = ("data", "offset")
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.offset = 0
-
-    def take(self, size: int) -> bytes:
-        end = self.offset + size
-        if size < 0 or end > len(self.data):
-            raise MeshParseError("multipatch WKB ended unexpectedly")
-        value = self.data[self.offset : end]
-        self.offset = end
-        return value
-
-    def byte(self) -> int:
-        return self.take(1)[0]
-
-    def uint32(self, endian: str) -> int:
-        return struct.unpack(f"{endian}I", self.take(4))[0]
-
-    def point3d(self, endian: str) -> Point3D:
-        return struct.unpack(f"{endian}ddd", self.take(24))
-
-
-def _normalize_face(points: Iterable[Point3D], z_min: float) -> MeshFace | None:
-    normalized: list[Point3D] = []
-    for x, y, z in points:
-        if not all(isfinite(value) for value in (x, y, z)):
-            raise MeshParseError("multipatch contains a non-finite coordinate")
-        point = (x, y, max(0.0, z - z_min))
-        if not normalized or point != normalized[-1]:
-            normalized.append(point)
-    if len(normalized) > 1 and normalized[0] == normalized[-1]:
-        normalized.pop()
-    if len(normalized) < 3:
-        return None
-
-    origin = normalized[0]
-    area_twice = 0.0
-    for left, right in zip(normalized[1:-1], normalized[2:], strict=True):
-        ux, uy, uz = (left[index] - origin[index] for index in range(3))
-        vx, vy, vz = (right[index] - origin[index] for index in range(3))
-        cross_x = uy * vz - uz * vy
-        cross_y = uz * vx - ux * vz
-        cross_z = ux * vy - uy * vx
-        area_twice += (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z) ** 0.5
-    if area_twice < 0.002:
-        return None
-    return MeshFace(tuple(normalized))
-
-
-def _parse_geometry(cursor: _Cursor, z_min: float, faces: list[MeshFace]) -> None:
-    byte_order = cursor.byte()
-    if byte_order not in {0, 1}:
-        raise MeshParseError("multipatch WKB has an invalid byte order")
-    endian = "<" if byte_order == 1 else ">"
-    geometry_type = cursor.uint32(endian)
-    if not 1000 <= geometry_type < 2000:
-        raise MeshParseError(f"multipatch geometry is not three-dimensional: {geometry_type}")
-    base_type = geometry_type - 1000
-
-    if base_type in _COLLECTION_TYPES:
-        for _ in range(cursor.uint32(endian)):
-            _parse_geometry(cursor, z_min, faces)
-        return
-    if base_type not in _SURFACE_TYPES:
-        raise MeshParseError(f"unsupported multipatch geometry type: {base_type}")
-
-    ring_count = cursor.uint32(endian)
-    for ring_index in range(ring_count):
-        points = tuple(cursor.point3d(endian) for _ in range(cursor.uint32(endian)))
-        if ring_index == 0:
-            face = _normalize_face(points, z_min)
-            if face is not None:
-                faces.append(face)
-
-
-def parse_multipatch(data: bytes, z_min: float) -> tuple[MeshFace, ...]:
-    if not isfinite(z_min):
-        raise MeshParseError("multipatch minimum elevation must be finite")
-    cursor = _Cursor(data)
-    faces: list[MeshFace] = []
-    _parse_geometry(cursor, z_min, faces)
-    if cursor.offset != len(data):
-        raise MeshParseError("multipatch WKB contains trailing bytes")
-    if not faces:
-        raise MeshParseError("multipatch contains no usable faces")
-    return tuple(faces)
-
-
-def _source_id(value: object) -> int:
-    if not isinstance(value, str):
-        raise MeshParseError("multipatch model name must be text")
-    match = _MODEL_NAME.fullmatch(value)
-    if match is None:
-        raise MeshParseError(f"unexpected multipatch model name: {value}")
-    return int(match.group(1))
-
-
-def _elevation(value: object, label: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise MeshParseError(f"multipatch {label} must be numeric")
-    result = float(value)
-    if not isfinite(result):
-        raise MeshParseError(f"multipatch {label} must be finite")
-    return result
-
-
-def _wkb(value: object) -> bytes:
-    if not isinstance(value, bytes):
-        raise MeshParseError("multipatch geometry must be WKB bytes")
+def _object(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise MeshParseError(f"{label} must be an object")
     return value
 
 
-def _footprint(faces: tuple[MeshFace, ...]) -> Ring:
-    hull = MultiPoint([(x, y) for face in faces for x, y, _ in face.points]).convex_hull
+def _integer(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise MeshParseError(f"{label} must be an integer")
+    return value
+
+
+def _center(node: Mapping[str, Any]) -> Point3D:
+    obb = _object(node.get("obb"), "I3S node OBB")
+    center = obb.get("center")
+    if not isinstance(center, list) or len(center) != 3:
+        raise MeshParseError("I3S node OBB center must have three values")
+    if not all(isinstance(value, int | float) and not isinstance(value, bool) for value in center):
+        raise MeshParseError("I3S node OBB center must be numeric")
+    return float(center[0]), float(center[1]), float(center[2])
+
+
+def _resource_id(node: Mapping[str, Any]) -> int:
+    mesh = _object(node.get("mesh"), "I3S node mesh")
+    geometry = _object(mesh.get("geometry"), "I3S node geometry")
+    material = _object(mesh.get("material"), "I3S node material")
+    geometry_id = _integer(geometry.get("resource"), "I3S geometry resource")
+    material_id = _integer(material.get("resource"), "I3S material resource")
+    if geometry_id != material_id:
+        raise MeshParseError("I3S geometry and material resources must match")
+    return geometry_id
+
+
+def _leaf_nodes(pages: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    nodes: list[Mapping[str, Any]] = []
+    for page in pages:
+        raw_nodes = page.get("nodes")
+        if not isinstance(raw_nodes, list):
+            raise MeshParseError("I3S node page has no nodes")
+        for raw_node in raw_nodes:
+            node = _object(raw_node, "I3S node")
+            if node.get("mesh") is not None and node.get("children") is None:
+                nodes.append(node)
+    nodes.sort(key=lambda node: _integer(node.get("index"), "I3S node index"))
+    if len(nodes) != _EXPECTED_LEAF_COUNT:
+        raise MeshParseError(
+            f"I3S scene has {len(nodes)} detailed nodes; expected {_EXPECTED_LEAF_COUNT}"
+        )
+    expected = list(range(1, _EXPECTED_LEAF_COUNT + 1))
+    actual = [_integer(node.get("index"), "I3S node index") for node in nodes]
+    if actual != expected:
+        raise MeshParseError("I3S detailed node indexes are not contiguous")
+    return nodes
+
+
+def parse_geometry(data: bytes, node: Mapping[str, Any]) -> BuildingMesh:
+    if len(data) < _GEOMETRY_HEADER_BYTES:
+        raise MeshParseError("I3S geometry is truncated")
+    vertex_count, feature_count = struct.unpack_from("<II", data)
+    if feature_count == 0 or vertex_count == 0 or vertex_count % 3 != 0:
+        raise MeshParseError("I3S geometry must contain triangulated features")
+    mesh = _object(node.get("mesh"), "I3S node mesh")
+    geometry = _object(mesh.get("geometry"), "I3S node geometry")
+    expected_vertices = _integer(geometry.get("vertexCount"), "I3S vertex count")
+    if vertex_count != expected_vertices:
+        raise MeshParseError(
+            f"I3S geometry has {vertex_count} vertices; expected {expected_vertices}"
+        )
+
+    position_bytes = vertex_count * 3 * 4
+    normal_bytes = vertex_count * 3 * 4
+    uv_bytes = vertex_count * 2 * 4
+    color_bytes = vertex_count * 4
+    region_bytes = vertex_count * 4 * 2
+    feature_bytes = feature_count * (8 + 8)
+    expected_bytes = (
+        _GEOMETRY_HEADER_BYTES
+        + position_bytes
+        + normal_bytes
+        + uv_bytes
+        + color_bytes
+        + region_bytes
+        + feature_bytes
+    )
+    if len(data) != expected_bytes:
+        raise MeshParseError(f"I3S geometry has {len(data)} bytes; expected {expected_bytes}")
+
+    offset = _GEOMETRY_HEADER_BYTES
+    positions = struct.unpack_from(f"<{vertex_count * 3}f", data, offset)
+    offset += position_bytes + normal_bytes
+    raw_uvs = struct.unpack_from(f"<{vertex_count * 2}f", data, offset)
+    offset += uv_bytes + color_bytes
+    raw_regions = struct.unpack_from(f"<{vertex_count * 4}H", data, offset)
+
+    center_lon, center_lat, center_z = _center(node)
+    longitudes = [center_lon + positions[index] for index in range(0, len(positions), 3)]
+    latitudes = [center_lat + positions[index] for index in range(1, len(positions), 3)]
+    transformer = Transformer.from_crs(4326, 32129, always_xy=True)
+    xs, ys = transformer.transform(longitudes, latitudes)
+    absolute_zs = [center_z + positions[index] for index in range(2, len(positions), 3)]
+    minimum_z = min(absolute_zs)
+    points: list[Point3D] = [
+        (float(x), float(y), float(z - minimum_z))
+        for x, y, z in zip(xs, ys, absolute_zs, strict=True)
+    ]
+
+    uvs: list[Point] = []
+    for index in range(vertex_count):
+        u = raw_uvs[index * 2]
+        v = raw_uvs[index * 2 + 1]
+        region = raw_regions[index * 4 : index * 4 + 4]
+        u = (float(region[0]) + u * float(region[2] - region[0])) / 65_535.0
+        v = (float(region[1]) + v * float(region[3] - region[1])) / 65_535.0
+        uvs.append((u, v))
+
+    faces = tuple(
+        MeshFace(tuple(points[index : index + 3]), tuple(uvs[index : index + 3]))
+        for index in range(0, vertex_count, 3)
+    )
+    hull = MultiPoint([(x, y) for x, y, _ in points]).convex_hull
     if not isinstance(hull, Polygon) or hull.is_empty:
-        raise MeshParseError("multipatch footprint is not a polygon")
-    points = tuple((float(x), float(y)) for x, y in hull.exterior.coords[:-1])
-    if len(points) < 3:
-        raise MeshParseError("multipatch footprint has fewer than three points")
-    return points
+        raise MeshParseError("I3S mesh footprint is not a polygon")
+    footprint: Ring = tuple((float(x), float(y)) for x, y in hull.exterior.coords[:-1])
+    height = max(z for _, _, z in points)
+    if not 0.0 < height <= 400.0:
+        raise MeshParseError(f"I3S mesh has an invalid height: {height}")
+    index = _integer(node.get("index"), "I3S node index")
+    return BuildingMesh(index, _resource_id(node), height, footprint, faces)
 
 
-def validate_source_space(source_id: int, faces: tuple[MeshFace, ...]) -> None:
-    for face in faces:
-        for x, y, _ in face.points:
-            if not _SOURCE_X_RANGE[0] <= x <= _SOURCE_X_RANGE[1]:
-                raise MeshParseError(f"multipatch {source_id} X coordinate is not in metres")
-            if not _SOURCE_Y_RANGE[0] <= y <= _SOURCE_Y_RANGE[1]:
-                raise MeshParseError(f"multipatch {source_id} Y coordinate is not in metres")
+async def _get(client: httpx.AsyncClient, url: str) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            if not response.content:
+                raise MeshParseError(f"I3S returned an empty resource: {url}")
+            return response.content
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code not in RETRYABLE_HTTP_STATUS:
+                raise
+            last_error = error
+        except httpx.TransportError as error:
+            last_error = error
+        if attempt < len(RETRY_DELAYS_SECONDS):
+            await asyncio.sleep(RETRY_DELAYS_SECONDS[attempt])
+    raise MeshParseError(f"I3S request failed: {url}: {last_error}")
 
 
-def _extract(snapshot: Snapshot, destination: Path) -> Path:
-    with ZipFile(snapshot.path) as archive:
-        for member in archive.infolist():
-            path = PurePosixPath(member.filename)
-            if path.is_absolute() or ".." in path.parts:
-                raise MeshParseError("multipatch archive contains an unsafe path")
-        archive.extractall(destination)
-    path = destination / "Philadelphia2015_scene.gdb" / "Philadelphia2015_scene.gdb"
-    if not path.is_dir():
-        raise MeshParseError("multipatch archive does not contain the expected FileGDB")
-    return path
+async def _cached_resource(client: httpx.AsyncClient, url: str, path: Path) -> bytes:
+    try:
+        cached = await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError:
+        cached = b""
+    if cached:
+        return cached
+    data = await _get(client, url)
+    await asyncio.to_thread(_write_atomic, path, data)
+    return data
 
 
-def building_meshes(snapshot: Snapshot) -> list[BuildingMesh]:
-    with TemporaryDirectory(prefix="geo-philly-mesh-") as directory:
-        geodatabase = _extract(snapshot, Path(directory))
-        _, table = pyogrio.read_arrow(geodatabase, layer="Buildings")
+def _write_atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(data)
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
-    names: list[object] = table.column("Name").to_pylist()
-    minimums: list[object] = table.column("Z_Min").to_pylist()
-    maximums: list[object] = table.column("Z_Max").to_pylist()
-    geometries: list[object] = table.column("Shape").to_pylist()
-    meshes: list[BuildingMesh] = []
-    for raw_name, raw_minimum, raw_maximum, raw_geometry in zip(
-        names, minimums, maximums, geometries, strict=True
-    ):
-        source_id = _source_id(raw_name)
-        z_min = _elevation(raw_minimum, "minimum elevation")
-        z_max = _elevation(raw_maximum, "maximum elevation")
-        if z_max <= z_min:
-            raise MeshParseError(f"multipatch {source_id} has an invalid elevation range")
-        faces = parse_multipatch(_wkb(raw_geometry), z_min)
-        validate_source_space(source_id, faces)
-        height = max(z for face in faces for _, _, z in face.points)
-        if not 0.0 < height <= 400.0:
-            raise MeshParseError(f"multipatch {source_id} has an invalid height: {height}")
-        meshes.append(
-            BuildingMesh(
-                source_id=source_id,
-                height=height,
-                footprint=_footprint(faces),
-                faces=faces,
-            )
+
+async def _node_pages(client: httpx.AsyncClient, base_url: str) -> list[Mapping[str, Any]]:
+    pages: list[Mapping[str, Any]] = []
+    for page_id in range(64):
+        response = await client.get(f"{base_url}/layers/0/nodepages/{page_id}")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or "nodes" not in payload:
+            break
+        pages.append(_object(payload, "I3S node page"))
+        nodes = payload.get("nodes")
+        if isinstance(nodes, list) and len(nodes) < 64:
+            break
+    if not pages:
+        raise MeshParseError("I3S scene has no node pages")
+    return pages
+
+
+async def _load_node(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    base_url: str,
+    cache_dir: Path,
+    node: Mapping[str, Any],
+) -> BuildingMesh:
+    resource_id = _resource_id(node)
+    geometry_path = cache_dir / "geometry" / f"{resource_id}.bin"
+    texture_path = MESH_TEXTURE_DIR / f"{resource_id}.jpg"
+    async with semaphore:
+        geometry, texture = await asyncio.gather(
+            _cached_resource(
+                client,
+                f"{base_url}/layers/0/nodes/{resource_id}/geometries/0",
+                geometry_path,
+            ),
+            _cached_resource(
+                client,
+                f"{base_url}/layers/0/nodes/{resource_id}/textures/0",
+                texture_path,
+            ),
+        )
+    if not texture.startswith(b"\xff\xd8"):
+        await asyncio.to_thread(texture_path.unlink, missing_ok=True)
+        texture = await _cached_resource(
+            client,
+            f"{base_url}/layers/0/nodes/{resource_id}/textures/0",
+            texture_path,
+        )
+    if not texture.startswith(b"\xff\xd8") or not texture.endswith(b"\xff\xd9"):
+        raise MeshParseError(f"I3S texture {resource_id} is not a complete JPEG")
+    return await asyncio.to_thread(parse_geometry, geometry, node)
+
+
+def _texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
+    digest = hashlib.sha256()
+    size = 0
+    for mesh in meshes:
+        path = MESH_TEXTURE_DIR / f"{mesh.texture_id}.jpg"
+        data = path.read_bytes()
+        digest.update(struct.pack("<I", mesh.texture_id))
+        digest.update(data)
+        size += len(data)
+    return digest.digest(), size
+
+
+async def building_meshes(snapshot: Snapshot) -> MeshImport:
+    metadata = _object(json.loads(snapshot.path.read_text()), "I3S service metadata")
+    if metadata.get("serviceVersion") != _EXPECTED_LAYER_VERSION:
+        raise MeshParseError(
+            f"I3S service version is {metadata.get('serviceVersion')!r}; "
+            f"expected {_EXPECTED_LAYER_VERSION!r}"
+        )
+    layers = metadata.get("layers")
+    if not isinstance(layers, list) or len(layers) != 1:
+        raise MeshParseError("I3S service must contain one layer")
+    layer = _object(layers[0], "I3S layer")
+    if layer.get("layerType") != "3DObject":
+        raise MeshParseError("I3S layer must contain 3D objects")
+    base_url = snapshot.url.partition("?")[0]
+    cache_dir = RAW_DIR / f"center-city-i3s-{layer.get('version', 'unknown')}"
+    MESH_TEXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    timeout = httpx.Timeout(120.0)
+    limits = httpx.Limits(max_connections=_MAX_DOWNLOADS, max_keepalive_connections=_MAX_DOWNLOADS)
+    async with httpx.AsyncClient(
+        headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=timeout, limits=limits
+    ) as client:
+        nodes = _leaf_nodes(await _node_pages(client, base_url))
+        semaphore = asyncio.Semaphore(_MAX_DOWNLOADS)
+        meshes = await asyncio.gather(
+            *(_load_node(client, semaphore, base_url, cache_dir, node) for node in nodes)
         )
     meshes.sort(key=lambda mesh: mesh.source_id)
-    if not meshes or len({mesh.source_id for mesh in meshes}) != len(meshes):
-        raise MeshParseError("multipatch source IDs must be nonempty and unique")
-    return meshes
+    texture_sha256, texture_bytes = await asyncio.to_thread(_texture_digest, meshes)
+    return MeshImport(tuple(meshes), texture_sha256, texture_bytes)

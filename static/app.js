@@ -4,6 +4,7 @@
  * @typedef {{
  *   iso_bounds: [number, number, number, number],
  *   city_hall: [number, number] | null,
+ *   landmarks: { name: string, point: [number, number], min_zoom: number, color: string }[],
  *   counts: { buildings: number, building_parts: number, building_meshes: number, water: number, parks: number, streets: number },
  *   tile_version: string,
  *   max_zoom: number,
@@ -16,12 +17,14 @@ const statusElement = document.querySelector("#status");
 const homeElement = document.querySelector("#home");
 const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
+const retryElement = document.querySelector("#retry");
 if (
   !(canvasElement instanceof HTMLCanvasElement) ||
   !(statusElement instanceof HTMLSpanElement) ||
   !(homeElement instanceof HTMLButtonElement) ||
   !(zoomInElement instanceof HTMLButtonElement) ||
-  !(zoomOutElement instanceof HTMLButtonElement)
+  !(zoomOutElement instanceof HTMLButtonElement) ||
+  !(retryElement instanceof HTMLButtonElement)
 ) {
   throw new Error("map controls are missing");
 }
@@ -30,6 +33,7 @@ const statusText = statusElement;
 const home = homeElement;
 const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
+const retry = retryElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
 const ctx = context;
@@ -41,15 +45,21 @@ let cameraX = 0;
 let cameraY = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
-let dragging = false;
-/** @type {PointerEvent | undefined} */
+/** @type {Map<number, { x: number, y: number }>} */
+const pointers = new Map();
+/** @type {{ distance: number, zoom: number, anchor: [number, number] } | undefined} */
+let pinch;
+/** @type {{ x: number, y: number } | undefined} */
 let lastPointer;
 let drawing = false;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
+/** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
+const failures = new Map();
 const MIN_ZOOM = 0.7;
 const BASE_TILE_ZOOM = 2;
 const MAX_CACHED_TILES = 512;
+const MAX_TILE_ATTEMPTS = 4;
 
 function city() {
   if (meta === undefined) throw new Error("city metadata is not loaded");
@@ -91,21 +101,33 @@ function requestTile(z, x, y) {
     tiles.set(id, cached);
     return cached;
   }
+  const failure = failures.get(id);
+  if (failure?.terminal || (failure !== undefined && failure.retryAt > Date.now())) {
+    return undefined;
+  }
   if (z > 0) requestTile(z - 1, x >> 1, y >> 1);
   pruneTiles();
   const image = new Image();
-  image.onload = draw;
+  image.onload = () => {
+    failures.delete(id);
+    draw();
+  };
   image.onerror = () => {
     tiles.delete(id);
-    setTimeout(draw, 250);
+    const attempts = (failure?.attempts ?? 0) + 1;
+    const terminal = attempts >= MAX_TILE_ATTEMPTS;
+    const delay = Math.min(8_000, 500 * 2 ** (attempts - 1));
+    failures.set(id, { attempts, retryAt: Date.now() + delay, terminal });
+    if (terminal) retry.hidden = false;
+    setTimeout(draw, terminal ? 0 : delay);
   };
   image.src = `/tiles/${z}/${x}/${y}.png?v=${encodeURIComponent(city().tile_version)}`;
   tiles.set(id, image);
   return image;
 }
 
-/** @param {number} z @param {number} x @param {number} y @param {number} left @param {number} top @param {number} size */
-function drawParent(z, x, y, left, top, size) {
+/** @param {number} z @param {number} x @param {number} y @param {{ left: number, top: number, width: number, height: number }} destination */
+function drawParent(z, x, y, destination) {
   for (let parentZ = z - 1; parentZ >= 0; parentZ--) {
     const factor = 2 ** (z - parentZ);
     const image = tiles.get(key(parentZ, x >> (z - parentZ), y >> (z - parentZ)));
@@ -117,14 +139,23 @@ function drawParent(z, x, y, left, top, size) {
       (y % factor) * sourceSize,
       sourceSize,
       sourceSize,
-      Math.floor(left),
-      Math.floor(top),
-      Math.ceil(size) + 1,
-      Math.ceil(size) + 1,
+      destination.left,
+      destination.top,
+      destination.width,
+      destination.height,
     );
     return true;
   }
   return false;
+}
+
+/** @param {number} panX @param {number} panY @param {number} tileSize @param {number} x @param {number} y */
+function tileRectangle(panX, panY, tileSize, x, y) {
+  const left = Math.round(panX + x * tileSize);
+  const top = Math.round(panY + y * tileSize);
+  const right = Math.round(panX + (x + 1) * tileSize);
+  const bottom = Math.round(panY + (y + 1) * tileSize);
+  return { left, top, width: right - left, height: bottom - top };
 }
 
 function draw() {
@@ -149,39 +180,78 @@ function drawNow() {
   clampCamera();
   const panX = viewportWidth / 2 - (cameraX - bounds[0]) * scale;
   const panY = viewportHeight / 2 - (cameraY - bounds[1]) * scale;
-  const firstX = Math.floor(-panX / tileSize) - 1;
-  const firstY = Math.floor(-panY / tileSize) - 1;
-  const lastX = Math.ceil((viewportWidth - panX) / tileSize) + 1;
-  const lastY = Math.ceil((viewportHeight - panY) / tileSize) + 1;
+  const firstX = Math.floor(-panX / tileSize);
+  const firstY = Math.floor(-panY / tileSize);
+  const lastX = Math.ceil((viewportWidth - panX) / tileSize);
+  const lastY = Math.ceil((viewportHeight - panY) / tileSize);
+  const centerTileX = (viewportWidth / 2 - panX) / tileSize;
+  const centerTileY = (viewportHeight / 2 - panY) / tileSize;
+  const coordinates = [];
+  for (let y = Math.max(0, firstY); y < Math.min(count, lastY); y++) {
+    for (let x = Math.max(0, firstX); x < Math.min(count, lastX); x++) {
+      coordinates.push({ x, y });
+    }
+  }
+  coordinates.sort(
+    (left, right) =>
+      (left.x - centerTileX) ** 2 +
+      (left.y - centerTileY) ** 2 -
+      ((right.x - centerTileX) ** 2 + (right.y - centerTileY) ** 2),
+  );
   let requested = 0;
   let loaded = 0;
   let uncovered = 0;
-  for (let y = Math.max(0, firstY); y < Math.min(count, lastY); y++) {
-    for (let x = Math.max(0, firstX); x < Math.min(count, lastX); x++) {
-      requested += 1;
-      const left = panX + x * tileSize;
-      const top = panY + y * tileSize;
-      const image = requestTile(z, x, y);
-      if (image.complete && image.naturalWidth) {
-        loaded += 1;
-        ctx.drawImage(
-          image,
-          Math.floor(left),
-          Math.floor(top),
-          Math.ceil(tileSize) + 1,
-          Math.ceil(tileSize) + 1,
-        );
-      } else if (!drawParent(z, x, y, left, top, tileSize)) {
+  let failed = 0;
+  for (const { x, y } of coordinates) {
+    requested += 1;
+    const destination = tileRectangle(panX, panY, tileSize, x, y);
+    const image = requestTile(z, x, y);
+    if (image?.complete && image.naturalWidth) {
+      loaded += 1;
+      ctx.drawImage(
+        image,
+        destination.left,
+        destination.top,
+        destination.width,
+        destination.height,
+      );
+    } else {
+      if (failures.get(key(z, x, y))?.terminal) failed += 1;
+      if (!drawParent(z, x, y, destination)) {
         uncovered += 1;
       }
     }
   }
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
-  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${z}`;
+  drawLandmarks(z, panX, panY, scale);
+  const pending = requested - loaded - failed;
+  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${z}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
   canvas.dataset.zoom = String(z);
   canvas.dataset.requested = String(requested);
-  canvas.dataset.pending = String(requested - loaded);
+  canvas.dataset.pending = String(pending);
   canvas.dataset.uncovered = String(uncovered);
+  canvas.dataset.failed = String(failed);
+  canvas.dataset.cameraX = String(cameraX);
+  canvas.dataset.cameraY = String(cameraY);
+}
+
+/** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
+function drawLandmarks(z, panX, panY, scale) {
+  for (const landmark of city().landmarks) {
+    if (z < landmark.min_zoom) continue;
+    const x = panX + (landmark.point[0] - city().iso_bounds[0]) * scale;
+    const y = panY + (landmark.point[1] - city().iso_bounds[1]) * scale;
+    if (x < -100 || y < -30 || x > viewportWidth + 30 || y > viewportHeight + 30) continue;
+    ctx.fillStyle = landmark.color;
+    ctx.fillRect(Math.round(x) - 3, Math.round(y) - 7, 7, 7);
+    ctx.font = "600 12px ui-sans-serif, system-ui";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#f6f0e6";
+    ctx.strokeText(landmark.name, x + 8, y - 8);
+    ctx.fillStyle = "#191714";
+    ctx.fillText(landmark.name, x + 8, y - 8);
+  }
 }
 
 /** @param {[number, number]} cityHall @param {number} panX @param {number} panY @param {number} scale */
@@ -262,24 +332,67 @@ function initialCenter() {
   return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : (city().city_hall ?? boundsCenter());
 }
 
+function pointerDistance() {
+  const [first, second] = [...pointers.values()];
+  return first === undefined || second === undefined
+    ? 0
+    : Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointerMiddle() {
+  const [first, second] = [...pointers.values()];
+  return first === undefined || second === undefined
+    ? { x: viewportWidth / 2, y: viewportHeight / 2 }
+    : { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+function startPinch() {
+  const middle = pointerMiddle();
+  const scale = worldScale();
+  pinch = {
+    distance: pointerDistance(),
+    zoom,
+    anchor: [
+      cameraX + (middle.x - viewportWidth / 2) / scale,
+      cameraY + (middle.y - viewportHeight / 2) / scale,
+    ],
+  };
+}
+
 canvas.addEventListener("pointerdown", (event) => {
-  dragging = true;
-  lastPointer = event;
+  canvas.focus({ preventScroll: true });
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  lastPointer = { x: event.clientX, y: event.clientY };
+  if (pointers.size === 2) startPinch();
   canvas.classList.add("dragging");
   canvas.setPointerCapture(event.pointerId);
 });
 canvas.addEventListener("pointermove", (event) => {
-  if (!dragging || lastPointer === undefined) return;
+  if (!pointers.has(event.pointerId)) return;
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (pointers.size >= 2 && pinch !== undefined) {
+    const middle = pointerMiddle();
+    setZoom(pinch.zoom * (pointerDistance() / Math.max(1, pinch.distance)));
+    const scale = worldScale();
+    cameraX = pinch.anchor[0] - (middle.x - viewportWidth / 2) / scale;
+    cameraY = pinch.anchor[1] - (middle.y - viewportHeight / 2) / scale;
+    draw();
+    return;
+  }
+  if (lastPointer === undefined) return;
   const scale = worldScale();
-  cameraX -= (event.clientX - lastPointer.clientX) / scale;
-  cameraY -= (event.clientY - lastPointer.clientY) / scale;
-  lastPointer = event;
+  cameraX -= (event.clientX - lastPointer.x) / scale;
+  cameraY -= (event.clientY - lastPointer.y) / scale;
+  lastPointer = { x: event.clientX, y: event.clientY };
   draw();
 });
-function stopDragging() {
-  dragging = false;
-  lastPointer = undefined;
-  canvas.classList.remove("dragging");
+/** @param {PointerEvent} event */
+function stopDragging(event) {
+  pointers.delete(event.pointerId);
+  pinch = undefined;
+  const remaining = [...pointers.values()][0];
+  lastPointer = remaining;
+  if (pointers.size === 0) canvas.classList.remove("dragging");
 }
 canvas.addEventListener("pointerup", stopDragging);
 canvas.addEventListener("pointercancel", stopDragging);
@@ -303,6 +416,7 @@ canvas.addEventListener(
   { passive: false },
 );
 addEventListener("keydown", (event) => {
+  if (event.target !== canvas && event.target !== document.body) return;
   if (event.key === "+" || event.key === "=") setZoom(zoom * 2);
   else if (event.key === "-") setZoom(zoom / 2);
   else if (event.key === "0") centerCityHall();
@@ -320,6 +434,11 @@ addEventListener("resize", resize);
 home.addEventListener("click", () => centerCityHall());
 zoomIn.addEventListener("click", () => setZoom(zoom * 2));
 zoomOut.addEventListener("click", () => setZoom(zoom / 2));
+retry.addEventListener("click", () => {
+  failures.clear();
+  retry.hidden = true;
+  draw();
+});
 
 async function loadMeta() {
   try {
@@ -329,6 +448,7 @@ async function loadMeta() {
     const loaded = await response.json();
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
     meta = loaded;
+    retry.hidden = true;
     resize();
     centerAt(initialCenter(), initialTileZoom());
   } catch {
@@ -352,9 +472,25 @@ function isMeta(value) {
     candidate.counts !== null &&
     Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_parts) &&
     Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_meshes) &&
+    Array.isArray(candidate.landmarks) &&
+    candidate.landmarks.every(isLandmark) &&
     typeof candidate.tile_version === "string" &&
     Number.isInteger(candidate.max_zoom) &&
     Number.isInteger(candidate.home_zoom)
+  );
+}
+
+/** @param {unknown} value */
+function isLandmark(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = /** @type {Record<string, unknown>} */ (value);
+  return (
+    typeof candidate.name === "string" &&
+    Array.isArray(candidate.point) &&
+    candidate.point.length === 2 &&
+    candidate.point.every(Number.isFinite) &&
+    Number.isInteger(candidate.min_zoom) &&
+    typeof candidate.color === "string"
   );
 }
 

@@ -3,73 +3,60 @@ from __future__ import annotations
 import struct
 import unittest
 
-from geo_philly_ingest.mesh import MeshParseError, parse_multipatch, validate_source_space
-from geo_philly_ingest.models import MeshFace
+from geo_philly_ingest.mesh import MeshParseError, parse_geometry
 
 
-def geometry(geometry_type: int, payload: bytes) -> bytes:
-    return struct.pack("<BI", 1, geometry_type) + payload
+def node(vertex_count: int = 3) -> dict[str, object]:
+    return {
+        "index": 1,
+        "obb": {"center": [-75.1635, 39.9526, 20.0]},
+        "mesh": {
+            "geometry": {"vertexCount": vertex_count, "resource": 0},
+            "material": {"resource": 0},
+        },
+    }
 
 
-def triangle(points: tuple[tuple[float, float, float], ...]) -> bytes:
-    coordinates = b"".join(struct.pack("<ddd", *point) for point in points)
-    return geometry(1017, struct.pack("<II", 1, len(points)) + coordinates)
-
-
-class MultipatchTests(unittest.TestCase):
-    def test_parses_nested_three_dimensional_faces(self) -> None:
-        face = triangle(
-            (
-                (820_000.0, 72_000.0, 10.0),
-                (820_010.0, 72_000.0, 10.0),
-                (820_000.0, 72_010.0, 15.0),
-                (820_000.0, 72_000.0, 10.0),
-            )
+def geometry() -> bytes:
+    positions = (0.0, 0.0, -5.0, 0.0001, 0.0, -5.0, 0.0, 0.0001, 5.0)
+    normals = (0.0, 0.0, 1.0) * 3
+    uvs = (0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    colors = bytes((255, 255, 255, 255) * 3)
+    regions = (0, 0, 65_535, 65_535) * 3
+    return b"".join(
+        (
+            struct.pack("<II", 3, 1),
+            struct.pack("<9f", *positions),
+            struct.pack("<9f", *normals),
+            struct.pack("<6f", *uvs),
+            colors,
+            struct.pack("<12H", *regions),
+            struct.pack("<QII", 7, 0, 1),
         )
-        tin = geometry(1016, struct.pack("<I", 1) + face)
-        collection = geometry(1007, struct.pack("<I", 1) + tin)
+    )
 
-        parsed = parse_multipatch(collection, z_min=10.0)
 
-        self.assertEqual(
-            parsed[0].points,
-            (
-                (820_000.0, 72_000.0, 0.0),
-                (820_010.0, 72_000.0, 0.0),
-                (820_000.0, 72_010.0, 5.0),
-            ),
-        )
+class I3SMeshTests(unittest.TestCase):
+    def test_parses_textured_triangle_in_local_metres(self) -> None:
+        mesh = parse_geometry(geometry(), node())
 
-    def test_rejects_two_dimensional_wkb(self) -> None:
-        polygon = geometry(3, struct.pack("<II", 1, 0))
+        self.assertEqual(mesh.source_id, 1)
+        self.assertEqual(mesh.texture_id, 0)
+        self.assertEqual(mesh.height, 10.0)
+        self.assertEqual(mesh.faces[0].uvs, ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)))
+        self.assertGreater(mesh.faces[0].points[1][0], mesh.faces[0].points[0][0])
+        self.assertGreater(mesh.faces[0].points[2][1], mesh.faces[0].points[0][1])
 
-        with self.assertRaisesRegex(MeshParseError, "not three-dimensional"):
-            parse_multipatch(polygon, z_min=0.0)
+    def test_rejects_non_triangular_vertex_count(self) -> None:
+        data = bytearray(geometry())
+        struct.pack_into("<I", data, 0, 4)
 
-    def test_rejects_trailing_bytes(self) -> None:
-        face = triangle(
-            (
-                (0.0, 0.0, 0.0),
-                (1.0, 0.0, 0.0),
-                (0.0, 1.0, 0.0),
-                (0.0, 0.0, 0.0),
-            )
-        )
+        with self.assertRaisesRegex(MeshParseError, "triangulated"):
+            parse_geometry(bytes(data), node(4))
 
-        with self.assertRaisesRegex(MeshParseError, "trailing bytes"):
-            parse_multipatch(face + b"bad", z_min=0.0)
-
-    def test_rejects_source_coordinates_in_feet(self) -> None:
-        face = MeshFace(
-            (
-                (2_700_000.0, 240_000.0, 0.0),
-                (2_700_001.0, 240_000.0, 1.0),
-                (2_700_000.0, 240_001.0, 1.0),
-            )
-        )
-
-        with self.assertRaisesRegex(MeshParseError, "X coordinate is not in metres"):
-            validate_source_space(1, (face,))
+    def test_rejects_truncated_geometry(self) -> None:
+        with self.assertRaisesRegex(MeshParseError, "bytes"):
+            parse_geometry(geometry()[:-1], node())
 
 
 if __name__ == "__main__":

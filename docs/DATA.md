@@ -1,11 +1,14 @@
 # Data pipeline
 
 `uv run poe ingest` downloads content-addressed snapshots of five City of
-Philadelphia ArcGIS layers, the official 2015 Center City 3D model, and one
-OpenStreetMap query. It processes them offline and writes:
+Philadelphia ArcGIS layers and one OpenStreetMap query. It also downloads the
+official 2015 Center City 3D model into a versioned local cache. It processes
+them offline and writes:
 
-- `data/clean/philly.bin`: the version 4 building, building part, building mesh,
+- `data/clean/philly.bin`: the version 5 building, building part, building mesh,
   water, and park world read by the Rust server.
+- `data/clean/mesh-textures/`: the 367 JPEG atlases used by the official I3S
+  scene.
 - `data/clean/streets.bin`: a separate optional street-centerline artifact.
 - `data/clean/meta.json`: source URLs, request times, HTTP validators, SHA-256
   checksums, CRS, bounds, counts, and output checksums.
@@ -14,6 +17,12 @@ Generated data is ignored by Git. Keep `data/raw/` and `meta.json` together when
 pinning a release: the raw filenames include the first 12 characters of their
 full SHA-256 digest, so a live source refresh never silently overwrites a prior
 snapshot.
+
+The I3S child-node and geometry cache is versioned but is not yet represented by
+a complete resource manifest. The aggregate JPEG atlas digest is embedded in
+`philly.bin` and verified by the Rust process at startup. Do not describe a
+build as fully reproducible until every I3S child URL, fetch time, size, and
+checksum is recorded and pinned.
 
 ## Geometry decisions
 
@@ -35,11 +44,11 @@ snapshot.
   `39.94018` to `39.96987`. It selects OpenStreetMap ways tagged
   `building:part`. An explicit height takes priority over a level count, and
   one level is estimated as 3.2 metres. Parts without either value are skipped.
-  The renderer retains the City footprint under incomplete part sets.
-- the 2015 Center City File Geodatabase contains 859 multipatch buildings. The
-  source metadata labels the coordinates as EPSG:2272, but the observed XY and
-  height values are already metres in the EPSG:32129 range. The importer checks
-  finite coordinates and a 400 metre height ceiling before packing the faces.
+  The current renderer does not draw these untextured parts.
+- The public 2015 Center City I3S service contains 367 detailed leaf chunks.
+  The importer reads each binary geometry resource and its matching JPEG atlas.
+  It converts longitude and latitude offsets to EPSG:32129, applies each atlas
+  region to the UV coordinates, and checks a 400 metre height ceiling.
 
 ## World binary format
 
@@ -47,13 +56,14 @@ All integers and floats are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (4)
+u32      version (5)
 u32      EPSG (32129)
 u32      building count
 u32      building part count
 u32      building mesh count
 u32      water ring count
 u32      park ring count
+u8 x 32  SHA-256 digest of all texture atlases
 f64 x 4  official city bounds: min_x, min_y, max_x, max_y
 repeat building count times:
   f32    height
@@ -67,13 +77,13 @@ repeat building part count times:
   u8 x 4 facade RGBA; alpha 0 means no sourced color
   ring
 repeat building mesh count times:
-  u32    PASDA model ID
+  u32    I3S node ID
+  u32    texture atlas ID
   f32    height
   u32    face count
   ring   footprint used for indexing
   repeat face count times:
-    u32  point count
-    repeat point count times: f32 x, f32 y, f32 z
+    repeat 3 times: f32 x, f32 y, f32 z, f32 u, f32 v
 repeat water and park counts:
   ring
 
@@ -86,10 +96,10 @@ Roof shape values are 0 flat, 1 gabled, 2 hipped, 3 pyramidal, 4 dome, 5 cone,
 and 6 mansard. The clean metadata stores the Overpass generator, data timestamp,
 query URL, response checksum, and part count.
 
-The official mesh archive also contains texture atlases. The open geometry
-reader does not expose the per-face texture coordinates, so the app does not
-ship or guess those facade textures. The renderer uses the real 3D faces,
-stable wall colors, and current PASDA roof imagery instead.
+The I3S scene exposes triangle positions, UV coordinates, atlas regions, and
+JPEG texture atlases. The renderer samples those atlases on the matching
+triangles. It returns an error when an atlas is missing, so it cannot replace a
+textured building with a plain polygon.
 
 ## Street binary format
 
@@ -115,13 +125,13 @@ without changing the stable `philly.bin` contract.
 Textured rendering requests 2025 Philadelphia orthophotography from the
 [PASDA ArcGIS image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer).
 The source advertises three inch imagery. The renderer asks for a 512 by 512
-JPEG in EPSG:32129 over the exact source footprint of each isometric tile. The
-crop includes a two pixel overlap. The renderer never stretches a whole city
-preview.
+JPEG in EPSG:32129 over the source footprint of each z8 isometric tile. The crop
+includes a two pixel overlap. Z9 through z12 reuse and crop that z8 source
+image. The renderer never stretches a whole city preview.
 
 The renderer snaps sampling to a global grid, averages a 3 by 3 source
 neighborhood, and posterizes each channel. It does not generate imagery. Source
-crops persist under `data/aerial/` until the fixed 1 GiB cache ceiling is
+crops persist under `data/aerial/` until the fixed 2 GiB cache ceiling is
 reached. The prebuild renders z8 and derives the lower levels from it. Requested
 z9 through z12 tiles are also saved for later runs.
 
@@ -151,3 +161,8 @@ attribution with the map. OpenStreetMap data is available under the ODbL, which
 has separate attribution and database sharing requirements. This project is an
 illustration, not an authoritative boundary, property, elevation, or navigation
 product.
+
+Public access to the I3S service does not state that its JPEG atlases may be
+redistributed. Get written permission from the City before publishing generated
+tiles that contain those textures. Local development does not resolve that
+publication requirement.

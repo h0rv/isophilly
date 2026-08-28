@@ -6,9 +6,9 @@ as deterministic pixel art without generated imagery.
 ## Pipeline
 
 ```text
-City snapshots + Center City meshes + OpenStreetMap parts
+City snapshots + official Center City I3S scene
   -> Python ingest
-  -> one compact binary
+  -> one compact geometry binary + official texture atlases
   -> Rust renders textured z8 tiles
   -> Rust derives z0 through z7 from the same scene
   -> canvas viewer
@@ -35,11 +35,9 @@ when requested, and persist across runs.
 ## Rendering rules
 
 - Use one pixel treatment at every zoom.
-- Use the official Center City meshes where available.
-- Use OpenStreetMap parts where they cover the source footprint well.
-- Use City footprints as the citywide fallback.
-- Take ground and roof color from 2025 PASDA aerial crops.
-- Keep water, parks, streets, and building mass readable over the photograph.
+- Draw only the official textured Center City triangles as 3D geometry.
+- Use 2025 PASDA aerial crops for the ground across the rest of the city.
+- Do not draw untextured buildings, streets, parks, or water over the imagery.
 - Show a lower resolution parent while a deep tile loads.
 - Never substitute a plain geometry tile for a missing texture.
 

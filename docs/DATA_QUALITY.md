@@ -1,6 +1,6 @@
 # Data quality audit
 
-Measured 2026-08-27 against the raw snapshots and version 4 clean binaries.
+Measured 2026-08-28 against the raw snapshots and version 5 clean binaries.
 Counts describe this snapshot, not permanent properties of the live services.
 Source URLs and full SHA-256 checksums are in
 `data/clean/meta.json`; the source rationale is in [RESEARCH.md](RESEARCH.md).
@@ -11,7 +11,7 @@ Source URLs and full SHA-256 checksums are in
 | --- | ---: | ---: | --- |
 | Building footprints | 546,084 | 545,672 polygons | Output is polygon parts after clipping, repair, multipart expansion, and the 10 m² cutoff—not a record join count. |
 | OSM Center City building parts | 1,039 ways | 827 polygons | Output keeps parts with a valid height or level count and rejects bad geometry. Of these, 275 have a sourced facade color or material. |
-| Official 2015 Center City 3D buildings | 859 models | 859 meshes and 169,646 faces | Output keeps the source multipatch faces and normalizes each model to its minimum elevation. |
+| Official 2015 Center City 3D scene | 367 leaf chunks | 294,443 textured triangles and 367 JPEG atlases | Output keeps the I3S triangles, UV coordinates, atlas regions, and textures. |
 | Hydrology polygons | 2,000 | 69 polygons | Exactly the 69 source records that intersect the official City Limits mask. |
 | PPR properties | 506 | 659 polygons | 505 records intersect; repair and multipart expansion produce more output polygons. |
 | Street centerlines | 41,271 | 40,418 lines | Selected classes are clipped and multipart lines can split at the boundary. |
@@ -21,9 +21,9 @@ the former layer-derived 31.91 × 41.93 km extent, so off-city hydrology no long
 creates a large empty map.
 
 The five raw GeoJSON snapshots total about 516 MB. The OSM JSON adds about 0.8
-MB, and the 2015 mesh archive adds 182.9 MB. Building footprints alone are
-476.4 MB in this capture. Runtime binaries remain small at about 45.1 MB for
-the world and 1.0 MB for streets.
+MB. Building footprints alone are 476.4 MB in this capture. The I3S cache adds
+about 38 MB of geometry and 146 MB of JPEG atlases. The runtime world is about
+54.5 MB, and the street file is about 1.0 MB.
 
 ## Building heights
 
@@ -52,17 +52,14 @@ The packed height distribution is strongly rowhouse-shaped:
 | 80 m+ | 139 | 0.03% |
 
 Median height is 7.92 m; p90 is 10.67 m, p99 is 15.54 m, and the maximum is
-297.49 m. These are useful City-provided approximations, not architectural
-solids: every footprint receives one flat extrusion, vertical renovations may
-not be captured, and the sparse skyline tail has not been reconciled against a
-landmark list or 2022 LiDAR.
+297.49 m. The current renderer does not extrude these footprints. It retains
+the records for coverage checks and possible future data work.
 
 The OSM query returned 446 parts with an explicit height and 400 parts with only
 a level count. Another 193 parts had neither value and were skipped. One level
 is estimated as 3.2 metres. The packed part heights range from 3.2 to 341 metres.
 The raw roof tags include 888 flat, 56 gabled, 35 hipped, 28 pyramidal, and 9
-dome parts. Some rare values map to the closest supported roof family, while
-unsupported values remain flat.
+dome parts. The current renderer does not draw these untextured parts.
 
 ## Street classification
 
@@ -82,21 +79,18 @@ The raw layer has 40,490 records in those classes; 40,413 intersect City Limits,
 and boundary splitting yields 40,418 packed lines. The 781 class-filtered raw
 records are class 6 driveways (94), class 12 non-traversable segments (421),
 class 14 boundary lines (167), class 15 walking connectors (11), and 88 records
-using undocumented classes 13 or 18. Street widths in the renderer are visual
-rules by class; the source does not provide measured curb-to-curb width.
+using undocumented classes 13 or 18. The current renderer uses the aerial
+image for roads instead of drawing these centerlines.
 
 ## Known limitations
 
-- Binary version 4 still stores only exterior rings for the citywide footprint
-  fallback. The City source contains
+- Binary version 5 still stores only exterior rings for the citywide footprint
+  index. The City source contains
   609 footprint features with 1,006 interior rings, so courtyards and atria are
-  filled. It reduces each City footprint to one height. The 2015 Center City
-  meshes preserve their source faces, while OSM parts add roof geometry where
-  their tags provide enough data.
-- The 2015 mesh textures are not rendered. The File Geodatabase reader exposes
-  the 3D faces but drops the texture coordinates needed to map its atlases onto
-  those faces. The current renderer uses aerial roof color and stable shaded
-  walls without inventing a mapping.
+  absent from the index. The renderer does not draw these footprint polygons.
+- The 2015 I3S scene covers Center City, so the rest of Philadelphia uses only
+  aerial imagery. The renderer does not invent untextured 3D geometry outside
+  the official scene.
 - The 0.35 m footprint and 1 m ground/street simplification tolerances are fixed,
   not zoom-specific. Coordinates become `f32` in the binaries.
 - City Limits is an official generalized cartographic mask, not a surveyed
@@ -111,18 +105,8 @@ rules by class; the source does not provide measured curb-to-curb width.
 
 ## Next visible upgrades
 
-1. **Add sourced facade materials.** Resolve OpenStreetMap `building:colour`
-   and `building:material` tags during ingest. The current Center City snapshot
-   has usable facade data for about one third of its retained parts.
-2. **Preserve courtyard geometry.** Evolve the world format and rasterizer to
-   retain polygon interior rings and multipart identity. Only 0.11% of source
-   footprint features have holes, but they are disproportionately large campuses,
-   blocks, and civic buildings where the filled courtyard is obvious at deep zoom.
-3. **Replace symbolic lines with street surfaces.** Derive scale-aware road
-   polygons from the City's curb/cartway geometry where available, falling back
-   to class-width buffers for missing segments. Intersections, medians, and the
-   diagonal/grid character of Philadelphia would read more accurately than
-   fixed-pixel centerline strokes.
-
-Tree canopy can follow these changes. It would add useful visual texture, but
-the current street and facade data are larger sources of visible error.
+1. Get written permission to redistribute tiles that include the City texture
+   atlases.
+2. Precompute the most visited z9 through z12 Center City tiles for production.
+3. Find a newer official textured 3D scene that can replace the 2015 capture
+   without losing the current geometry and facade detail.

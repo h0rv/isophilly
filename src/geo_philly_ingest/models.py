@@ -64,14 +64,23 @@ class BuildingPart:
 @dataclass(frozen=True, slots=True)
 class MeshFace:
     points: tuple[Point3D, ...]
+    uvs: tuple[Point, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class BuildingMesh:
     source_id: int
+    texture_id: int
     height: float
     footprint: Ring
     faces: tuple[MeshFace, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MeshImport:
+    meshes: tuple[BuildingMesh, ...]
+    texture_sha256: bytes
+    texture_bytes: int
 
 
 @dataclass(frozen=True, slots=True)

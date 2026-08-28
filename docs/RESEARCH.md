@@ -5,11 +5,10 @@ recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
 
-Build the full city artifact from five City layers. Add the official 2015
-Center City multipatch model for detailed architecture, and use current
-OpenStreetMap building parts where they have a usable height. The City
-footprints preserve citywide coverage. The implemented prototype renders
-deterministic PNG tiles with 2025 PASDA aerial color as pixel art.
+Use the official 2015 Center City I3S scene for detailed architecture and
+facade textures. Use 2025 PASDA aerial imagery for the ground and for areas
+outside that scene. City footprints and limits define the content extent. The
+renderer does not draw untextured building polygons.
 
 Defer real building heights, vegetation, and an interactive 3-D map. Treat the
 aerial layer as color, not geometry, because orthophotos and footprint edges can
@@ -33,11 +32,10 @@ reusable ideas are architectural:
   city-generation workflow, a 3-D renderer, and the viewer. Copy that separation,
   not its model dependency.
 * The author first rendered CityGML geometry plus satellite imagery, then found
-  their misalignment caused image hallucinations; the [project write-up](https://cannoneyed.com/projects/isometric-nyc)
-  explains why it switched to aligned Google 3D Tiles. For Philly, avoid this
-  entire failure class. Use City vectors for citywide coverage, and use OSM
-  parts only where their height data is usable. Treat imagery as color rather
-  than geometry.
+  their misalignment caused image errors. The [project write-up](https://cannoneyed.com/projects/isometric-nyc)
+  explains why it switched to aligned Google 3D Tiles. Philadelphia's I3S scene
+  already provides aligned triangles, UV coordinates, and texture atlases, so
+  the renderer can use the official mapping without generating textures.
 * Their AI path required an estimated 40k tiles, manual review of seams/trees,
   and an approximately 50/50 high-quality generation rate. That is a poor
   trade for a map whose geometry must be trusted. Deterministic rendering makes
@@ -68,7 +66,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Water | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) (polygon GeoJSON/SHP/API links) | Philadelphia Water Department polygons for rivers, creeks, ponds, reservoirs, water under bridges and edge water. PASDA lists the current hydrographic polygon/arc data as 2025. | Small vector layer; trivial. | Use polygons, not a filled city-boundary void: it preserves river shape and islands. |
 | 1. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/), [GeoJSON download](https://hub.arcgis.com/api/v3/datasets/c36d828494cd44b5bd8b038be696c839_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1), [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Street_Centerline/FeatureServer/0) | Citywide reference base layer. The City explicitly says it is not exact engineering geometry. | Manageable linework, but visually noisy at full city scale. | Filter by class/name/length; render arterials and a low-opacity local grid rather than every segment. |
 | 1. Center City parts | [OpenStreetMap Simple 3D Buildings](https://wiki.openstreetmap.org/wiki/Simple_3D_Buildings) and the [ODbL terms](https://www.openstreetmap.org/copyright) | Current way geometry and tags. The 2026-08-27 snapshot produced 826 usable parts after height checks. | The Overpass JSON is about 0.8 MB. | Use explicit height first, then levels. Skip missing heights. Keep visible contributor attribution. |
-| 1. Center City meshes | [Philadelphia 2015 3D model archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2015/) | 859 official multipatch models with true roofs, setbacks, and landmark shapes. | The File Geodatabase archive is 182.9 MB and expands to about 170,000 usable faces. | Use the geometry in the canonical z8 scene and deeper tiles. Do not publish the embedded texture atlases without clear reuse rights and preserved texture coordinates. |
+| 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Use the textured triangles at every zoom. Get written City permission before redistributing tiles that include the atlases. |
 | 2. Terrain/height | [2022 LiDAR/LAS catalog](https://opendataphilly.org/datasets/lidar-las-data/); [2022 DEM catalog/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7152); [NOAA tiled DEM](https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/PA_Phil_DEM_2022_9849/index.html) | Citywide ~196 sq mi, captured Apr. 2022, leaf-off/snow-free/normal water. DEM is ground; LAS contains surface/roof points. City also has 2008/2010/2015/2018 capture years. | DEM tiles are practical when selectively mosaicked; classified LAS citywide is multi-GB and demands PDAL/GDAL + robust sampling. | v2 only. Derive building height as DSM/LAS surface minus ground DEM; median/percentile sample per footprint and clamp outliers. Do not use DEM alone as building height. |
 | 3. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025, three-inch orthophotography exposed through an export API and downloadable source TIFF tiles. | A 512-pixel crop per isometric tile avoids a citywide mosaic. First builds pay network latency; a bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for the canonical z8 scene and deeper tiles. Geometry remains authoritative City vectors. |
 
@@ -84,9 +82,9 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 3. Apply a scale-aware simplification after clipping to the chosen extent:
    rowhouse detail should read as grain, not create hairline moiré. Preserve a
    full-resolution source for deep zoom.
-4. Use the official 2015 mesh where it exists. Outside that area, use the City
-   footprint height and a low default only when the source height is unusable.
-   Do not add hand-built landmark shapes when reusable source geometry exists.
+4. Use the official 2015 textured mesh where it exists. Outside that area, show
+   the aerial ground without synthetic building geometry. Do not add hand-built
+   landmark shapes when reusable source geometry exists.
 
 ## Open-source components worth copying
 

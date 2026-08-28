@@ -41,6 +41,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pyarrow" },
     { name = "pyogrio" },
+    { name = "pyproj" },
     { name = "shapely" },
 ]
 
@@ -57,6 +58,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pyarrow", specifier = ">=20" },
     { name = "pyogrio", specifier = ">=0.10" },
+    { name = "pyproj", specifier = ">=3.7" },
     { name = "shapely", specifier = ">=2.0" },
 ]
 

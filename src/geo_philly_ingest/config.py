@@ -10,6 +10,7 @@ CLEAN_DIR = ROOT / "data" / "clean"
 WORLD_BIN = CLEAN_DIR / "philly.bin"
 STREETS_BIN = CLEAN_DIR / "streets.bin"
 METADATA_JSON = CLEAN_DIR / "meta.json"
+MESH_TEXTURE_DIR = CLEAN_DIR / "mesh-textures"
 
 # NAD83 / Pennsylvania South: the City's local State Plane projection in metres.
 # This is equivalent to EPSG:2272 with US-survey-foot coordinates converted to metres,
@@ -111,10 +112,11 @@ SOURCES = Sources(
         "json",
     ),
     downtown_meshes=Source(
-        "Philadelphia 2015 Center City 3D Buildings",
+        "Philadelphia 2015 Center City Textured 3D Buildings",
         "center-city-3d-buildings",
-        "https://www.pasda.psu.edu/download/philacity/data/3D_Models/2015/"
-        "Philadelphia2015_scene.gdb.zip",
-        "zip",
+        "https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/"
+        "Philadelphia_Buildings/SceneServer?f=pjson",
+        "json",
+        minimum_bytes=5_000,
     ),
 )
