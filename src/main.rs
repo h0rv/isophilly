@@ -5,6 +5,7 @@ mod mesh_texture;
 mod projection;
 mod pyramid;
 mod render;
+mod scene;
 mod server;
 mod texture;
 mod tile_codec;

@@ -1,4 +1,4 @@
-use std::{fs, io, path::PathBuf, sync::Arc, time::Instant};
+use std::{io, path::PathBuf, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -7,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::{Deserialize, Serialize};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
@@ -16,9 +15,10 @@ use crate::{
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, tile_path},
     render::render_blank_tile,
+    scene::Scene,
     texture::AerialSource,
     tile_codec::{EXTENSION, MEDIA_TYPE},
-    world::{World, isometric},
+    world::World,
 };
 
 #[derive(Clone)]
@@ -29,71 +29,10 @@ pub(crate) struct AppState {
     pub(crate) live_city: Arc<LiveCity>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-struct Scene {
-    schema_version: u8,
-    world_sha256: String,
-    iso_bounds: [f32; 4],
-    city_hall: Option<[f32; 2]>,
-    landmarks: Vec<Landmark>,
-    counts: Counts,
-    tile_version: String,
-    max_tile_zoom: u8,
-    max_zoom: u8,
-    home_zoom: u8,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct Landmark {
-    name: String,
-    point: [f32; 2],
-    min_zoom: u8,
-    color: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct Counts {
-    buildings: usize,
-    building_parts: usize,
-    building_meshes: usize,
-    water: usize,
-    parks: usize,
-    streets: usize,
-}
-
-#[derive(Deserialize)]
-struct CleanMetadata {
-    artifacts: CleanArtifacts,
-}
-
-#[derive(Deserialize)]
-struct CleanArtifacts {
-    #[serde(rename = "philly.bin")]
-    world: CleanArtifact,
-}
-
-#[derive(Deserialize)]
-struct CleanArtifact {
-    sha256: String,
-}
-
 const PYRAMID_VERSION: &str = "v34-stable-aerial-facades";
-const SCENE_SCHEMA_VERSION: u8 = 1;
-const CURRENT_SCENE: &str = "data/tiles/current.json";
-const CLEAN_METADATA: &str = "data/clean/meta.json";
-const MAX_VIEW_ZOOM: u8 = 10;
-const HOME_ZOOM: u8 = 3;
-const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);
 
 pub async fn serve(port: u16) -> io::Result<()> {
-    let scene = Arc::new(read_scene()?);
-    let clean_sha256 = read_world_sha256()?;
-    if scene.world_sha256 != clean_sha256 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the tile pyramid is stale; run `uv run poe prebuild`",
-        ));
-    }
+    let scene = Arc::new(Scene::read_current()?);
     let tile_dir = tile_cache_dir(&scene.tile_version);
     if !pyramid::is_complete(&tile_dir) {
         return Err(io::Error::new(
@@ -134,33 +73,7 @@ pub fn prebuild(
     let tile_version = tile_version(world);
     let tile_dir = tile_cache_dir(&tile_version);
     pyramid::build(world, aerial, mesh_textures, &tile_dir)?;
-    let bounds = world.iso_bounds;
-    let rocky = isometric(ROCKY_SOURCE.0, ROCKY_SOURCE.1, ROCKY_SOURCE.2);
-    let scene = Scene {
-        schema_version: SCENE_SCHEMA_VERSION,
-        world_sha256: read_world_sha256()?,
-        iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
-        city_hall: world.city_hall_focus(),
-        landmarks: vec![Landmark {
-            name: "Rocky".to_owned(),
-            point: [rocky.0, rocky.1],
-            min_zoom: 7,
-            color: "#8f5f3b".to_owned(),
-        }],
-        counts: Counts {
-            buildings: world.buildings.len(),
-            building_parts: world.building_parts.len(),
-            building_meshes: world.building_meshes.len(),
-            water: world.water.len(),
-            parks: world.parks.len(),
-            streets: world.streets.len(),
-        },
-        tile_version,
-        max_tile_zoom: ART_ZOOM,
-        max_zoom: MAX_VIEW_ZOOM,
-        home_zoom: HOME_ZOOM,
-    };
-    write_scene(&scene)
+    Scene::from_world(world, tile_version)?.write_current()
 }
 
 async fn index() -> Result<impl IntoResponse, StatusCode> {
@@ -266,143 +179,4 @@ fn tile_version(world: &World) -> String {
 
 fn tile_cache_dir(tile_version: &str) -> PathBuf {
     PathBuf::from("data/tiles").join(tile_version)
-}
-
-fn read_world_sha256() -> io::Result<String> {
-    let bytes = fs::read(CLEAN_METADATA)?;
-    let metadata: CleanMetadata = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    validate_sha256(&metadata.artifacts.world.sha256)?;
-    Ok(metadata.artifacts.world.sha256)
-}
-
-fn read_scene() -> io::Result<Scene> {
-    let bytes = fs::read(CURRENT_SCENE).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "the tile manifest is missing; run `uv run poe prebuild` first",
-            )
-        } else {
-            error
-        }
-    })?;
-    let scene: Scene = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    validate_scene(&scene)?;
-    Ok(scene)
-}
-
-fn write_scene(scene: &Scene) -> io::Result<()> {
-    validate_scene(scene)?;
-    let path = PathBuf::from(CURRENT_SCENE);
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("tile manifest path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let temporary = path.with_extension("json.part");
-    let mut bytes = serde_json::to_vec_pretty(scene).map_err(io::Error::other)?;
-    bytes.push(b'\n');
-    fs::write(&temporary, bytes)?;
-    fs::rename(temporary, path)
-}
-
-fn validate_scene(scene: &Scene) -> io::Result<()> {
-    if scene.schema_version != SCENE_SCHEMA_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported tile manifest version",
-        ));
-    }
-    validate_sha256(&scene.world_sha256)?;
-    if scene.tile_version.is_empty()
-        || !scene
-            .tile_version
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid tile version in manifest",
-        ));
-    }
-    if scene.max_tile_zoom != ART_ZOOM || scene.max_zoom < scene.max_tile_zoom {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid zoom levels in tile manifest",
-        ));
-    }
-    let [min_x, min_y, max_x, max_y] = scene.iso_bounds;
-    if !scene.iso_bounds.iter().all(|value| value.is_finite()) || min_x >= max_x || min_y >= max_y {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid bounds in tile manifest",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_sha256(value: &str) -> io::Result<()> {
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid world digest",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ART_ZOOM, Counts, Landmark, SCENE_SCHEMA_VERSION, Scene, validate_scene, validate_sha256,
-    };
-
-    fn scene() -> Scene {
-        Scene {
-            schema_version: SCENE_SCHEMA_VERSION,
-            world_sha256: "a".repeat(64),
-            iso_bounds: [1.0, 2.0, 3.0, 4.0],
-            city_hall: Some([2.0, 3.0]),
-            landmarks: vec![Landmark {
-                name: "Rocky".to_owned(),
-                point: [2.0, 3.0],
-                min_zoom: 7,
-                color: "#8f5f3b".to_owned(),
-            }],
-            counts: Counts {
-                buildings: 1,
-                building_parts: 0,
-                building_meshes: 1,
-                water: 0,
-                parks: 0,
-                streets: 0,
-            },
-            tile_version: "v1-test".to_owned(),
-            max_tile_zoom: ART_ZOOM,
-            max_zoom: 10,
-            home_zoom: 3,
-        }
-    }
-
-    #[test]
-    fn accepts_valid_scene() {
-        assert!(validate_scene(&scene()).is_ok());
-    }
-
-    #[test]
-    fn rejects_path_in_tile_version() {
-        let mut invalid = scene();
-        invalid.tile_version = "../tiles".to_owned();
-        assert!(validate_scene(&invalid).is_err());
-    }
-
-    #[test]
-    fn validates_lowercase_sha256() {
-        assert!(validate_sha256(&"0".repeat(64)).is_ok());
-        assert!(validate_sha256(&"A".repeat(64)).is_err());
-        assert!(validate_sha256("short").is_err());
-    }
 }
