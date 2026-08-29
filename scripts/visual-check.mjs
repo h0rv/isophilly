@@ -13,6 +13,7 @@ if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 10)) {
 const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
 const port = Number.parseInt(process.env.GEO_PHILLY_VISUAL_PORT ?? "3107", 10);
 const tileTimeout = Number.parseInt(process.env.GEO_PHILLY_VISUAL_TIMEOUT ?? "180000", 10);
+const settleBudget = Number.parseInt(process.env.GEO_PHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
 const origin = `http://127.0.0.1:${port}`;
 const server = spawn("target/release/geo-philly", ["serve", "--port", String(port)], {
   cwd: root,
@@ -51,6 +52,7 @@ async function waitForServer() {
  * @param {{ name: string, center?: [number, number] }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
+  const started = performance.now();
   const errors = [];
   const tileRequests = [];
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
@@ -59,9 +61,13 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   });
   page.on("response", async (response) => {
     if (response.url().includes("/tiles/")) {
+      const headers = await response.allHeaders();
       tileRequests.push({
         status: response.status(),
-        cache: (await response.allHeaders())["x-tile-cache"] ?? "unknown",
+        cache: headers["x-tile-cache"] ?? "unknown",
+        bytes: Number.parseInt(headers["content-length"] ?? "0", 10),
+        contentType: headers["content-type"] ?? "unknown",
+        cacheControl: headers["cache-control"] ?? "",
       });
     } else if (response.status() >= 400 && !response.url().endsWith("/favicon.ico")) {
       errors.push(`${response.status()} ${response.url()}`);
@@ -73,7 +79,35 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     parameters.set("cy", String(view.center[1]));
   }
   await page.goto(`${origin}/?${parameters}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector(`canvas[data-zoom="${zoom}"]`);
+  const domContentLoadedMs = performance.now() - started;
+  try {
+    await page.waitForSelector(`canvas[data-zoom="${zoom}"]`);
+  } catch (error) {
+    const status = await page
+      .locator("#status")
+      .textContent()
+      .catch(() => "missing status");
+    const canvasState = await page
+      .locator("#map")
+      .evaluate((element) => ({
+        width: element.getAttribute("width"),
+        height: element.getAttribute("height"),
+        zoom: element.getAttribute("data-zoom"),
+      }))
+      .catch(() => ({ missing: true }));
+    throw new Error(
+      `z${zoom} never initialized: ${error instanceof Error ? error.message : String(error)}\nstatus=${status}\ncanvas=${JSON.stringify(canvasState)}\n${errors.join("\n")}`,
+    );
+  }
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector("#map");
+    return (
+      canvas instanceof HTMLCanvasElement &&
+      Number(canvas.dataset.requested) > 0 &&
+      Number(canvas.dataset.uncovered) < Number(canvas.dataset.requested)
+    );
+  });
+  const firstMapMs = performance.now() - started;
   await page.waitForFunction(
     () => {
       const canvas = document.querySelector("#map");
@@ -82,6 +116,8 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     undefined,
     { timeout: tileTimeout },
   );
+  const settledMs = performance.now() - started;
+  const settledTileRequests = [...tileRequests];
   await page.waitForTimeout(100);
   const screenshot = view.name === "city-hall" ? `z${zoom}.png` : `${view.name}-z${zoom}.png`;
   await page.screenshot({ path: `${artifactDir}/${screenshot}` });
@@ -106,6 +142,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     }
     return {
       requested: Number(element.dataset.requested),
+      loaded: Number(element.dataset.loaded),
       tileZoom: Number(element.dataset.tileZoom),
       pending: Number(element.dataset.pending),
       uncovered: Number(element.dataset.uncovered),
@@ -117,6 +154,19 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   if (errors.length > 0) throw new Error(`z${zoom} browser errors:\n${errors.join("\n")}`);
   if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
+  }
+  if (settledMs > settleBudget) {
+    throw new Error(
+      `z${zoom} exceeded ${settleBudget} ms settle budget: ${settledMs.toFixed(1)} ms`,
+    );
+  }
+  if (
+    settledTileRequests.some(
+      (request) =>
+        request.contentType !== "image/webp" || !request.cacheControl.includes("immutable"),
+    )
+  ) {
+    throw new Error(`z${zoom} has a non-WebP or non-immutable tile response`);
   }
   const expectedTileZoom = Math.min(zoom, tileZoomLimit);
   if (canvas.tileZoom !== expectedTileZoom) {
@@ -131,6 +181,12 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     view: view.name,
     zoom,
     screenshot,
+    performance: {
+      domContentLoadedMs: Number(domContentLoadedMs.toFixed(1)),
+      firstMapMs: Number(firstMapMs.toFixed(1)),
+      settledMs: Number(settledMs.toFixed(1)),
+      tileBytes: settledTileRequests.reduce((total, request) => total + request.bytes, 0),
+    },
     canvas,
     tileResponses: {
       total: tileRequests.length,
@@ -151,6 +207,20 @@ async function interactions(browser, meta) {
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
     timeout: tileTimeout,
   });
+  await page.waitForFunction(
+    () => document.querySelector("#map")?.dataset.prefetch === "ready",
+    null,
+    {
+      timeout: tileTimeout,
+    },
+  );
+  const panStarted = performance.now();
+  await page.locator("#map").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
+    timeout: settleBudget,
+  });
+  const prefetchedPanMs = performance.now() - panStarted;
   const controls = await page.locator(".controls button").evaluateAll((buttons) =>
     buttons
       .filter((button) => !button.hidden)
@@ -182,7 +252,13 @@ async function interactions(browser, meta) {
   if (!landmarks.some((landmark) => landmark.name === "Rocky")) {
     throw new Error("Rocky landmark is missing");
   }
-  return { viewport: [390, 844], controls, keyboardPan: true, rocky: true };
+  return {
+    viewport: [390, 844],
+    controls,
+    keyboardPan: true,
+    prefetchedPanMs: Number(prefetchedPanMs.toFixed(1)),
+    rocky: true,
+  };
 }
 
 /** @param {Record<string, unknown>} meta */
@@ -194,7 +270,7 @@ async function profile(meta) {
   const count = 2 ** zoom;
   const x = Math.floor(((hall[0] - bounds[0]) / side) * count);
   const y = Math.floor(((hall[1] - bounds[1]) / side) * count);
-  const url = `${origin}/tiles/${zoom}/${x}/${y}.png?v=${meta.tile_version}`;
+  const url = `${origin}/tiles/${zoom}/${x}/${y}.webp?v=${meta.tile_version}`;
   const timedFetch = async () => {
     const started = performance.now();
     const response = await fetch(url);
@@ -209,9 +285,9 @@ async function profile(meta) {
   const first = await timedFetch();
   const second = await timedFetch();
   const overzoomResponse = await fetch(
-    `${origin}/tiles/${zoom + 1}/${x * 2}/${y * 2}.png?v=${meta.tile_version}`,
+    `${origin}/tiles/${zoom + 1}/${x * 2}/${y * 2}.webp?v=${meta.tile_version}`,
   );
-  const emptyResponse = await fetch(`${origin}/tiles/${zoom}/0/0.png?v=${meta.tile_version}`);
+  const emptyResponse = await fetch(`${origin}/tiles/${zoom}/0/0.webp?v=${meta.tile_version}`);
   const policy = {
     canonical: second.source,
     overzoom: overzoomResponse.status,

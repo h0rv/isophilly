@@ -18,11 +18,12 @@ pub fn draw_textured_faces<'a>(
     faces: impl IntoIterator<Item = &'a TexturedFace>,
     projection: &Projection,
     textures: &MeshTextureSource,
+    depth: &mut [f32],
 ) -> io::Result<()> {
     let mut rasterizer = Rasterizer {
         pixmap,
         projection,
-        depth: vec![f32::NEG_INFINITY; TILE_SIZE * TILE_SIZE],
+        depth,
     };
     let mut faces: Vec<_> = faces.into_iter().collect();
     faces.sort_unstable_by_key(|face| face.texture_id);
@@ -43,7 +44,7 @@ pub fn draw_textured_faces<'a>(
 struct Rasterizer<'a, 'b> {
     pixmap: &'a mut Pixmap,
     projection: &'b Projection,
-    depth: Vec<f32>,
+    depth: &'a mut [f32],
 }
 
 impl Rasterizer<'_, '_> {

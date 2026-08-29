@@ -13,6 +13,7 @@ use crate::{
     mesh_texture::MeshTextureSource,
     render::render_tile,
     texture::{AerialSource, AerialTile},
+    tile_codec::{EXTENSION, encode_image},
     world::World,
 };
 
@@ -49,7 +50,7 @@ pub fn is_complete(root: &Path) -> bool {
 pub fn tile_path(root: &Path, z: u8, x: u32, y: u32) -> PathBuf {
     root.join(z.to_string())
         .join(x.to_string())
-        .join(format!("{y}.png"))
+        .join(format!("{y}.{EXTENSION}"))
 }
 
 fn render_leaves(
@@ -157,9 +158,17 @@ impl LeafBuilder<'_> {
             return Ok(false);
         }
         let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
-        let aerial = AerialTile::for_isometric_tile(self.aerial, bounds, ART_ZOOM, x, y)?;
-        let png = render_tile(self.world, &aerial, self.mesh_textures, ART_ZOOM, x, y)?;
-        write_atomic(&path, &png)?;
+        let aerial = AerialTile::for_isometric_tile(
+            self.aerial,
+            self.world.iso_bounds,
+            bounds,
+            self.world.max_aerial_height(bounds),
+            ART_ZOOM,
+            x,
+            y,
+        )?;
+        let image = render_tile(self.world, &aerial, self.mesh_textures, ART_ZOOM, x, y)?;
+        write_atomic(&path, &image)?;
         let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
         if done.is_multiple_of(128) {
             let seconds = self.started.elapsed().as_secs_f64().max(0.001);
@@ -211,7 +220,7 @@ fn derive_parent(root: &Path, z: u8, x: u32, y: u32) -> io::Result<bool> {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::WebP)
                 .map_err(io::Error::other)?
                 .into_rgba8();
             if image.dimensions() != (TILE_SIZE, TILE_SIZE) {
@@ -233,13 +242,7 @@ fn derive_parent(root: &Path, z: u8, x: u32, y: u32) -> io::Result<bool> {
         return Ok(false);
     }
     let parent = image::imageops::resize(&canvas, TILE_SIZE, TILE_SIZE, FilterType::Triangle);
-    let mut bytes = Vec::new();
-    parent
-        .write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            image::ImageFormat::Png,
-        )
-        .map_err(io::Error::other)?;
+    let bytes = encode_image(&parent)?;
     write_atomic(&tile_path(root, z, x, y), &bytes)?;
     Ok(true)
 }
@@ -249,7 +252,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("tile path has no parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = path.with_extension("png.part");
+    let temporary = path.with_extension(format!("{EXTENSION}.part"));
     fs::write(&temporary, bytes)?;
     fs::rename(temporary, path)
 }
@@ -260,7 +263,8 @@ mod tests {
 
     use image::{Rgba, RgbaImage};
 
-    use super::{derive_level, derive_parent, tile_path};
+    use super::{derive_level, derive_parent, tile_path, write_atomic};
+    use crate::tile_codec::encode_image;
 
     #[test]
     fn parent_combines_available_children_and_fills_missing_quadrants()
@@ -276,7 +280,7 @@ mod tests {
             return Err("child has no parent directory".into());
         };
         fs::create_dir_all(parent_dir)?;
-        child.save(&path)?;
+        write_atomic(&path, &encode_image(&child)?)?;
 
         assert!(derive_parent(&root, 0, 0, 0)?);
         let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
@@ -301,10 +305,16 @@ mod tests {
             return Err("child has no parent directory".into());
         };
         fs::create_dir_all(parent_dir)?;
-        RgbaImage::from_pixel(256, 256, Rgba([255, 0, 0, 255])).save(&path)?;
+        write_atomic(
+            &path,
+            &encode_image(&RgbaImage::from_pixel(256, 256, Rgba([255, 0, 0, 255])))?,
+        )?;
         assert_eq!(derive_level(&root, 0, &[])?, vec![0]);
 
-        RgbaImage::from_pixel(256, 256, Rgba([0, 255, 0, 255])).save(&path)?;
+        write_atomic(
+            &path,
+            &encode_image(&RgbaImage::from_pixel(256, 256, Rgba([0, 255, 0, 255])))?,
+        )?;
         assert_eq!(derive_level(&root, 0, &[0])?, vec![0]);
         let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
         assert_eq!(parent.get_pixel(32, 32).0, [0, 255, 0, 255]);

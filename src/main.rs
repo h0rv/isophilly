@@ -6,6 +6,7 @@ mod pyramid;
 mod render;
 mod server;
 mod texture;
+mod tile_codec;
 mod world;
 
 use std::{io, num::NonZeroUsize, path::Path, sync::Arc};

@@ -2,11 +2,11 @@
 
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
-scene, and 2025 City aerial photography. Explore the whole city in a browser,
+scene, and 2024 City aerial photography. Explore the whole city in a browser,
 from the regional silhouette to individual buildings.
 
 The expensive geospatial import happens once in Python. A compact Rust service
-loads that result, renders PNG tiles in parallel, and caches them on disk. The
+loads that result, renders lossless WebP tiles in parallel, and caches them on disk. The
 viewer is one typed JavaScript file and a canvas. No AI-generated imagery,
 database, or browser framework is involved.
 
@@ -43,10 +43,10 @@ The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
 the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
 It does not switch to another renderer or replace textures with plain geometry.
 
-Aerial crops come from the native three inch 2025 PASDA service. Each z8 request
+Aerial crops come from the native one inch 2024 PASDA service. Each z8 request
 uses a 512 pixel crop of the source area for one isometric tile. Up to 32
 prebuild jobs can fetch source requests at once. Source crops are stored under
-`data/aerial/` with a hard 2 GiB limit.
+`data/aerial/` with a hard 8 GiB limit.
 
 After the first ingest, the usual development loop is only:
 

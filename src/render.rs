@@ -9,6 +9,7 @@ use crate::{
     mesh_texture::MeshTextureSource,
     projection::Projection,
     texture::AerialTile,
+    tile_codec::encode_rgba,
     world::{Bounds, World, inverse_isometric},
 };
 
@@ -28,6 +29,7 @@ pub fn render_tile(
     draw_ground(&mut pixmap, bounds, scale, aerial);
 
     let projection = Projection { bounds, scale };
+    let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let margin = 1.0 / scale;
     let query = AABB::from_corners(
         [bounds.min_x - margin, bounds.min_y - margin],
@@ -40,25 +42,18 @@ pub fn render_tile(
             .locate_in_envelope_intersecting(&world.source_envelope(bounds))
             .filter_map(|item| {
                 let building = &world.buildings[item.index];
+                let center = building.ring.center();
+                let point = AABB::from_corners([center.0, center.1], [center.0, center.1]);
                 let covered = world
                     .building_mesh_tree
-                    .locate_in_envelope_intersecting(&AABB::from_corners(
-                        [
-                            building.ring.bounds.min_x - 30.0,
-                            building.ring.bounds.min_y - 30.0,
-                        ],
-                        [
-                            building.ring.bounds.max_x + 30.0,
-                            building.ring.bounds.max_y + 30.0,
-                        ],
-                    ))
-                    .next()
-                    .is_some();
+                    .locate_in_envelope_intersecting(&point)
+                    .any(|item| world.building_meshes[item.index].footprint.contains(center));
                 (!covered).then_some(building)
             }),
         &projection,
         aerial,
         block_size(bounds),
+        &mut depth,
     );
     draw_textured_faces(
         &mut pixmap,
@@ -68,14 +63,15 @@ pub fn render_tile(
             .map(|item| &world.mesh_faces[item.index]),
         &projection,
         mesh_textures,
+        &mut depth,
     )?;
-    pixmap.encode_png().map_err(io::Error::other)
+    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
 }
 
 pub fn render_blank_tile() -> io::Result<Vec<u8>> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
     pixmap.fill(ground());
-    pixmap.encode_png().map_err(io::Error::other)
+    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
 }
 
 fn ground() -> Color {
@@ -94,7 +90,7 @@ fn draw_ground(pixmap: &mut Pixmap, bounds: Bounds, scale: f32, aerial: &AerialT
             let color = if missing_imagery(sampled) {
                 fallback
             } else {
-                mix_rgb(fallback, sampled, 0.9)
+                mix_rgb(fallback, sampled.unwrap_or(fallback), 0.9)
             };
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
             pixmap.data_mut()[offset..offset + 4]
@@ -107,8 +103,8 @@ fn block_size(bounds: Bounds) -> f32 {
     bounds.width() / 96.0
 }
 
-fn missing_imagery(color: [u8; 3]) -> bool {
-    color.iter().all(|channel| *channel >= 246)
+fn missing_imagery(color: Option<[u8; 3]>) -> bool {
+    color.is_none_or(|color| color.iter().all(|channel| *channel >= 246))
 }
 
 fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {

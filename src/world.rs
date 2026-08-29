@@ -94,6 +94,31 @@ pub struct Ring {
     pub bounds: Bounds,
     pub points: Vec<(f32, f32)>,
 }
+
+impl Ring {
+    pub fn center(&self) -> (f32, f32) {
+        (
+            (self.bounds.min_x + self.bounds.max_x) * 0.5,
+            (self.bounds.min_y + self.bounds.max_y) * 0.5,
+        )
+    }
+
+    pub fn contains(&self, point: (f32, f32)) -> bool {
+        let mut inside = false;
+        for index in 0..self.points.len() {
+            let left = self.points[index];
+            let right = self.points[(index + 1) % self.points.len()];
+            let crosses = (left.1 > point.1) != (right.1 > point.1);
+            if crosses {
+                let x = (right.0 - left.0).mul_add((point.1 - left.1) / (right.1 - left.1), left.0);
+                if point.0 < x {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+}
 #[derive(Clone)]
 pub struct Building {
     pub height: f32,
@@ -163,6 +188,13 @@ pub struct World {
 impl World {
     pub fn source_envelope(&self, bounds: Bounds) -> AABB<[f32; 2]> {
         bounds.source_envelope(self.max_height)
+    }
+
+    pub fn max_aerial_height(&self, bounds: Bounds) -> f32 {
+        self.building_tree
+            .locate_in_envelope_intersecting(&self.source_envelope(bounds))
+            .map(|item| self.buildings[item.index].height)
+            .fold(0.0, f32::max)
     }
 
     pub fn has_content(&self, query: &AABB<[f32; 2]>) -> bool {
@@ -738,6 +770,22 @@ mod tests {
         let source = inverse_isometric(projected.0, projected.1);
         assert!((source.0 - 820_983.0).abs() < 0.1);
         assert!((source.1 - 71_996.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn ring_contains_points_without_treating_its_bounding_box_as_geometry() {
+        let ring = super::Ring {
+            bounds: Bounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 4.0,
+                max_y: 4.0,
+            },
+            points: vec![(0.0, 0.0), (4.0, 0.0), (0.0, 4.0)],
+        };
+
+        assert!(ring.contains((1.0, 1.0)));
+        assert!(!ring.contains((3.0, 3.0)));
     }
 
     #[test]

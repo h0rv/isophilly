@@ -59,8 +59,14 @@ const tiles = new Map();
 const failures = new Map();
 const MIN_ZOOM = 0.7;
 const BASE_TILE_ZOOM = 2;
+const PREVIEW_TILE_ZOOM = 5;
 const MAX_CACHED_TILES = 512;
 const MAX_TILE_ATTEMPTS = 4;
+const PREFETCH_VIEW_LIMIT = 64;
+let activeView = "";
+/** @type {string | undefined} */
+let scheduledPrefetch;
+const prefetchedViews = new Set();
 
 function city() {
   if (meta === undefined) throw new Error("city metadata is not loaded");
@@ -93,6 +99,58 @@ function pruneTiles() {
   }
 }
 
+/** @param {HTMLImageElement} image */
+function imageSettled(image) {
+  if (image.complete) return Promise.resolve();
+  return new Promise((resolve) => {
+    image.addEventListener("load", resolve, { once: true });
+    image.addEventListener("error", resolve, { once: true });
+  });
+}
+
+/**
+ * @param {string} view
+ * @param {number} z
+ * @param {{ x: number, y: number }[]} coordinates
+ * @param {number} count
+ */
+function schedulePrefetch(view, z, coordinates, count) {
+  if (coordinates.length === 0 || prefetchedViews.has(view) || scheduledPrefetch === view) return;
+  scheduledPrefetch = view;
+  canvas.dataset.prefetch = "scheduled";
+  const run = () => {
+    if (scheduledPrefetch === view) scheduledPrefetch = undefined;
+    if (activeView !== view) return;
+    prefetchedViews.add(view);
+    while (prefetchedViews.size > PREFETCH_VIEW_LIMIT) {
+      const oldest = prefetchedViews.values().next().value;
+      if (typeof oldest !== "string") break;
+      prefetchedViews.delete(oldest);
+    }
+    const visible = new Set(coordinates.map(({ x, y }) => `${x}/${y}`));
+    const xs = coordinates.map(({ x }) => x);
+    const ys = coordinates.map(({ y }) => y);
+    const minX = Math.max(0, Math.min(...xs) - 1);
+    const maxX = Math.min(count - 1, Math.max(...xs) + 1);
+    const minY = Math.max(0, Math.min(...ys) - 1);
+    const maxY = Math.min(count - 1, Math.max(...ys) + 1);
+    const images = [];
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if (visible.has(`${x}/${y}`)) continue;
+        const image = requestTile(z, x, y);
+        if (image !== undefined) images.push(imageSettled(image));
+      }
+    }
+    canvas.dataset.prefetch = images.length === 0 ? "ready" : "loading";
+    void Promise.all(images).then(() => {
+      if (activeView === view) canvas.dataset.prefetch = "ready";
+    });
+  };
+  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 750 });
+  else setTimeout(run, 50);
+}
+
 /** @param {number} z @param {number} x @param {number} y */
 function requestTile(z, x, y) {
   const id = key(z, x, y);
@@ -106,7 +164,10 @@ function requestTile(z, x, y) {
   if (failure?.terminal || (failure !== undefined && failure.retryAt > Date.now())) {
     return undefined;
   }
-  if (z > 0) requestTile(z - 1, x >> 1, y >> 1);
+  if (z > 0) {
+    const parentZ = Math.min(z - 1, PREVIEW_TILE_ZOOM);
+    requestTile(parentZ, x >> (z - parentZ), y >> (z - parentZ));
+  }
   pruneTiles();
   const image = new Image();
   image.onload = () => {
@@ -122,7 +183,7 @@ function requestTile(z, x, y) {
     if (terminal) retry.hidden = false;
     setTimeout(draw, terminal ? 0 : delay);
   };
-  image.src = `/tiles/${z}/${x}/${y}.png?v=${encodeURIComponent(city().tile_version)}`;
+  image.src = `/tiles/${z}/${x}/${y}.webp?v=${encodeURIComponent(city().tile_version)}`;
   tiles.set(id, image);
   return image;
 }
@@ -192,6 +253,11 @@ function drawNow() {
   const firstY = Math.floor(-panY / tileSize);
   const lastX = Math.ceil((viewportWidth - panX) / tileSize);
   const lastY = Math.ceil((viewportHeight - panY) / tileSize);
+  const view = `${z}/${firstX}/${firstY}/${lastX}/${lastY}`;
+  if (activeView !== view) {
+    activeView = view;
+    canvas.dataset.prefetch = "idle";
+  }
   const centerTileX = (viewportWidth / 2 - panX) / tileSize;
   const centerTileY = (viewportHeight / 2 - panY) / tileSize;
   const coordinates = [];
@@ -237,11 +303,13 @@ function drawNow() {
   canvas.dataset.zoom = String(viewZoom);
   canvas.dataset.tileZoom = String(z);
   canvas.dataset.requested = String(requested);
+  canvas.dataset.loaded = String(loaded);
   canvas.dataset.pending = String(pending);
   canvas.dataset.uncovered = String(uncovered);
   canvas.dataset.failed = String(failed);
   canvas.dataset.cameraX = String(cameraX);
   canvas.dataset.cameraY = String(cameraY);
+  if (pending === 0 && failed === 0) schedulePrefetch(view, z, coordinates, count);
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */

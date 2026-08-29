@@ -15,13 +15,14 @@ pub fn draw_city_buildings<'a>(
     projection: &Projection,
     aerial: &AerialTile,
     block_size: f32,
+    depth: &mut [f32],
 ) {
     let mut rasterizer = Rasterizer {
         pixmap,
         projection,
         aerial,
         block_size,
-        depth: vec![f32::NEG_INFINITY; TILE_SIZE * TILE_SIZE],
+        depth,
     };
     for building in buildings {
         rasterizer.draw_building(building);
@@ -33,7 +34,7 @@ struct Rasterizer<'a, 'b> {
     projection: &'b Projection,
     aerial: &'b AerialTile,
     block_size: f32,
-    depth: Vec<f32>,
+    depth: &'a mut [f32],
 }
 
 impl Rasterizer<'_, '_> {
@@ -47,37 +48,46 @@ impl Rasterizer<'_, '_> {
             let right = building.ring.points[(index + 1) % building.ring.points.len()];
             self.draw_wall(left, right, building.height, facade);
         }
-        self.draw_roof(building);
+        self.draw_roof(building, facade);
     }
 
     fn facade_palette(&self, building: &Building) -> [u8; 3] {
-        let mut sum = [0_u32; 3];
-        let mut count = 0_u32;
+        let center = building.ring.center();
+        let mut samples = Vec::with_capacity(building.ring.points.len() * 2 + 1);
+        if let Some(sample) = self.aerial.sample(center.0, center.1, self.block_size) {
+            samples.push(sample);
+        }
         for &point in &building.ring.points {
-            let sample = self.aerial.sample(point.0, point.1, self.block_size);
-            let luminance =
-                u32::from(sample[0]) * 3 + u32::from(sample[1]) * 6 + u32::from(sample[2]);
-            if (400..=2_200).contains(&luminance) {
-                for channel in 0..3 {
-                    sum[channel] += u32::from(sample[channel]);
+            for amount in [0.35, 0.7] {
+                let inside = (
+                    point.0 + (center.0 - point.0) * amount,
+                    point.1 + (center.1 - point.1) * amount,
+                );
+                if let Some(sample) = self.aerial.sample(inside.0, inside.1, self.block_size) {
+                    samples.push(sample);
                 }
-                count += 1;
             }
         }
-        let average = if count == 0 {
+        samples.retain(|sample| {
+            let luminance =
+                u32::from(sample[0]) * 3 + u32::from(sample[1]) * 6 + u32::from(sample[2]);
+            (400..=2_200).contains(&luminance)
+        });
+        if samples.is_empty() {
             [128, 128, 128]
         } else {
-            sum.map(|channel| (channel / count) as u8)
-        };
-        soften(average)
+            soften(std::array::from_fn(|channel| {
+                samples.sort_unstable_by_key(|sample| sample[channel]);
+                samples[samples.len() / 2][channel]
+            }))
+        }
     }
 
     fn draw_wall(&mut self, left: (f32, f32), right: (f32, f32), height: f32, facade: [u8; 3]) {
-        let length = (right.0 - left.0).hypot(right.1 - left.1);
-        let ground_left = Vertex::world(left, 0.0, 0.0, self.projection);
-        let ground_right = Vertex::world(right, 0.0, length, self.projection);
-        let roof_left = Vertex::world(left, height, 0.0, self.projection);
-        let roof_right = Vertex::world(right, height, length, self.projection);
+        let ground_left = Vertex::world(left, 0.0, self.projection);
+        let ground_right = Vertex::world(right, 0.0, self.projection);
+        let roof_left = Vertex::world(left, height, self.projection);
+        let roof_right = Vertex::world(right, height, self.projection);
         let edge = (right.0 - left.0, right.1 - left.1);
         let light = if edge.0 + edge.1 >= 0.0 { 0.72 } else { 0.84 };
         self.draw_wall_triangle(
@@ -89,7 +99,7 @@ impl Rasterizer<'_, '_> {
         self.draw_wall_triangle([ground_left, roof_right, roof_left], facade, light, height);
     }
 
-    fn draw_roof(&mut self, building: &Building) {
+    fn draw_roof(&mut self, building: &Building, fallback: [u8; 3]) {
         let projected: Vec<_> = building
             .ring
             .points
@@ -139,8 +149,12 @@ impl Rasterizer<'_, '_> {
                     continue;
                 }
                 self.depth[offset] = depth;
-                let color = self.aerial.sample(source.0, source.1, self.block_size);
-                self.set_pixel(offset, color.map(|channel| shade(channel, 1.04)));
+                let color = self
+                    .aerial
+                    .sample(source.0, source.1, self.block_size)
+                    .unwrap_or(fallback);
+                let color = mix_rgb(color, fallback, 0.18);
+                self.set_pixel(offset, color.map(|channel| shade(channel, 1.02)));
             }
         }
     }
@@ -198,7 +212,6 @@ impl Rasterizer<'_, '_> {
                 let source_x = interpolate(&weights, &triangle, |vertex| vertex.source_x);
                 let source_y = interpolate(&weights, &triangle, |vertex| vertex.source_y);
                 let z = interpolate(&weights, &triangle, |vertex| vertex.z);
-                let along = interpolate(&weights, &triangle, |vertex| vertex.along);
                 let depth = view_depth(source_x, source_y, z);
                 let offset = y * TILE_SIZE + x;
                 if depth <= self.depth[offset] {
@@ -206,22 +219,9 @@ impl Rasterizer<'_, '_> {
                 }
                 self.depth[offset] = depth;
                 let mut color = facade;
-                let floor = (z / 3.2).floor() as i32;
-                let floor_fraction = (z / 3.2).fract();
-                let column = (along / 2.2).floor() as i32;
-                let is_window = height >= 9.0
-                    && (0.26..=0.68).contains(&floor_fraction)
-                    && column.rem_euclid(2) == 0;
-                let horizontal = if is_window {
-                    0.66
-                } else if floor.rem_euclid(2) == 0 {
-                    1.0
-                } else {
-                    0.95
-                };
                 let base = if height > 5.0 && z < 1.2 { 0.82 } else { 1.0 };
                 for channel in &mut color {
-                    *channel = shade(*channel, light * horizontal * base);
+                    *channel = shade(*channel, light * base);
                 }
                 self.set_pixel(offset, color);
             }
@@ -242,11 +242,10 @@ struct Vertex {
     source_x: f32,
     source_y: f32,
     z: f32,
-    along: f32,
 }
 
 impl Vertex {
-    fn world(point: (f32, f32), z: f32, along: f32, projection: &Projection) -> Self {
+    fn world(point: (f32, f32), z: f32, projection: &Projection) -> Self {
         let screen = projection.point(point, z);
         Self {
             screen_x: screen.0,
@@ -254,7 +253,6 @@ impl Vertex {
             source_x: point.0,
             source_y: point.1,
             z,
-            along,
         }
     }
 
@@ -265,7 +263,6 @@ impl Vertex {
             source_x: 0.0,
             source_y: 0.0,
             z: 0.0,
-            along: 0.0,
         }
     }
 }
@@ -310,6 +307,14 @@ fn soften(color: [u8; 3]) -> [u8; 3] {
     std::array::from_fn(|index| {
         let mixed = (u16::from(color[index]) * 3 + luminance * 2) / 5;
         mixed.clamp(56, 208) as u8
+    })
+}
+
+fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
+    std::array::from_fn(|index| {
+        (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
     })
 }
 

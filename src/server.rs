@@ -16,6 +16,7 @@ use crate::{
     pyramid::{self, ART_ZOOM, tile_path},
     render::render_blank_tile,
     texture::AerialSource,
+    tile_codec::{EXTENSION, MEDIA_TYPE},
     world::{World, isometric},
 };
 
@@ -57,7 +58,7 @@ struct Counts {
     streets: usize,
 }
 
-const PYRAMID_VERSION: &str = "v26-citywide-aerial-buildings";
+const PYRAMID_VERSION: &str = "v34-stable-aerial-facades";
 const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
 const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);
@@ -160,7 +161,11 @@ async fn tile(
     AxumPath((z, x, y)): AxumPath<(u8, u32, String)>,
 ) -> Response {
     let started = Instant::now();
-    let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
+    let Some(y) = y
+        .strip_suffix(EXTENSION)
+        .and_then(|value| value.strip_suffix('.'))
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     if z > ART_ZOOM || x >= 1 << z || y >= 1 << z {
@@ -168,9 +173,9 @@ async fn tile(
     }
     let path = tile_path(&state.tile_dir, z, x, y);
     match tokio::fs::read(&path).await {
-        Ok(png) => logged_png(png, "disk", z, x, y, started),
+        Ok(image) => logged_image(image, "disk", z, x, y, started),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            logged_png(state.blank_tile.as_ref().clone(), "empty", z, x, y, started)
+            logged_image(state.blank_tile.as_ref().clone(), "empty", z, x, y, started)
         }
         Err(error) => {
             warn!(?error, path = %path.display(), "tile cache read failed");
@@ -179,8 +184,8 @@ async fn tile(
     }
 }
 
-fn logged_png(
-    png: Vec<u8>,
+fn logged_image(
+    image: Vec<u8>,
     cache: &'static str,
     z: u8,
     x: u32,
@@ -197,11 +202,11 @@ fn logged_png(
     );
     (
         [
-            (header::CONTENT_TYPE, "image/png"),
+            (header::CONTENT_TYPE, MEDIA_TYPE),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             (header::HeaderName::from_static("x-tile-cache"), cache),
         ],
-        png,
+        image,
     )
         .into_response()
 }
