@@ -22,9 +22,10 @@ from .config import (
 )
 from .download import download_all
 from .geometry import buildings, city_rings, ground_rings, projected, streets
-from .mesh import building_meshes
+from .mesh import building_meshes, texture_digest
 from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot, Street
 from .osm import building_parts, source_metadata
+from .stadium import TEXTURE_ID_OFFSET, stadium_meshes
 
 WORLD_MAGIC = b"GEOPHILY"
 STREET_MAGIC = b"GEOSTRPH"
@@ -144,6 +145,7 @@ def write_metadata(
     for source in SOURCES.all():
         snapshot = snapshots[source.filename]
         metadata = snapshot.metadata()
+        metadata.update(source.provenance())
         if source is SOURCES.building_parts:
             metadata.update(source_metadata(snapshot))
         sources.append(metadata)
@@ -163,6 +165,10 @@ def write_metadata(
             "building_parts": len(parts),
             "building_part_facade_colors": sum(part.facade_color is not None for part in parts),
             "building_meshes": len(meshes),
+            "center_city_building_meshes": sum(
+                mesh.source_id < TEXTURE_ID_OFFSET for mesh in meshes
+            ),
+            "stadium_building_meshes": sum(mesh.source_id >= TEXTURE_ID_OFFSET for mesh in meshes),
             "building_mesh_faces": sum(len(mesh.faces) for mesh in meshes),
             "building_texture_atlases": len({mesh.texture_id for mesh in meshes}),
             "water": len(water),
@@ -206,8 +212,17 @@ async def main_async() -> None:
             f"expected at least {MIN_BUILDING_COUNT:,}"
         )
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
-    mesh_import = await building_meshes(snapshots[SOURCES.downtown_meshes.filename])
-    meshes = list(mesh_import.meshes)
+    async with asyncio.TaskGroup() as group:
+        center_city_task = group.create_task(
+            building_meshes(snapshots[SOURCES.downtown_meshes.filename])
+        )
+        stadium_task = group.create_task(
+            asyncio.to_thread(stadium_meshes, snapshots[SOURCES.stadium_meshes.filename])
+        )
+    meshes = sorted(
+        (*center_city_task.result(), *stadium_task.result()), key=lambda mesh: mesh.source_id
+    )
+    texture_sha256, texture_bytes = await asyncio.to_thread(texture_digest, meshes)
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
     packed_streets = streets(load(snapshots[SOURCES.streets.filename]), city)
@@ -220,7 +235,7 @@ async def main_async() -> None:
         water,
         parks,
         bounds,
-        mesh_import.texture_sha256,
+        texture_sha256,
     )
     pack_streets(packed_streets, bounds)
     write_metadata(
@@ -232,8 +247,8 @@ async def main_async() -> None:
         water,
         parks,
         packed_streets,
-        mesh_import.texture_sha256,
-        mesh_import.texture_bytes,
+        texture_sha256,
+        texture_bytes,
     )
     print(
         f"wrote {WORLD_BIN} ({WORLD_BIN.stat().st_size / 1_000_000:.1f} MB) and "

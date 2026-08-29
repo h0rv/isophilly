@@ -16,7 +16,7 @@ from shapely.geometry import MultiPoint, Polygon
 
 from .config import MESH_TEXTURE_DIR, RAW_DIR
 from .download import RETRY_DELAYS_SECONDS, RETRYABLE_HTTP_STATUS, USER_AGENT
-from .models import BuildingMesh, MeshFace, MeshImport, Point, Point3D, Ring, Snapshot
+from .models import BuildingMesh, MeshFace, Point, Point3D, Ring, Snapshot
 
 _MAX_DOWNLOADS = 12
 _EXPECTED_LAYER_VERSION = "1.7"
@@ -255,7 +255,7 @@ async def _load_node(
     return await asyncio.to_thread(parse_geometry, geometry, node)
 
 
-def _texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
+def texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
     digest = hashlib.sha256()
     size = 0
     for mesh in meshes:
@@ -267,7 +267,7 @@ def _texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
     return digest.digest(), size
 
 
-async def building_meshes(snapshot: Snapshot) -> MeshImport:
+async def building_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
     metadata = _object(json.loads(snapshot.path.read_text()), "I3S service metadata")
     if metadata.get("serviceVersion") != _EXPECTED_LAYER_VERSION:
         raise MeshParseError(
@@ -294,5 +294,4 @@ async def building_meshes(snapshot: Snapshot) -> MeshImport:
             *(_load_node(client, semaphore, base_url, cache_dir, node) for node in nodes)
         )
     meshes.sort(key=lambda mesh: mesh.source_id)
-    texture_sha256, texture_bytes = await asyncio.to_thread(_texture_digest, meshes)
-    return MeshImport(tuple(meshes), texture_sha256, texture_bytes)
+    return tuple(meshes)

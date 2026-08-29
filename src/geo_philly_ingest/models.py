@@ -77,13 +77,6 @@ class BuildingMesh:
 
 
 @dataclass(frozen=True, slots=True)
-class MeshImport:
-    meshes: tuple[BuildingMesh, ...]
-    texture_sha256: bytes
-    texture_bytes: int
-
-
-@dataclass(frozen=True, slots=True)
 class Street:
     street_class: int
     points: Ring

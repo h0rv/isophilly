@@ -34,9 +34,19 @@ class Source:
     url: str
     extension: str = "geojson"
     minimum_bytes: int = 1
+    attribution: str | None = None
+    terms_url: str | None = None
 
     def accepts_size(self, size: int) -> bool:
         return size >= self.minimum_bytes
+
+    def provenance(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        if self.attribution is not None:
+            result["attribution"] = self.attribution
+        if self.terms_url is not None:
+            result["terms_url"] = self.terms_url
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +58,7 @@ class Sources:
     streets: Source
     building_parts: Source
     downtown_meshes: Source
+    stadium_meshes: Source
 
     def all(self) -> tuple[Source, ...]:
         return (
@@ -58,6 +69,7 @@ class Sources:
             self.streets,
             self.building_parts,
             self.downtown_meshes,
+            self.stadium_meshes,
         )
 
 
@@ -118,5 +130,19 @@ SOURCES = Sources(
         "Philadelphia_Buildings/SceneServer?f=pjson",
         "json",
         minimum_bytes=5_000,
+        attribution="City of Philadelphia via PASDA",
+        terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
+        "file=Philadelphia_Building_3DModels.xml",
+    ),
+    stadium_meshes=Source(
+        "Philadelphia 2008 Stadium Area Textured 3D Models",
+        "stadium-area-2008",
+        "https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/"
+        "Stadium%20Area%20Processed%20w%20LiDAR-KML.zip",
+        "zip",
+        minimum_bytes=600_000_000,
+        attribution="City of Philadelphia via PASDA",
+        terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
+        "file=Philadelphia_Building_3DModels.xml",
     ),
 )

@@ -2,13 +2,14 @@
 
 `uv run poe ingest` downloads content-addressed snapshots of five City of
 Philadelphia ArcGIS layers and one OpenStreetMap query. It also downloads the
-official 2015 Center City 3D model into a versioned local cache. It processes
-them offline and writes:
+official 2015 Center City 3D model into a versioned local cache and downloads
+the official 2008 stadium-area KML/COLLADA archive. It processes them offline
+and writes:
 
 - `data/clean/philly.bin`: the version 5 building, building part, building mesh,
   water, and park world read by the Rust server.
 - `data/clean/mesh-textures/`: the 367 JPEG atlases used by the official I3S
-  scene.
+  scene and 808 JPEG textures used by the stadium models.
 - `data/clean/streets.bin`: a separate optional street-centerline artifact.
 - `data/clean/meta.json`: source URLs, request times, HTTP validators, SHA-256
   checksums, CRS, bounds, counts, and output checksums.
@@ -52,6 +53,18 @@ checksum is recorded and pinned.
   The importer reads each binary geometry resource and its matching JPEG atlas.
   It converts longitude and latitude offsets to EPSG:32129, applies each atlas
   region to the UV coordinates, and checks a 400 metre height ceiling.
+- The City of Philadelphia's 2008 stadium-area archive contains 814 highest
+  detail (`r0`) KML/COLLADA models around the sports complex. The importer
+  validates their published KML bounds, metre scale, Z-up axis, neutral
+  orientation, and JPEG texture references. Local east/north offsets are
+  anchored by each KML model location and projected to EPSG:32129. COLLADA's
+  bottom-left UV origin is converted to the renderer's top-left image origin.
+  Six components representing the Spectrum are excluded because the arena was
+  [demolished after this survey](https://corporate.comcast.com/comcast-voices/saying-goodbye-to-the-spectrum)
+  and the current aerial layer shows the replacement site. The resulting 808
+  models have 126,181 textured triangles. Their diffuse-only triangles
+  are omitted because they are source solids without photographic material,
+  not textured exterior surfaces.
 
 ## World binary format
 
@@ -99,10 +112,10 @@ Roof shape values are 0 flat, 1 gabled, 2 hipped, 3 pyramidal, 4 dome, 5 cone,
 and 6 mansard. The clean metadata stores the Overpass generator, data timestamp,
 query URL, response checksum, and part count.
 
-The I3S scene exposes triangle positions, UV coordinates, atlas regions, and
-JPEG texture atlases. The renderer samples those atlases on the matching
-triangles. It returns an error when an atlas is missing, so it cannot replace a
-textured building with a plain polygon.
+The I3S scene and stadium COLLADA archive expose triangle positions, UV
+coordinates, and JPEG textures. The renderer samples those textures on the
+matching triangles. It returns an error when a texture is missing, so it cannot
+replace a textured building with a plain polygon.
 
 ## Street binary format
 
@@ -175,7 +188,8 @@ has separate attribution and database sharing requirements. This project is an
 illustration, not an authoritative boundary, property, elevation, or navigation
 product.
 
-Public access to the I3S service does not state that its JPEG atlases may be
-redistributed. Get written permission from the City before publishing generated
-tiles that contain those textures. Local development does not resolve that
-publication requirement.
+Public access to the I3S service and PASDA stadium archive does not state that
+their JPEG textures may be redistributed. Get written permission from the City
+before publishing generated tiles that contain those textures. Local
+development does not resolve that publication requirement. Source attribution
+and the PASDA metadata URL are recorded in `meta.json`.
