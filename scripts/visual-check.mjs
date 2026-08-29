@@ -271,6 +271,19 @@ try {
     const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     results.push(await capture(rockyPage, 8, { name: "rocky", center: rocky.point }));
     await rockyPage.close();
+    const neighborhoods = [
+      { name: "rittenhouse", center: [985167.68, 310418.65] },
+      { name: "passyunk", center: [984479.11, 311909.39] },
+      { name: "stadiums", center: [981156.04, 313684.68] },
+      { name: "manayunk", center: [987130.87, 303737.71] },
+      { name: "northeast", center: [1006582.35, 307977.81] },
+      { name: "west-philly", center: [979452.36, 307652.14] },
+    ];
+    for (const neighborhood of neighborhoods) {
+      const neighborhoodPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+      results.push(await capture(neighborhoodPage, 8, neighborhood));
+      await neighborhoodPage.close();
+    }
   }
   const interactionResults = await interactions(browser, meta);
   const gitStatus = execFileSync("git", ["status", "--porcelain"], {

@@ -37,6 +37,9 @@ checksum is recorded and pinned.
   receive the 8 m default.
 - building footprints retain 0.35 m detail; ground polygons and centerlines use
   1 m topology-preserving simplification.
+- citywide footprint roofs reuse the aligned aerial pixels at their footprint
+  coordinates. Wall colors come from robust, desaturated samples of the same
+  local imagery. They are intentionally not described as facade textures.
 - streets include City classes 1–5, 9, and 10 (expressways through local roads
   and ramps). Class 6 driveways and non-traversable/walking/boundary lines are
   excluded from the clean render input.
@@ -134,6 +137,12 @@ neighborhood, and posterizes each channel. It does not generate imagery. Source
 crops persist under `data/aerial/` until the fixed 2 GiB cache ceiling is
 reached. The prebuild renders z8 and derives the lower levels from it. The
 browser magnifies z8 for closer views instead of generating more tiles.
+
+For each footprint outside the official I3S coverage, the renderer reverse-maps
+roof pixels into the source plane and samples this same aerial crop. It then
+uses a robust average of non-extreme footprint samples for the walls. A shared
+depth buffer preserves overlap among citywide buildings. Official textured
+triangles render over the fallback buildings in their coverage area.
 
 ## Provenance
 

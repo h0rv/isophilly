@@ -57,7 +57,7 @@ struct Counts {
     streets: usize,
 }
 
-const PYRAMID_VERSION: &str = "v23-one-textured-pyramid";
+const PYRAMID_VERSION: &str = "v26-citywide-aerial-buildings";
 const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
 const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);

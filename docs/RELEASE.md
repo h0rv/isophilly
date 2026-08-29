@@ -25,9 +25,9 @@
   keyboard navigation.
 - Save representative whole-city, neighborhood, and street-level screenshots
   from the exact release build.
-- Run the visual check at City Hall and at another Center City coordinate so the
-  general building part path is tested. Confirm that the visible OSM attribution
-  remains present when the legend is closed.
+- Run the visual check at City Hall and across the permanent neighborhood views
+  so both official mesh and citywide footprint paths are tested. Confirm that
+  the visible OSM attribution remains present when the legend is closed.
 
 ## Publication
 

@@ -6,7 +6,7 @@ as deterministic pixel art without generated imagery.
 ## Pipeline
 
 ```text
-City snapshots + official Center City I3S scene
+City footprints and heights + aerial photography + Center City I3S scene
   -> Python ingest
   -> one compact geometry binary + official texture atlases
   -> Rust renders textured z8 tiles
@@ -35,9 +35,11 @@ never invoke a second renderer.
 ## Rendering rules
 
 - Use one pixel treatment at every zoom.
-- Draw only the official textured Center City triangles as 3D geometry.
-- Use 2025 PASDA aerial crops for the ground across the rest of the city.
-- Do not draw untextured buildings, streets, parks, or water over the imagery.
+- Draw the official textured Center City triangles where they exist.
+- Elsewhere, extrude official City footprints at their source heights, sample
+  real aerial pixels on roofs, and derive restrained wall colors from the same
+  local imagery.
+- Let aerial photography provide roads, parks, water, and ground detail.
 - Show a lower resolution parent while a canonical pyramid tile loads.
 - Never substitute a plain geometry tile for a missing texture.
 

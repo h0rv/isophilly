@@ -4,6 +4,7 @@ use rstar::AABB;
 use tiny_skia::{Color, Pixmap};
 
 use crate::{
+    building_render::draw_city_buildings,
     mesh_render::draw_textured_faces,
     mesh_texture::MeshTextureSource,
     projection::Projection,
@@ -32,6 +33,33 @@ pub fn render_tile(
         [bounds.min_x - margin, bounds.min_y - margin],
         [bounds.max_x + margin, bounds.max_y + margin],
     );
+    draw_city_buildings(
+        &mut pixmap,
+        world
+            .building_tree
+            .locate_in_envelope_intersecting(&world.source_envelope(bounds))
+            .filter_map(|item| {
+                let building = &world.buildings[item.index];
+                let covered = world
+                    .building_mesh_tree
+                    .locate_in_envelope_intersecting(&AABB::from_corners(
+                        [
+                            building.ring.bounds.min_x - 30.0,
+                            building.ring.bounds.min_y - 30.0,
+                        ],
+                        [
+                            building.ring.bounds.max_x + 30.0,
+                            building.ring.bounds.max_y + 30.0,
+                        ],
+                    ))
+                    .next()
+                    .is_some();
+                (!covered).then_some(building)
+            }),
+        &projection,
+        aerial,
+        block_size(bounds),
+    );
     draw_textured_faces(
         &mut pixmap,
         world
@@ -56,7 +84,7 @@ fn ground() -> Color {
 
 fn draw_ground(pixmap: &mut Pixmap, bounds: Bounds, scale: f32, aerial: &AerialTile) {
     let fallback = [217_u8, 209, 195];
-    let block_size = bounds.width() / 96.0;
+    let block_size = block_size(bounds);
     for py in 0..TILE_SIZE {
         for px in 0..TILE_SIZE {
             let iso_x = (f32::from(px as u16) + 0.5).mul_add(1.0 / scale, bounds.min_x);
@@ -73,6 +101,10 @@ fn draw_ground(pixmap: &mut Pixmap, bounds: Bounds, scale: f32, aerial: &AerialT
                 .copy_from_slice(&[color[0], color[1], color[2], 255]);
         }
     }
+}
+
+fn block_size(bounds: Bounds) -> f32 {
+    bounds.width() / 96.0
 }
 
 fn missing_imagery(color: [u8; 3]) -> bool {

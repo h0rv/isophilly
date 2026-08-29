@@ -52,8 +52,10 @@ The packed height distribution is strongly rowhouse-shaped:
 | 80 m+ | 139 | 0.03% |
 
 Median height is 7.92 m; p90 is 10.67 m, p99 is 15.54 m, and the maximum is
-297.49 m. The current renderer does not extrude these footprints. It retains
-the records for coverage checks and possible future data work.
+297.49 m. Outside the detailed Center City mesh, the renderer extrudes these
+footprints across Philadelphia. Roofs sample the aligned 2025 aerial crop,
+while walls use a desaturated local palette derived from robust samples around
+the footprint.
 
 The OSM query returned 446 parts with an explicit height and 400 parts with only
 a level count. Another 193 parts had neither value and were skipped. One level
@@ -84,13 +86,13 @@ image for roads instead of drawing these centerlines.
 
 ## Known limitations
 
-- Binary version 5 still stores only exterior rings for the citywide footprint
-  index. The City source contains
-  609 footprint features with 1,006 interior rings, so courtyards and atria are
-  absent from the index. The renderer does not draw these footprint polygons.
-- The 2015 I3S scene covers Center City, so the rest of Philadelphia uses only
-  aerial imagery. The renderer does not invent untextured 3D geometry outside
-  the official scene.
+- Binary version 5 stores only exterior rings for the citywide footprint index.
+  The City source contains 609 footprint features with 1,006 interior rings, so
+  courtyards and atria are filled in the citywide extrusion.
+- The 2015 I3S scene covers Center City. Outside it, walls are an
+  aerial-derived illustration, not observed facade photography. Roof alignment
+  can also expose shadows or small date differences between the continuously
+  updated footprints and the 2025 image capture.
 - The 0.35 m footprint and 1 m ground/street simplification tolerances are fixed,
   not zoom-specific. Coordinates become `f32` in the binaries.
 - City Limits is an official generalized cartographic mask, not a surveyed
@@ -108,5 +110,6 @@ image for roads instead of drawing these centerlines.
 1. Get written permission to redistribute tiles that include the City texture
    atlases.
 2. Validate that the canonical z8 pixels stay aligned during every zoom step.
-3. Find a newer official textured 3D scene that can replace the 2015 capture
-   without losing the current geometry and facade detail.
+3. Find a newer official textured 3D scene or a practical, openly licensed
+   street-level source that can add observed facades without losing citywide
+   coverage.

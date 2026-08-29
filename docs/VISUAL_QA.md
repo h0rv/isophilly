@@ -14,8 +14,10 @@ dirty. Release evidence must come from the exact clean commit being published.
 
 The default check covers z3, z4, z5, z7, z9, and z10. It fails on browser
 errors, failed tile requests, blank canvases, uncovered parent gaps, or tiles
-that do not settle. It also checks an alternate Center City view, Rocky, basic
-controls, and repeated z8 requests. Set `GEO_PHILLY_VISUAL_ZOOMS` to a
+that do not settle. It also checks an alternate Center City view, Rocky,
+Rittenhouse, Passyunk, the stadium complex, Manayunk, Northeast Philadelphia,
+West Philadelphia, basic controls, and repeated z8 requests. Set
+`GEO_PHILLY_VISUAL_ZOOMS` to a
 comma-separated list when a change needs other levels.
 
 The server namespaces tiles by the renderer revision and a fingerprint of the

@@ -1,9 +1,9 @@
 # geo-philly
 
-A small, deterministic isometric map of Philadelphia built from the official
-2015 Center City textured 3D scene and 2025 City aerial photography. Explore
-the whole city in a browser, from the regional silhouette to individual
-buildings.
+A small, deterministic isometric map of Philadelphia built from official City
+building footprints and heights, the official 2015 Center City textured 3D
+scene, and 2025 City aerial photography. Explore the whole city in a browser,
+from the regional silhouette to individual buildings.
 
 The expensive geospatial import happens once in Python. A compact Rust service
 loads that result, renders PNG tiles in parallel, and caches them on disk. The
@@ -82,7 +82,7 @@ Official Center City I3S scene + City footprints and limits + PASDA aerial
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
                                       |
                                       v
-Rust + rstar/tiny-skia      ->  textured triangle z8 tiles
+Rust + rstar/tiny-skia      ->  one textured citywide z8 scene
                                       |
                                       v
 Rust + image               ->  z0 through z7 image pyramid
@@ -101,11 +101,14 @@ edge cache.
 ## Project status
 
 This is an early public prototype, not an authoritative map or surveying tool.
-The current City footprint layer has roughly 546,000 structures and defines
-where the city has content. The detailed Center City scene contains 367 atlas
-chunks and 294,443 textured triangles. The triangles preserve facades,
-setbacks, roof equipment, sloped roofs, and landmark silhouettes. Areas outside
-the official textured scene use aerial imagery without synthetic 3D boxes.
+The current City footprint layer contains 545,672 usable structure polygons.
+Outside the detailed mesh, roofs sample the matching aerial pixels and walls
+use a muted palette derived from those pixels. The source height fields drive
+extrusion, so this citywide treatment preserves real outlines and local color
+without claiming to reconstruct unseen facades. The detailed Center City scene
+contains 367 atlas chunks and 294,443 textured triangles. Those triangles
+preserve real facades, setbacks, roof equipment, sloped roofs, and landmark
+silhouettes.
 
 The source code is [MIT licensed](LICENSE). That license does not grant rights
 to the source datasets or generated map tiles; their provenance and publication

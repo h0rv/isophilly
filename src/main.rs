@@ -1,3 +1,4 @@
+mod building_render;
 mod mesh_render;
 mod mesh_texture;
 mod projection;

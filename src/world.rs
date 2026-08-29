@@ -92,6 +92,7 @@ impl Bounds {
 #[derive(Clone)]
 pub struct Ring {
     pub bounds: Bounds,
+    pub points: Vec<(f32, f32)>,
 }
 #[derive(Clone)]
 pub struct Building {
@@ -644,6 +645,7 @@ impl<'a> Cursor<'a> {
             max_x: f32::NEG_INFINITY,
             max_y: f32::NEG_INFINITY,
         };
+        let mut points = Vec::with_capacity(count);
         for _ in 0..count {
             let x = self.f32()?;
             let y = self.f32()?;
@@ -651,8 +653,9 @@ impl<'a> Cursor<'a> {
             bounds.min_y = bounds.min_y.min(y);
             bounds.max_x = bounds.max_x.max(x);
             bounds.max_y = bounds.max_y.max(y);
+            points.push((x, y));
         }
-        Ok(Ring { bounds })
+        Ok(Ring { bounds, points })
     }
 }
 
