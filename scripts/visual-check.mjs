@@ -308,8 +308,8 @@ try {
   if (!Number.isInteger(tileZoomLimit) || tileZoomLimit < 0 || tileZoomLimit > meta.max_zoom) {
     throw new Error(`server has an invalid tile zoom limit: ${JSON.stringify(meta)}`);
   }
-  if (!Number.isInteger(meta.counts?.building_parts) || meta.counts.building_parts < 1) {
-    throw new Error(`server has no detailed building parts: ${JSON.stringify(meta.counts)}`);
+  if (!Number.isInteger(meta.counts?.buildings) || meta.counts.buildings < 1) {
+    throw new Error(`server has no fallback buildings: ${JSON.stringify(meta.counts)}`);
   }
   if (!Number.isInteger(meta.counts?.building_meshes) || meta.counts.building_meshes < 1) {
     throw new Error(`server has no detailed building meshes: ${JSON.stringify(meta.counts)}`);

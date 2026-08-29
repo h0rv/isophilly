@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -8,6 +8,7 @@ use std::{
 
 use image::{Rgba, RgbaImage, imageops::FilterType};
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 
 use crate::{
     mesh_texture::MeshTextureSource,
@@ -20,6 +21,7 @@ use crate::{
 pub const ART_ZOOM: u8 = 8;
 const TILE_SIZE: u32 = 256;
 const COMPLETE_FILE: &str = ".complete";
+const INVENTORY_FILE: &str = ".inventory";
 const GROUND: Rgba<u8> = Rgba([217, 209, 195, 255]);
 
 pub fn build(
@@ -28,23 +30,139 @@ pub fn build(
     mesh_textures: &MeshTextureSource,
     root: &Path,
 ) -> io::Result<()> {
-    if is_complete(root) {
-        println!("tile pyramid is already complete");
-        return Ok(());
-    }
     fs::create_dir_all(root)?;
+    fs::remove_file(root.join(COMPLETE_FILE)).or_else(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })?;
     let mut changed = render_leaves(world, aerial, mesh_textures, root)?;
     for z in (0..ART_ZOOM).rev() {
         changed = derive_level(root, z, &changed)?;
         println!("built z{z} from z{}: {} written", z + 1, changed.len());
     }
+    write_inventory(root)?;
     fs::write(root.join(COMPLETE_FILE), b"complete\n")?;
     println!("tile pyramid complete");
     Ok(())
 }
 
-pub fn is_complete(root: &Path) -> bool {
-    root.join(COMPLETE_FILE).is_file()
+pub struct TileInventory {
+    entries: HashMap<(u8, u32, u32), TileFingerprint>,
+}
+
+struct TileFingerprint {
+    bytes: u64,
+    sha256: [u8; 32],
+}
+
+impl TileInventory {
+    pub fn expected_bytes(&self, z: u8, x: u32, y: u32) -> Option<u64> {
+        self.entries.get(&(z, x, y)).map(|entry| entry.bytes)
+    }
+
+    pub fn matches(&self, z: u8, x: u32, y: u32, bytes: &[u8]) -> bool {
+        self.entries.get(&(z, x, y)).is_some_and(|expected| {
+            expected.bytes == bytes.len() as u64
+                && expected.sha256 == <[u8; 32]>::from(Sha256::digest(bytes))
+        })
+    }
+}
+
+pub fn read_inventory(root: &Path) -> io::Result<TileInventory> {
+    if !root.join(COMPLETE_FILE).is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "tile pyramid is incomplete",
+        ));
+    }
+    let contents = fs::read_to_string(root.join(INVENTORY_FILE))?;
+    let mut entries = HashMap::new();
+    for line in contents.lines() {
+        let values: Vec<_> = line.split('/').collect();
+        let [z, x, y, size, digest] = values.as_slice() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid tile inventory",
+            ));
+        };
+        let z = z
+            .parse::<u8>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inventory zoom"))?;
+        let x = x
+            .parse::<u32>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inventory x"))?;
+        let y = y
+            .parse::<u32>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inventory y"))?;
+        let size = size
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inventory size"))?;
+        if z > ART_ZOOM || x >= 1 << z || y >= 1 << z || size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tile inventory entry is out of range",
+            ));
+        }
+        if entries
+            .insert(
+                (z, x, y),
+                TileFingerprint {
+                    bytes: size,
+                    sha256: parse_digest(digest)?,
+                },
+            )
+            .is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tile inventory contains a duplicate",
+            ));
+        }
+    }
+    if entries.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "tile inventory is empty",
+        ));
+    }
+    Ok(TileInventory { entries })
+}
+
+pub fn validate_complete(root: &Path) -> io::Result<()> {
+    let inventory = read_inventory(root)?;
+    inventory
+        .entries
+        .par_iter()
+        .try_for_each(|(&(z, x, y), expected)| {
+            let bytes = fs::read(tile_path(root, z, x, y))?;
+            if expected.bytes != bytes.len() as u64
+                || expected.sha256 != <[u8; 32]>::from(Sha256::digest(&bytes))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("tile does not match inventory: {z}/{x}/{y}"),
+                ));
+            }
+            Ok(())
+        })
+}
+
+fn parse_digest(value: &str) -> io::Result<[u8; 32]> {
+    if value.len() != 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid inventory digest",
+        ));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inventory digest"))?;
+    }
+    Ok(digest)
 }
 
 pub fn tile_path(root: &Path, z: u8, x: u32, y: u32) -> PathBuf {
@@ -69,16 +187,7 @@ fn render_leaves(
             world.has_content(&world.source_envelope(bounds))
         })
         .collect();
-    if let Some([focus_x, focus_y]) = world.city_hall_focus() {
-        tiles.par_sort_unstable_by_key(|index| {
-            let bounds = world
-                .iso_bounds
-                .tile(ART_ZOOM, index % count, index / count);
-            let dx = (bounds.min_x + bounds.max_x).mul_add(0.5, -focus_x);
-            let dy = (bounds.min_y + bounds.max_y).mul_add(0.5, -focus_y);
-            dx.mul_add(dx, dy * dy).to_bits()
-        });
-    }
+    tiles.par_sort_unstable_by_key(|index| morton_code(index % count, index / count));
     println!("z{ART_ZOOM} contains {} tiles", tiles.len());
     let started = Instant::now();
     let rendered = AtomicUsize::new(0);
@@ -93,48 +202,32 @@ fn render_leaves(
         skipped: &skipped,
         started,
     };
-    let mut pending = tiles;
-    let mut changed = Vec::new();
-    for pass in 1..=3 {
-        let results: Vec<(u32, io::Result<bool>)> = pending
-            .into_par_iter()
-            .map(|index| (index, builder.render(index)))
-            .collect();
-        let mut first_error = None;
-        pending = results
-            .into_iter()
-            .filter_map(|(index, result)| match result {
-                Ok(written) => {
-                    if written {
-                        changed.push(index);
-                    }
-                    None
-                }
-                Err(error) => {
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                    Some(index)
-                }
-            })
-            .collect();
-        if pending.is_empty() {
-            break;
-        }
-        println!(
-            "retrying {} failed z{ART_ZOOM} tiles after pass {pass}",
-            pending.len()
-        );
-        if pass == 3 {
-            return Err(first_error.unwrap_or_else(|| io::Error::other("tile build failed")));
-        }
-    }
+    let changed = tiles
+        .into_par_iter()
+        .map(|index| {
+            builder
+                .render(index)
+                .map(|written| written.then_some(index))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     println!(
         "built z{ART_ZOOM}: {} rendered, {} reused",
         rendered.load(Ordering::Relaxed),
         skipped.load(Ordering::Relaxed)
     );
     Ok(changed)
+}
+
+fn morton_code(x: u32, y: u32) -> u32 {
+    let mut code = 0;
+    for bit in 0..16 {
+        code |= ((x >> bit) & 1) << (bit * 2);
+        code |= ((y >> bit) & 1) << (bit * 2 + 1);
+    }
+    code
 }
 
 struct LeafBuilder<'a> {
@@ -153,20 +246,13 @@ impl LeafBuilder<'_> {
         let x = index % self.count;
         let y = index / self.count;
         let path = tile_path(self.root, ART_ZOOM, x, y);
-        if path.is_file() {
+        if valid_tile(&path)? {
             self.skipped.fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         }
         let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
-        let aerial = AerialTile::for_isometric_tile(
-            self.aerial,
-            self.world.iso_bounds,
-            bounds,
-            self.world.max_aerial_height(bounds),
-            ART_ZOOM,
-            x,
-            y,
-        )?;
+        let aerial =
+            AerialTile::for_source_bounds(self.aerial, self.world.aerial_source_bounds(bounds))?;
         let image = render_tile(self.world, &aerial, self.mesh_textures, ART_ZOOM, x, y)?;
         write_atomic(&path, &image)?;
         let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
@@ -192,11 +278,23 @@ fn derive_level(root: &Path, z: u8, dirty_children: &[u32]) -> io::Result<Vec<u3
             child_y.div_euclid(2) * count + child_x.div_euclid(2)
         })
         .collect();
-    let results: Vec<(u32, io::Result<bool>)> = (0..count * count)
+    let candidates: Vec<u32> = (0..count * count)
         .into_par_iter()
-        .filter(|index| {
-            dirty.contains(index) || !tile_path(root, z, index % count, index / count).is_file()
+        .map(|index| {
+            if dirty.contains(&index)
+                || !valid_tile(&tile_path(root, z, index % count, index / count))?
+            {
+                Ok(Some(index))
+            } else {
+                Ok(None)
+            }
         })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    let results: Vec<(u32, io::Result<bool>)> = candidates
+        .into_par_iter()
         .map(|index| (index, derive_parent(root, z, index % count, index / count)))
         .collect();
     results
@@ -257,13 +355,60 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(temporary, path)
 }
 
+fn valid_tile(path: &Path) -> io::Result<bool> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::WebP) else {
+        return Ok(false);
+    };
+    Ok(image.width() == TILE_SIZE && image.height() == TILE_SIZE)
+}
+
+fn write_inventory(root: &Path) -> io::Result<()> {
+    let mut contents = String::new();
+    for z in 0..=ART_ZOOM {
+        let count = 1_u32 << z;
+        for y in 0..count {
+            for x in 0..count {
+                let path = tile_path(root, z, x, y);
+                let bytes = match fs::read(path) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                let digest = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                contents.push_str(&format!("{z}/{x}/{y}/{}/{digest}\n", bytes.len()));
+            }
+        }
+    }
+    if contents.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cannot complete an empty tile pyramid",
+        ));
+    }
+    let path = root.join(INVENTORY_FILE);
+    let temporary = root.join(".inventory.part");
+    fs::write(&temporary, contents)?;
+    fs::rename(temporary, path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use image::{Rgba, RgbaImage};
 
-    use super::{derive_level, derive_parent, tile_path, write_atomic};
+    use super::{
+        COMPLETE_FILE, derive_level, derive_parent, read_inventory, tile_path, valid_tile,
+        validate_complete, write_atomic, write_inventory,
+    };
     use crate::tile_codec::encode_image;
 
     #[test]
@@ -319,6 +464,40 @@ mod tests {
         let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
         assert_eq!(parent.get_pixel(32, 32).0, [0, 255, 0, 255]);
 
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_distinguishes_expected_tiles_from_empty_space()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "geo-philly-pyramid-inventory-test-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        let path = tile_path(&root, 0, 0, 0);
+        write_atomic(
+            &path,
+            &encode_image(&RgbaImage::from_pixel(256, 256, Rgba([1, 2, 3, 255])))?,
+        )?;
+        assert!(valid_tile(&path)?);
+        write_inventory(&root)?;
+        fs::write(root.join(COMPLETE_FILE), b"complete\n")?;
+
+        let inventory = read_inventory(&root)?;
+        assert_eq!(
+            inventory.expected_bytes(0, 0, 0),
+            Some(fs::metadata(path)?.len())
+        );
+        validate_complete(&root)?;
+        let path = tile_path(&root, 0, 0, 0);
+        let size = fs::metadata(&path)?.len() as usize;
+        fs::write(path, vec![0_u8; size])?;
+        assert!(validate_complete(&root).is_err());
+        assert_eq!(inventory.expected_bytes(1, 0, 0), None);
         fs::remove_dir_all(root)?;
         Ok(())
     }

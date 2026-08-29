@@ -155,8 +155,7 @@ def parse_geometry(data: bytes, node: Mapping[str, Any]) -> BuildingMesh:
     height = max(z for _, _, z in points)
     if not 0.0 < height <= 400.0:
         raise MeshParseError(f"I3S mesh has an invalid height: {height}")
-    index = _integer(node.get("index"), "I3S node index")
-    return BuildingMesh(index, _resource_id(node), height, footprint, faces)
+    return BuildingMesh(_resource_id(node), height, footprint, faces)
 
 
 async def _get(client: httpx.AsyncClient, url: str) -> bytes:
@@ -204,12 +203,17 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-async def _node_pages(client: httpx.AsyncClient, base_url: str) -> list[Mapping[str, Any]]:
+async def _node_pages(
+    client: httpx.AsyncClient, base_url: str, cache_dir: Path
+) -> list[Mapping[str, Any]]:
     pages: list[Mapping[str, Any]] = []
     for page_id in range(64):
-        response = await client.get(f"{base_url}/layers/0/nodepages/{page_id}")
-        response.raise_for_status()
-        payload = response.json()
+        url = f"{base_url}/layers/0/nodepages/{page_id}"
+        data = await _cached_resource(client, url, cache_dir / "nodepages" / f"{page_id}.json")
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError as error:
+            raise MeshParseError(f"I3S node page {page_id} is invalid JSON") from error
         if not isinstance(payload, dict) or "nodes" not in payload:
             break
         pages.append(_object(payload, "I3S node page"))
@@ -226,24 +230,30 @@ async def _load_node(
     semaphore: asyncio.Semaphore,
     base_url: str,
     cache_dir: Path,
+    texture_dir: Path,
     node: Mapping[str, Any],
 ) -> BuildingMesh:
     resource_id = _resource_id(node)
     geometry_path = cache_dir / "geometry" / f"{resource_id}.bin"
-    texture_path = MESH_TEXTURE_DIR / f"{resource_id}.jpg"
+    texture_path = texture_dir / f"{resource_id}.jpg"
     async with semaphore:
-        geometry, texture = await asyncio.gather(
-            _cached_resource(
-                client,
-                f"{base_url}/layers/0/nodes/{resource_id}/geometries/0",
-                geometry_path,
-            ),
-            _cached_resource(
-                client,
-                f"{base_url}/layers/0/nodes/{resource_id}/textures/0",
-                texture_path,
-            ),
-        )
+        async with asyncio.TaskGroup() as group:
+            geometry_task = group.create_task(
+                _cached_resource(
+                    client,
+                    f"{base_url}/layers/0/nodes/{resource_id}/geometries/0",
+                    geometry_path,
+                )
+            )
+            texture_task = group.create_task(
+                _cached_resource(
+                    client,
+                    f"{base_url}/layers/0/nodes/{resource_id}/textures/0",
+                    texture_path,
+                )
+            )
+        geometry = geometry_task.result()
+        texture = texture_task.result()
     if not texture.startswith(b"\xff\xd8"):
         await asyncio.to_thread(texture_path.unlink, missing_ok=True)
         texture = await _cached_resource(
@@ -256,7 +266,9 @@ async def _load_node(
     return await asyncio.to_thread(parse_geometry, geometry, node)
 
 
-def texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
+def texture_digest(
+    meshes: list[BuildingMesh], texture_dir: Path = MESH_TEXTURE_DIR
+) -> tuple[bytes, int]:
     digest = hashlib.sha256()
     size = 0
     ordered = sorted(meshes, key=lambda mesh: mesh.texture_id)
@@ -264,7 +276,7 @@ def texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
     if len(texture_ids) != len(set(texture_ids)):
         raise MeshParseError("building mesh texture IDs must be unique")
     for mesh in ordered:
-        path = MESH_TEXTURE_DIR / f"{mesh.texture_id}.jpg"
+        path = texture_dir / f"{mesh.texture_id}.jpg"
         data = path.read_bytes()
         digest.update(struct.pack("<I", mesh.texture_id))
         digest.update(data)
@@ -285,7 +297,7 @@ def merge_mesh_sources(
         for mesh in source:
             footprint = Polygon(mesh.footprint)
             if footprint.is_empty or not footprint.is_valid or footprint.area <= 0.0:
-                raise MeshParseError(f"building mesh {mesh.source_id} has an invalid footprint")
+                raise MeshParseError(f"building mesh {mesh.texture_id} has an invalid footprint")
             covered = False
             if tree is not None:
                 for raw_index in tree.query(footprint, predicate="intersects"):
@@ -300,17 +312,19 @@ def merge_mesh_sources(
         selected.extend(accepted)
         coverage.extend(accepted_footprints)
         tree = STRtree(coverage)
-    return sorted(selected, key=lambda mesh: mesh.source_id)
+    return sorted(selected, key=lambda mesh: mesh.texture_id)
 
 
-def prune_mesh_textures(meshes: list[BuildingMesh]) -> None:
+def prune_mesh_textures(meshes: list[BuildingMesh], texture_dir: Path = MESH_TEXTURE_DIR) -> None:
     expected = {f"{mesh.texture_id}.jpg" for mesh in meshes}
-    for path in MESH_TEXTURE_DIR.glob("*.jpg"):
+    for path in texture_dir.glob("*.jpg"):
         if path.name not in expected:
             path.unlink()
 
 
-async def building_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
+async def building_meshes(
+    snapshot: Snapshot, texture_dir: Path = MESH_TEXTURE_DIR
+) -> tuple[BuildingMesh, ...]:
     metadata = _object(json.loads(snapshot.path.read_text()), "I3S service metadata")
     if metadata.get("serviceVersion") != _EXPECTED_LAYER_VERSION:
         raise MeshParseError(
@@ -325,16 +339,22 @@ async def building_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
         raise MeshParseError("I3S layer must contain 3D objects")
     base_url = snapshot.url.partition("?")[0]
     cache_dir = RAW_DIR / f"center-city-i3s-{layer.get('version', 'unknown')}"
-    MESH_TEXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    texture_dir.mkdir(parents=True, exist_ok=True)
     timeout = httpx.Timeout(120.0)
     limits = httpx.Limits(max_connections=_MAX_DOWNLOADS, max_keepalive_connections=_MAX_DOWNLOADS)
     async with httpx.AsyncClient(
         headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=timeout, limits=limits
     ) as client:
-        nodes = _leaf_nodes(await _node_pages(client, base_url))
+        nodes = _leaf_nodes(await _node_pages(client, base_url, cache_dir))
         semaphore = asyncio.Semaphore(_MAX_DOWNLOADS)
-        meshes = await asyncio.gather(
-            *(_load_node(client, semaphore, base_url, cache_dir, node) for node in nodes)
-        )
-    meshes.sort(key=lambda mesh: mesh.source_id)
+        tasks: list[asyncio.Task[BuildingMesh]] = []
+        async with asyncio.TaskGroup() as group:
+            for node in nodes:
+                tasks.append(
+                    group.create_task(
+                        _load_node(client, semaphore, base_url, cache_dir, texture_dir, node)
+                    )
+                )
+        meshes = [task.result() for task in tasks]
+    meshes.sort(key=lambda mesh: mesh.texture_id)
     return tuple(meshes)

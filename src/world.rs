@@ -1,11 +1,12 @@
 use std::{fs, io, path::Path};
 
 use rstar::{AABB, RTree, RTreeObject};
+use sha2::{Digest, Sha256};
 
 const MAGIC: &[u8; 8] = b"GEOPHILY";
-const STREET_MAGIC: &[u8; 8] = b"GEOSTRPH";
 const EPSG: u32 = 32129;
 const MESH_FACE_BYTES: usize = 3 * 5 * size_of::<f32>();
+const MESH_COVERAGE_BUFFER_METERS: f32 = 12.0;
 
 #[derive(Clone, Copy)]
 pub struct Bounds {
@@ -58,6 +59,12 @@ impl Bounds {
             max_x: self.max_x + amount,
             max_y: self.max_y + amount,
         }
+    }
+    fn include(&mut self, other: Self) {
+        self.min_x = self.min_x.min(other.min_x);
+        self.min_y = self.min_y.min(other.min_y);
+        self.max_x = self.max_x.max(other.max_x);
+        self.max_y = self.max_y.max(other.max_y);
     }
     pub fn ground_source_bounds(self) -> Self {
         let corners = [
@@ -118,14 +125,157 @@ impl Ring {
         }
         inside
     }
+
+    fn squared_distance_to_ring(&self, other: &Self) -> f32 {
+        if self
+            .points
+            .iter()
+            .copied()
+            .any(|point| other.contains(point))
+            || other
+                .points
+                .iter()
+                .copied()
+                .any(|point| self.contains(point))
+        {
+            return 0.0;
+        }
+        (0..self.points.len())
+            .flat_map(|left| {
+                (0..other.points.len()).map(move |right| {
+                    squared_distance_between_segments(
+                        self.points[left],
+                        self.points[(left + 1) % self.points.len()],
+                        other.points[right],
+                        other.points[(right + 1) % other.points.len()],
+                    )
+                })
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    fn intersects(&self, query: &AABB<[f32; 2]>) -> bool {
+        let lower = query.lower();
+        let upper = query.upper();
+        if self.bounds.max_x < lower[0]
+            || self.bounds.min_x > upper[0]
+            || self.bounds.max_y < lower[1]
+            || self.bounds.min_y > upper[1]
+        {
+            return false;
+        }
+        if self
+            .points
+            .iter()
+            .any(|&(x, y)| (lower[0]..=upper[0]).contains(&x) && (lower[1]..=upper[1]).contains(&y))
+        {
+            return true;
+        }
+        if [
+            (lower[0], lower[1]),
+            (lower[0], upper[1]),
+            (upper[0], lower[1]),
+            (upper[0], upper[1]),
+        ]
+        .into_iter()
+        .any(|corner| self.contains(corner))
+        {
+            return true;
+        }
+        (0..self.points.len()).any(|index| {
+            segment_intersects_box(
+                self.points[index],
+                self.points[(index + 1) % self.points.len()],
+                &lower,
+                &upper,
+            )
+        })
+    }
+}
+
+fn squared_distance_to_segment(point: (f32, f32), start: (f32, f32), end: (f32, f32)) -> f32 {
+    let segment = (end.0 - start.0, end.1 - start.1);
+    let length_squared = segment.0.mul_add(segment.0, segment.1 * segment.1);
+    if length_squared == 0.0 {
+        return squared_distance(point, start);
+    }
+    let offset = (point.0 - start.0, point.1 - start.1);
+    let fraction =
+        (offset.0.mul_add(segment.0, offset.1 * segment.1) / length_squared).clamp(0.0, 1.0);
+    squared_distance(
+        point,
+        (
+            segment.0.mul_add(fraction, start.0),
+            segment.1.mul_add(fraction, start.1),
+        ),
+    )
+}
+
+fn squared_distance_between_segments(
+    left_start: (f32, f32),
+    left_end: (f32, f32),
+    right_start: (f32, f32),
+    right_end: (f32, f32),
+) -> f32 {
+    let cross = |start: (f32, f32), end: (f32, f32), point: (f32, f32)| {
+        (end.0 - start.0).mul_add(point.1 - start.1, -(end.1 - start.1) * (point.0 - start.0))
+    };
+    let right_sides = (
+        cross(left_start, left_end, right_start),
+        cross(left_start, left_end, right_end),
+    );
+    let left_sides = (
+        cross(right_start, right_end, left_start),
+        cross(right_start, right_end, left_end),
+    );
+    if right_sides.0 * right_sides.1 < 0.0 && left_sides.0 * left_sides.1 < 0.0 {
+        return 0.0;
+    }
+    [
+        squared_distance_to_segment(left_start, right_start, right_end),
+        squared_distance_to_segment(left_end, right_start, right_end),
+        squared_distance_to_segment(right_start, left_start, left_end),
+        squared_distance_to_segment(right_end, left_start, left_end),
+    ]
+    .into_iter()
+    .fold(f32::INFINITY, f32::min)
+}
+
+fn segment_intersects_box(
+    start: (f32, f32),
+    end: (f32, f32),
+    lower: &[f32; 2],
+    upper: &[f32; 2],
+) -> bool {
+    let delta = (end.0 - start.0, end.1 - start.1);
+    let mut enter = 0.0_f32;
+    let mut leave = 1.0_f32;
+    for (direction, distance) in [
+        (-delta.0, start.0 - lower[0]),
+        (delta.0, upper[0] - start.0),
+        (-delta.1, start.1 - lower[1]),
+        (delta.1, upper[1] - start.1),
+    ] {
+        if direction == 0.0 {
+            if distance < 0.0 {
+                return false;
+            }
+            continue;
+        }
+        let ratio = distance / direction;
+        if direction < 0.0 {
+            enter = enter.max(ratio);
+        } else {
+            leave = leave.min(ratio);
+        }
+        if enter > leave {
+            return false;
+        }
+    }
+    true
 }
 #[derive(Clone)]
 pub struct Building {
-    pub height: f32,
-    pub ring: Ring,
-}
-#[derive(Clone)]
-pub struct BuildingPart {
     pub height: f32,
     pub ring: Ring,
 }
@@ -139,17 +289,13 @@ pub struct BuildingMesh {
     pub texture_id: u32,
     pub height: f32,
     pub footprint: Ring,
-    pub faces: Vec<MeshFace>,
     pub center: (f32, f32),
+    pub highest_point: (f32, f32, f32),
 }
 #[derive(Clone)]
 pub struct TexturedFace {
     pub texture_id: u32,
     pub face: MeshFace,
-}
-#[derive(Clone)]
-pub struct Street {
-    pub bounds: Bounds,
 }
 #[derive(Clone)]
 pub struct Indexed {
@@ -165,24 +311,18 @@ impl RTreeObject for Indexed {
 
 pub struct World {
     pub buildings: Vec<Building>,
-    pub building_parts: Vec<BuildingPart>,
     pub building_meshes: Vec<BuildingMesh>,
     pub mesh_faces: Vec<TexturedFace>,
     pub texture_ids: Vec<u32>,
     pub texture_sha256: [u8; 32],
-    pub water: Vec<Ring>,
-    pub parks: Vec<Ring>,
-    pub streets: Vec<Street>,
-    pub building_tree: RTree<Indexed>,
-    pub building_part_tree: RTree<Indexed>,
-    pub building_mesh_tree: RTree<Indexed>,
+    pub city: Vec<Ring>,
+    pub building_iso_tree: RTree<Indexed>,
+    pub building_covered_by_mesh: Vec<bool>,
     pub mesh_face_tree: RTree<Indexed>,
-    pub water_tree: RTree<Indexed>,
-    pub park_tree: RTree<Indexed>,
-    pub street_tree: RTree<Indexed>,
+    pub city_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
     pub max_height: f32,
-    pub data_version: u64,
+    pub world_sha256: [u8; 32],
 }
 
 impl World {
@@ -190,43 +330,22 @@ impl World {
         bounds.source_envelope(self.max_height)
     }
 
-    pub fn max_aerial_height(&self, bounds: Bounds) -> f32 {
-        self.building_tree
-            .locate_in_envelope_intersecting(&self.source_envelope(bounds))
-            .map(|item| self.buildings[item.index].height)
-            .fold(0.0, f32::max)
+    pub fn aerial_source_bounds(&self, bounds: Bounds) -> Bounds {
+        let mut source = bounds.ground_source_bounds();
+        let query = AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+        for item in self
+            .building_iso_tree
+            .locate_in_envelope_intersecting(&query)
+        {
+            source.include(self.buildings[item.index].ring.bounds);
+        }
+        source
     }
 
     pub fn has_content(&self, query: &AABB<[f32; 2]>) -> bool {
-        self.building_tree
+        self.city_tree
             .locate_in_envelope_intersecting(query)
-            .next()
-            .is_some()
-            || self
-                .building_part_tree
-                .locate_in_envelope_intersecting(query)
-                .next()
-                .is_some()
-            || self
-                .building_mesh_tree
-                .locate_in_envelope_intersecting(query)
-                .next()
-                .is_some()
-            || self
-                .water_tree
-                .locate_in_envelope_intersecting(query)
-                .next()
-                .is_some()
-            || self
-                .park_tree
-                .locate_in_envelope_intersecting(query)
-                .next()
-                .is_some()
-            || self
-                .street_tree
-                .locate_in_envelope_intersecting(query)
-                .next()
-                .is_some()
+            .any(|item| self.city[item.index].intersects(query))
     }
 
     pub fn city_hall_focus(&self) -> Option<[f32; 2]> {
@@ -237,13 +356,8 @@ impl World {
                 squared_distance(left.center, CITY_HALL)
                     .total_cmp(&squared_distance(right.center, CITY_HALL))
             })
-            .and_then(|mesh| {
-                mesh.faces
-                    .iter()
-                    .flat_map(|face| &face.points)
-                    .max_by(|left, right| left.2.total_cmp(&right.2))
-            })
-            .map(|&(x, y, z)| {
+            .map(|mesh| mesh.highest_point)
+            .map(|(x, y, z)| {
                 let point = isometric(x, y, z);
                 [point.0, point.1]
             })
@@ -252,27 +366,23 @@ impl World {
 
 pub fn load_world(path: &Path) -> io::Result<World> {
     let bytes = fs::read(path)?;
-    let streets_path = path.with_file_name("streets.bin");
-    let street_bytes = match fs::read(&streets_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let data_version = street_bytes.as_deref().map_or_else(
-        || fingerprint(&bytes),
-        |streets| fingerprint_pair(&bytes, streets),
-    );
-    let mut cursor = Cursor {
-        bytes: &bytes,
-        offset: 0,
-    };
+    let world_sha256 = Sha256::digest(&bytes).into();
+    parse_world(&bytes, world_sha256)
+}
+
+pub fn world_digest(path: &Path) -> io::Result<[u8; 32]> {
+    Ok(Sha256::digest(fs::read(path)?).into())
+}
+
+fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
+    let mut cursor = Cursor { bytes, offset: 0 };
     if cursor.take(8)? != MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not geo-philly data",
         ));
     }
-    if cursor.u32()? != 5 {
+    if cursor.u32()? != 6 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -285,10 +395,8 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         ));
     }
     let building_count = cursor.u32()? as usize;
-    let building_part_count = cursor.u32()? as usize;
     let building_mesh_count = cursor.u32()? as usize;
-    let water_count = cursor.u32()? as usize;
-    let park_count = cursor.u32()? as usize;
+    let city_ring_count = cursor.u32()? as usize;
     let texture_sha256 = cursor
         .take(32)?
         .try_into()
@@ -305,25 +413,9 @@ pub fn load_world(path: &Path) -> io::Result<World> {
         let ring = cursor.ring()?;
         buildings.push(Building { height, ring });
     }
-    let mut building_parts = Vec::with_capacity(building_part_count);
-    for _ in 0..building_part_count {
-        let _osm_id = cursor.u64()?;
-        let height = cursor.f32()?;
-        let _min_height = cursor.f32()?;
-        let _roof_height = cursor.f32()?;
-        if cursor.u8()? > 6 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unsupported roof shape",
-            ));
-        }
-        let _facade_color = cursor.optional_rgb()?;
-        let ring = cursor.ring()?;
-        building_parts.push(BuildingPart { height, ring });
-    }
     let mut building_meshes = Vec::with_capacity(building_mesh_count);
+    let mut mesh_faces = Vec::new();
     for _ in 0..building_mesh_count {
-        let _source_id = cursor.u32()?;
         let texture_id = cursor.u32()?;
         let height = cursor.f32()?;
         if !(0.0..=400.0).contains(&height) || height == 0.0 {
@@ -339,7 +431,7 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             (footprint.bounds.min_x + footprint.bounds.max_x) * 0.5,
             (footprint.bounds.min_y + footprint.bounds.max_y) * 0.5,
         );
-        let mut faces = Vec::with_capacity(face_count);
+        let mut highest_point: Option<(f32, f32, f32)> = None;
         for _ in 0..face_count {
             cursor.ensure_items(3, 20)?;
             let mut points = [(0.0, 0.0, 0.0); 3];
@@ -347,21 +439,30 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             for index in 0..3 {
                 points[index] = cursor.point3()?;
                 uvs[index] = (cursor.f32()?, cursor.f32()?);
+                if highest_point.is_none_or(|highest| points[index].2 > highest.2) {
+                    highest_point = Some(points[index]);
+                }
             }
-            faces.push(MeshFace { points, uvs });
+            mesh_faces.push(TexturedFace {
+                texture_id,
+                face: MeshFace { points, uvs },
+            });
         }
+        let highest_point = highest_point.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mesh must contain at least one face",
+            )
+        })?;
         building_meshes.push(BuildingMesh {
             texture_id,
             height,
             footprint,
-            faces,
             center,
+            highest_point,
         });
     }
-    let water = (0..water_count)
-        .map(|_| cursor.ring())
-        .collect::<io::Result<Vec<_>>>()?;
-    let parks = (0..park_count)
+    let city = (0..city_ring_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
     if cursor.remaining() != 0 {
@@ -370,42 +471,46 @@ pub fn load_world(path: &Path) -> io::Result<World> {
             "world data contains trailing bytes",
         ));
     }
-    let streets = street_bytes
-        .as_deref()
-        .map(parse_streets)
-        .transpose()?
-        .unwrap_or_default();
     let max_height = buildings
         .iter()
         .map(|building| building.height)
-        .chain(building_parts.iter().map(|part| part.height))
         .chain(building_meshes.iter().map(|mesh| mesh.height))
         .fold(0.0, f32::max);
-    let building_tree = index_buildings(&buildings);
-    let mesh_faces = textured_faces(&building_meshes);
+    let building_iso_tree = index_buildings(&buildings);
+    let building_mesh_tree = index_building_meshes(&building_meshes);
+    let building_covered_by_mesh = buildings
+        .iter()
+        .map(|building| {
+            let bounds = building.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
+            let query =
+                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+            building_mesh_tree
+                .locate_in_envelope_intersecting(&query)
+                .any(|item| {
+                    building_meshes[item.index]
+                        .footprint
+                        .squared_distance_to_ring(&building.ring)
+                        <= MESH_COVERAGE_BUFFER_METERS.powi(2)
+                })
+        })
+        .collect();
     let mut texture_ids: Vec<_> = building_meshes.iter().map(|mesh| mesh.texture_id).collect();
     texture_ids.sort_unstable();
     texture_ids.dedup();
     Ok(World {
-        building_tree,
-        building_part_tree: index_building_parts(&building_parts),
-        building_mesh_tree: index_building_meshes(&building_meshes),
+        building_iso_tree,
+        building_covered_by_mesh,
         mesh_face_tree: index_mesh_faces(&mesh_faces),
-        water_tree: index_rings(&water),
-        park_tree: index_rings(&parks),
-        street_tree: index_streets(&streets),
+        city_tree: index_rings(&city),
         buildings,
-        building_parts,
         building_meshes,
         mesh_faces,
         texture_ids,
         texture_sha256,
-        water,
-        parks,
-        streets,
+        city,
         iso_bounds: bounds.isometric(max_height),
         max_height,
-        data_version,
+        world_sha256,
     })
 }
 
@@ -413,97 +518,33 @@ fn squared_distance(left: (f32, f32), right: (f32, f32)) -> f32 {
     (left.0 - right.0).powi(2) + (left.1 - right.1).powi(2)
 }
 
-fn fingerprint(bytes: &[u8]) -> u64 {
-    fingerprint_from(0xcbf2_9ce4_8422_2325, bytes)
-}
-fn fingerprint_pair(first: &[u8], second: &[u8]) -> u64 {
-    fingerprint_from(fingerprint(first), second)
-}
-fn fingerprint_from(initial: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(initial, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
-fn parse_streets(bytes: &[u8]) -> io::Result<Vec<Street>> {
-    let mut cursor = Cursor { bytes, offset: 0 };
-    if cursor.take(8)? != STREET_MAGIC || cursor.u32()? != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported street data",
-        ));
-    }
-    if cursor.u32()? != EPSG {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "street data uses an unsupported coordinate system",
-        ));
-    }
-    let count = cursor.u32()? as usize;
-    for _ in 0..4 {
-        let _bound = cursor.f64()?;
-    }
-    let streets = (0..count)
-        .map(|_| {
-            let class = cursor.u8()?;
-            if !matches!(class, 1..=5 | 9 | 10) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "street data contains an unsupported class",
-                ));
-            }
-            let point_count = cursor.u32()? as usize;
-            let mut points = Vec::with_capacity(point_count);
-            let mut bounds = Bounds {
-                min_x: f32::INFINITY,
-                min_y: f32::INFINITY,
-                max_x: f32::NEG_INFINITY,
-                max_y: f32::NEG_INFINITY,
-            };
-            for _ in 0..point_count {
-                let x = cursor.f32()?;
-                let y = cursor.f32()?;
-                bounds.min_x = bounds.min_x.min(x);
-                bounds.min_y = bounds.min_y.min(y);
-                bounds.max_x = bounds.max_x.max(x);
-                bounds.max_y = bounds.max_y.max(y);
-                points.push((x, y));
-            }
-            if points.len() < 2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "street needs at least two points",
-                ));
-            }
-            Ok(Street { bounds })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    if cursor.remaining() != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "street data contains trailing bytes",
-        ));
-    }
-    Ok(streets)
-}
-
 fn index_buildings(buildings: &[Building]) -> RTree<Indexed> {
     RTree::bulk_load(
         buildings
             .iter()
             .enumerate()
-            .map(|(index, building)| indexed(index, building.ring.bounds))
+            .map(|(index, building)| indexed(index, building_iso_bounds(building)))
             .collect(),
     )
 }
-fn index_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
-    RTree::bulk_load(
-        parts
-            .iter()
-            .enumerate()
-            .map(|(index, part)| indexed(index, part.ring.bounds))
-            .collect(),
-    )
+
+fn building_iso_bounds(building: &Building) -> Bounds {
+    let mut bounds = Bounds {
+        min_x: f32::INFINITY,
+        min_y: f32::INFINITY,
+        max_x: f32::NEG_INFINITY,
+        max_y: f32::NEG_INFINITY,
+    };
+    for &(x, y) in &building.ring.points {
+        for z in [0.0, building.height] {
+            let point = isometric(x, y, z);
+            bounds.min_x = bounds.min_x.min(point.0);
+            bounds.min_y = bounds.min_y.min(point.1);
+            bounds.max_x = bounds.max_x.max(point.0);
+            bounds.max_y = bounds.max_y.max(point.1);
+        }
+    }
+    bounds
 }
 fn index_building_meshes(meshes: &[BuildingMesh]) -> RTree<Indexed> {
     RTree::bulk_load(
@@ -513,17 +554,6 @@ fn index_building_meshes(meshes: &[BuildingMesh]) -> RTree<Indexed> {
             .map(|(index, mesh)| indexed(index, mesh.footprint.bounds))
             .collect(),
     )
-}
-fn textured_faces(meshes: &[BuildingMesh]) -> Vec<TexturedFace> {
-    meshes
-        .iter()
-        .flat_map(|mesh| {
-            mesh.faces.iter().cloned().map(|face| TexturedFace {
-                texture_id: mesh.texture_id,
-                face,
-            })
-        })
-        .collect()
 }
 fn index_mesh_faces(faces: &[TexturedFace]) -> RTree<Indexed> {
     RTree::bulk_load(
@@ -555,15 +585,6 @@ fn index_rings(rings: &[Ring]) -> RTree<Indexed> {
             .iter()
             .enumerate()
             .map(|(index, ring)| indexed(index, ring.bounds))
-            .collect(),
-    )
-}
-fn index_streets(streets: &[Street]) -> RTree<Indexed> {
-    RTree::bulk_load(
-        streets
-            .iter()
-            .enumerate()
-            .map(|(index, street)| indexed(index, street.bounds))
             .collect(),
     )
 }
@@ -612,30 +633,6 @@ impl<'a> Cursor<'a> {
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u32"))?;
         Ok(u32::from_le_bytes(bytes))
-    }
-    fn u64(&mut self) -> io::Result<u64> {
-        let bytes: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u64"))?;
-        Ok(u64::from_le_bytes(bytes))
-    }
-    fn u8(&mut self) -> io::Result<u8> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated u8"))
-    }
-    fn optional_rgb(&mut self) -> io::Result<Option<[u8; 3]>> {
-        let bytes = self.take(4)?;
-        match bytes[3] {
-            0 if bytes[..3] == [0, 0, 0] => Ok(None),
-            255 => Ok(Some([bytes[0], bytes[1], bytes[2]])),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid optional RGB value",
-            )),
-        }
     }
     fn f32(&mut self) -> io::Result<f32> {
         let bytes: [u8; 4] = self
@@ -723,10 +720,38 @@ pub fn view_depth(x: f32, y: f32, height: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::{
-        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Cursor, MESH_FACE_BYTES, fingerprint,
-        fingerprint_pair, inverse_isometric, isometric,
+        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Cursor, MESH_FACE_BYTES, inverse_isometric,
+        isometric, parse_world,
     };
+
+    fn golden_world() -> std::io::Result<Vec<u8>> {
+        let hex = include_str!("../tests/fixtures/world-v6.hex")
+            .trim()
+            .as_bytes();
+        if !hex.len().is_multiple_of(2) {
+            return Err(std::io::Error::other("golden world has odd-length hex"));
+        }
+        hex.chunks_exact(2)
+            .map(|pair| {
+                let high = hex_nibble(pair[0])
+                    .ok_or_else(|| std::io::Error::other("golden world contains invalid hex"))?;
+                let low = hex_nibble(pair[1])
+                    .ok_or_else(|| std::io::Error::other("golden world contains invalid hex"))?;
+                Ok(high * 16 + low)
+            })
+            .collect()
+    }
+
+    fn hex_nibble(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            _ => None,
+        }
+    }
 
     #[test]
     fn isometric_bounds_cover_ground_and_height() {
@@ -786,6 +811,45 @@ mod tests {
 
         assert!(ring.contains((1.0, 1.0)));
         assert!(!ring.contains((3.0, 3.0)));
+        let nearby = super::Ring {
+            bounds: Bounds {
+                min_x: 5.0,
+                min_y: 0.0,
+                max_x: 6.0,
+                max_y: 1.0,
+            },
+            points: vec![(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)],
+        };
+        assert!((ring.squared_distance_to_ring(&nearby) - 1.0).abs() < f32::EPSILON);
+
+        let crossing = super::Ring {
+            bounds: Bounds {
+                min_x: -1.0,
+                min_y: 1.5,
+                max_x: 5.0,
+                max_y: 2.5,
+            },
+            points: vec![(-1.0, 1.5), (5.0, 1.5), (5.0, 2.5), (-1.0, 2.5)],
+        };
+        assert_eq!(ring.squared_distance_to_ring(&crossing), 0.0);
+    }
+
+    #[test]
+    fn ring_intersection_handles_containment_crossing_and_disjoint_boxes() {
+        let ring = super::Ring {
+            bounds: Bounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 4.0,
+                max_y: 4.0,
+            },
+            points: vec![(0.0, 0.0), (4.0, 0.0), (0.0, 4.0)],
+        };
+
+        assert!(ring.intersects(&rstar::AABB::from_corners([0.5, 0.5], [1.0, 1.0])));
+        assert!(ring.intersects(&rstar::AABB::from_corners([1.5, 1.5], [3.0, 3.0])));
+        assert!(!ring.intersects(&rstar::AABB::from_corners([3.0, 3.0], [4.0, 4.0])));
+        assert!(!ring.intersects(&rstar::AABB::from_corners([5.0, 5.0], [6.0, 6.0])));
     }
 
     #[test]
@@ -847,12 +911,21 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_changes_with_data() {
-        assert_ne!(fingerprint(b"city-a"), fingerprint(b"city-b"));
-        assert_eq!(fingerprint(b"city-a"), fingerprint(b"city-a"));
-        assert_ne!(
-            fingerprint_pair(b"city", b"roads-a"),
-            fingerprint_pair(b"city", b"roads-b")
+    fn parses_python_v6_golden_world() -> std::io::Result<()> {
+        let bytes = golden_world()?;
+        let digest = Sha256::digest(&bytes).into();
+        let world = parse_world(&bytes, digest)?;
+
+        assert_eq!(world.buildings.len(), 1);
+        assert_eq!(world.building_meshes.len(), 1);
+        assert_eq!(world.mesh_faces.len(), 1);
+        assert_eq!(world.city.len(), 1);
+        assert_eq!(world.texture_ids, vec![7]);
+        assert_eq!(
+            world.texture_sha256,
+            std::array::from_fn(|index| index as u8)
         );
+        assert_eq!(world.world_sha256, digest);
+        Ok(())
     }
 }

@@ -8,10 +8,11 @@ scene, the legacy 2008/09 downtown and stadium-area textured models, and 2024
 City aerial photography. Explore the whole city in a browser, from the regional
 silhouette to individual buildings.
 
-The expensive geospatial import happens once in Python. A compact Rust service
-loads that result, renders lossless WebP tiles in parallel, and caches them on disk. The
-viewer is one typed JavaScript file and a canvas. No AI-generated imagery,
-database, or browser framework is involved.
+The expensive geospatial import happens once in Python. A Rust prebuilder loads
+that result and renders lossless WebP tiles in parallel. The small HTTP service
+reads only a scene manifest and the finished tiles. The viewer is typed
+JavaScript and a canvas. No AI-generated imagery, database, or browser framework
+is involved.
 
 ## Run it
 
@@ -25,35 +26,39 @@ uv run --locked poe serve
 ```
 
 Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
-`ingest` downloads official City Limits, Building Footprints, Hydrology, PPR
-Properties, and Street Centerline snapshots. It also downloads height-backed
-OpenStreetMap building parts and the official 2015 Center City 3D model. It
-also imports the highest-detail legacy downtown and stadium KML/COLLADA models.
+`ingest` downloads official City Limits, Building Footprints, and the 2015
+Center City 3D model. It also imports the highest-detail legacy downtown and
+stadium KML/COLLADA models.
 For the downtown source, new checkouts download PASDA's smaller `kml00.zip`.
 Existing checkouts reuse `data/raw/Philadelphia2008_downtown_kml.zip` when it is
-present. It writes the compact `philly.bin` and `streets.bin` inputs plus a
-`meta.json` provenance record. The download and conversion are the slow first
-run step.
+present. It writes one `philly.bin` input plus a `meta.json` provenance record.
+The download and conversion are the slow first run step.
 The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
-Existing checkouts must rerun `ingest` because world format version 5 adds the
-texture digest, atlas IDs, triangle UV coordinates, and texture atlases.
+Existing checkouts must rerun `ingest` because world format version 6 removes
+unused layers and adds the City boundary to the single render input.
 `prebuild` renders the detailed z8 scene and creates z0 through z7 by resizing
 those tiles. This gives every overview the same textured scene instead of a
-different drawing style. The command uses four times the available logical CPU
-count, capped at 32 workers. The extra workers keep downloads and image writes
-moving while CPU work runs. It resumes from existing z8 tiles and writes a
-completion marker only after the whole pyramid is ready. Run
-`uv run --locked poe prebuild --jobs N` to choose a different worker count.
+different drawing style. The command uses the available logical CPU count,
+capped at 16 workers. PASDA downloads have a separate limit of eight. It
+resumes an interrupted staging build and publishes a compact inventory only
+after the whole pyramid is ready. A completed scene is immutable. If validation
+fails, including a content-hash mismatch, prebuild creates and publishes a
+replacement namespace instead of changing files beneath a running server. Old namespaces remain valid for
+servers that were already running when the new scene was published. Run
+`uv run --locked poe prebuild --jobs N` to choose from 1 through 16 workers.
 
 The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
 the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
 It does not switch to another renderer or replace textures with plain geometry.
 
-Aerial crops come from the native one inch 2024 PASDA service. Each z8 request
-uses a 512 pixel crop of the source area for one isometric tile. Up to 32
-prebuild jobs can fetch source requests at once. Source crops are stored under
-`data/aerial/` with a hard 8 GiB limit.
+Aerial crops come from the native one inch 2024 PASDA service. The renderer
+divides EPSG:32129 into fixed 1,536 metre cells, and each cell contains 2,048 by 2,048
+pixels. Every output tile samples the same source pixel grid, so tile borders
+cannot change the sampling phase. At most eight requests reach PASDA at once.
+Source cells are stored under `data/aerial/` with a hard 8 GiB limit.
+Each build removes obsolete cache formats, and an invalid cached image is
+fetched again once.
 
 After the first ingest, the usual development loop is only:
 
@@ -98,12 +103,12 @@ Rust + image               ->  z0 through z7 image pyramid
                               canvas deep-zoom viewer
 ```
 
-Python is not in the request path. The Rust server starts from one compact
-geometry file and serves the completed image pyramid. It does not load aerial
-sources or texture atlases and does not render during requests. Source imagery
-and rendered tiles persist across runs. The service binds to localhost by
-default. A production deployment can serve the pyramid as static files from an
-edge cache.
+Python is not in the request path. The Rust server starts from a small generated
+manifest and serves the completed image pyramid. It does not load geometry,
+aerial sources, or texture atlases, and it does not render during requests.
+Source imagery and rendered tiles persist across runs. The service binds to
+localhost by default. A production deployment can serve the pyramid as static
+files from an edge cache.
 
 ## Project status
 

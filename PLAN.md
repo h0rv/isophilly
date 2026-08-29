@@ -20,17 +20,17 @@ HTTP service. The official City Limits polygon defines the extent.
 ## Commands
 
 ```sh
-uv run poe ingest
-uv run poe prebuild
-uv run poe serve
-uv run poe visual
-uv run poe check
+uv run --locked poe ingest
+uv run --locked poe prebuild
+uv run --locked poe serve
+uv run --locked poe visual
+uv run --locked poe check
 ```
 
 Generated data stays under the ignored `data/` directory. `prebuild` is
-restartable and uses all available processors. The server requires a completed
-z0 through z8 pyramid. The two closer view levels magnify the canonical z8 pixels and
-never invoke a second renderer.
+restartable and uses available processors, capped at 16. The server requires a
+completed z0 through z8 pyramid. The two closer view levels magnify the canonical
+z8 pixels and never invoke a second renderer.
 
 ## Rendering rules
 

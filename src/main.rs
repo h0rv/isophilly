@@ -11,16 +11,16 @@ mod texture;
 mod tile_codec;
 mod world;
 
-use std::{io, num::NonZeroUsize, path::Path};
+use std::{io, path::Path};
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
     mesh_texture::MeshTextureSource,
-    server::{prebuild, serve},
+    server::{prebuild, prebuild_is_complete, serve},
     texture::AerialSource,
-    world::load_world,
+    world::{load_world, world_digest},
 };
 
 #[derive(Parser)]
@@ -36,8 +36,12 @@ enum Command {
         port: u16,
     },
     Prebuild {
-        #[arg(long, default_value_t = default_jobs())]
-        jobs: NonZeroUsize,
+        #[arg(
+            long,
+            default_value_t = default_jobs(),
+            value_parser = clap::value_parser!(u8).range(1..=16)
+        )]
+        jobs: u8,
     },
 }
 
@@ -53,7 +57,11 @@ async fn main() -> io::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Prebuild { jobs } => {
-            let world = load_world(Path::new("data/clean/philly.bin"))?;
+            let world_path = Path::new("data/clean/philly.bin");
+            if prebuild_is_complete(&world_digest(world_path)?) {
+                return Ok(());
+            }
+            let world = load_world(world_path)?;
             let aerial = AerialSource::open("data/aerial")?;
             let mesh_textures = MeshTextureSource::open(
                 "data/clean/mesh-textures",
@@ -61,7 +69,7 @@ async fn main() -> io::Result<()> {
                 world.texture_sha256,
             )?;
             let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(jobs.get())
+                .num_threads(usize::from(jobs))
                 .build()
                 .map_err(io::Error::other)?;
             println!("prebuild using {jobs} workers");
@@ -71,9 +79,9 @@ async fn main() -> io::Result<()> {
     }
 }
 
-fn default_jobs() -> NonZeroUsize {
+fn default_jobs() -> u8 {
     std::thread::available_parallelism()
         .ok()
-        .and_then(|jobs| NonZeroUsize::new(jobs.get().saturating_mul(4).min(32)))
-        .unwrap_or(NonZeroUsize::MIN)
+        .map(|jobs| jobs.get().min(16) as u8)
+        .unwrap_or(1)
 }

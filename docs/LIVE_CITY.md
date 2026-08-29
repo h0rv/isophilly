@@ -38,7 +38,7 @@ Village and Washington Square West:
 - [Washington Square West neighborhood guide](https://www.visitphilly.com/media-center/press-releases/neighborhood-guide-washington-square-west/)
 - [Washington Square West](https://www.visitphilly.com/areas/philadelphia-neighborhoods/washington-square-west/)
 
-Run `uv run poe neighborhoods` to refresh `static/neighborhoods.json`. The
+Run `uv run --locked poe neighborhoods` to refresh `static/neighborhoods.json`. The
 builder requires at least 140 features and checks for Bella Vista, Washington Square West, and
 Rittenhouse Square before replacing the generated file.
 

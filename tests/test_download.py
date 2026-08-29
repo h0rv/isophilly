@@ -9,7 +9,12 @@ from unittest.mock import patch
 import httpx
 
 from geo_philly_ingest.config import Source
-from geo_philly_ingest.download import _download_with_client
+from geo_philly_ingest.download import (
+    _cached_local_digest,
+    _download,
+    _download_with_client,
+    _save_response,
+)
 
 
 class DownloadTests(unittest.TestCase):
@@ -86,6 +91,86 @@ class DownloadTests(unittest.TestCase):
 
         self.assertEqual(snapshot.path, cached)
         self.assertEqual(snapshot.sha256, sha256)
+
+    def test_replaces_corrupt_content_addressed_destination(self) -> None:
+        payload = b"fresh complete response"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        destination = root / f"test-data-{sha256[:12]}.bin"
+        destination.write_bytes(b"corrupt")
+        request = httpx.Request("GET", self.source.url)
+        response = httpx.Response(200, content=payload, request=request)
+
+        with patch("geo_philly_ingest.download.RAW_DIR", root):
+            snapshot = _save_response(self.source, response)
+
+        self.assertEqual(snapshot.path, destination)
+        self.assertEqual(destination.read_bytes(), payload)
+        self.assertEqual(snapshot.sha256, sha256)
+
+    def test_immutable_source_uses_verified_cache_without_network(self) -> None:
+        payload = b"immutable archive"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        source = Source(
+            "Test archive",
+            "test-archive",
+            "https://example.test/archive",
+            "zip",
+            immutable=True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        cached = root / f"test-archive-{sha256[:12]}.zip"
+        cached.write_bytes(payload)
+
+        with (
+            patch("geo_philly_ingest.download.RAW_DIR", root),
+            patch("geo_philly_ingest.download.httpx.Client") as client,
+        ):
+            snapshot = _download(source)
+
+        self.assertEqual(snapshot.path, cached)
+        client.assert_not_called()
+
+    def test_local_digest_is_reused_while_file_is_unchanged(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        archive = Path(directory.name) / "archive.zip"
+        archive.write_bytes(b"verified archive")
+
+        first = _cached_local_digest(archive)
+        with patch("geo_philly_ingest.download._digest") as digest:
+            second = _cached_local_digest(archive)
+
+        self.assertEqual(first, second)
+        digest.assert_not_called()
+
+    def test_local_digest_is_recomputed_after_file_changes(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        archive = Path(directory.name) / "archive.zip"
+        archive.write_bytes(b"first")
+        first = _cached_local_digest(archive)
+        archive.write_bytes(b"second payload")
+
+        second = _cached_local_digest(archive)
+
+        self.assertNotEqual(first, second)
+
+    def test_local_digest_rejects_malformed_cached_hash(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        archive = Path(directory.name) / "archive.zip"
+        archive.write_bytes(b"verified archive")
+        expected = _cached_local_digest(archive)
+        sidecar = archive.with_suffix(".zip.sha256.json")
+        cached = sidecar.read_text().replace(expected, "G" * 64)
+        sidecar.write_text(cached)
+
+        self.assertEqual(_cached_local_digest(archive), expected)
 
 
 if __name__ == "__main__":

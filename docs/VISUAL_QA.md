@@ -1,9 +1,9 @@
 # Visual QA
 
-Run `uv run poe prebuild` before the visual check. Then run:
+Run `uv run --locked poe prebuild` before the visual check. Then run:
 
 ```sh
-uv run poe visual
+uv run --locked poe visual
 ```
 
 The check builds and starts the release server, opens fixed City Hall views in
@@ -20,10 +20,10 @@ West Philadelphia, basic controls, and repeated z8 requests. Set
 `GEO_PHILLY_VISUAL_ZOOMS` to a
 comma-separated list when a change needs other levels.
 
-The server namespaces tiles by the renderer revision and a fingerprint of the
-clean data. Z0 through z8 are one image pyramid made from the textured z8
+The server namespaces tiles by the renderer revision and the clean world's
+SHA-256 digest. Z0 through z8 are one image pyramid made from the textured z8
 scene. Z9 and z10 are view magnification only and request z8 tiles. The
-shared aerial source cache has a separate 2 GiB limit used during prebuild.
+shared aerial source cache has a separate 8 GiB limit used during prebuild.
 
 Use `?z=7` on the viewer URL to open a fixed QA zoom. The browser shows a lower
 resolution parent until a requested pyramid tile is ready. Beyond z8 it keeps

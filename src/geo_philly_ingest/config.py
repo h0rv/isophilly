@@ -2,16 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 CLEAN_DIR = ROOT / "data" / "clean"
 WORLD_BIN = CLEAN_DIR / "philly.bin"
-STREETS_BIN = CLEAN_DIR / "streets.bin"
 METADATA_JSON = CLEAN_DIR / "meta.json"
 MESH_TEXTURE_DIR = CLEAN_DIR / "mesh-textures"
 LEGACY_DOWNTOWN_ARCHIVE = RAW_DIR / "Philadelphia2008_downtown_kml.zip"
+STADIUM_ARCHIVE = RAW_DIR / "Philadelphia2008_stadium_kml.zip"
 
 # NAD83 / Pennsylvania South: the City's local State Plane projection in metres.
 # This is equivalent to EPSG:2272 with US-survey-foot coordinates converted to metres,
@@ -22,8 +21,7 @@ DEFAULT_HEIGHT_METERS = 8.0
 MIN_HEIGHT_METERS = 2.4
 MAX_HEIGHT_METERS = 400.0
 BUILDING_SIMPLIFY_METERS = 0.35
-GROUND_SIMPLIFY_METERS = 1.0
-STREET_SIMPLIFY_METERS = 1.0
+CITY_SIMPLIFY_METERS = 1.0
 MIN_BUILDING_AREA_METERS = 10.0
 MIN_BUILDING_COUNT = 500_000
 
@@ -37,6 +35,7 @@ class Source:
     minimum_bytes: int = 1
     attribution: str | None = None
     terms_url: str | None = None
+    immutable: bool = False
 
     def accepts_size(self, size: int) -> bool:
         return size >= self.minimum_bytes
@@ -54,10 +53,6 @@ class Source:
 class Sources:
     city: Source
     buildings: Source
-    water: Source
-    parks: Source
-    streets: Source
-    building_parts: Source
     downtown_meshes: Source
     legacy_downtown_meshes: Source
     stadium_meshes: Source
@@ -66,28 +61,10 @@ class Sources:
         return (
             self.city,
             self.buildings,
-            self.water,
-            self.parks,
-            self.streets,
-            self.building_parts,
             self.downtown_meshes,
             self.legacy_downtown_meshes,
             self.stadium_meshes,
         )
-
-    def downloadable(self, *, include_legacy_downtown: bool) -> tuple[Source, ...]:
-        if include_legacy_downtown:
-            return self.all()
-        return tuple(source for source in self.all() if source is not self.legacy_downtown_meshes)
-
-
-CENTER_CITY_BOUNDS = (39.94018, -75.19042, 39.96987, -75.13356)
-_south, _west, _north, _east = CENTER_CITY_BOUNDS
-_building_parts_query = (
-    "[out:json][timeout:180];"
-    f'way["building:part"]({_south},{_west},{_north},{_east});'
-    "out tags geom;"
-)
 
 
 SOURCES = Sources(
@@ -104,32 +81,6 @@ SOURCES = Sources(
         "ab9e89e1273f445bb265846c90b38a96_0/downloads/data?"
         "format=geojson&spatialRefId=4326&where=1%3D1",
         minimum_bytes=300_000_000,
-    ),
-    water=Source(
-        "Hydrology Polygons",
-        "hydrology-polygons",
-        "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
-        "Hydrographic_Features_Poly/FeatureServer/1/query?"
-        "outFields=*&where=1%3D1&f=geojson",
-    ),
-    parks=Source(
-        "PPR Properties",
-        "ppr-properties",
-        "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
-        "PPR_Properties/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson",
-    ),
-    streets=Source(
-        "Street Centerline",
-        "street-centerline",
-        "https://hub.arcgis.com/api/v3/datasets/"
-        "c36d828494cd44b5bd8b038be696c839_0/downloads/data?"
-        "format=geojson&spatialRefId=4326&where=1%3D1",
-    ),
-    building_parts=Source(
-        "OpenStreetMap Center City Building Parts",
-        "center-city-building-parts",
-        "https://overpass-api.de/api/interpreter?data=" + quote(_building_parts_query),
-        "json",
     ),
     downtown_meshes=Source(
         "Philadelphia 2015 Center City Textured 3D Buildings",
@@ -151,6 +102,7 @@ SOURCES = Sources(
         attribution="City of Philadelphia via PASDA",
         terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
         "file=Philadelphia_Building_3DModels.xml",
+        immutable=True,
     ),
     stadium_meshes=Source(
         "Philadelphia 2008 Stadium Area Textured 3D Models",
@@ -162,5 +114,6 @@ SOURCES = Sources(
         attribution="City of Philadelphia via PASDA",
         terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
         "file=Philadelphia_Building_3DModels.xml",
+        immutable=True,
     ),
 )

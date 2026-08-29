@@ -99,7 +99,6 @@ class ColladaTest(unittest.TestCase):
                 archive, replace(STADIUM, expected_model_count=1), textures
             )
 
-            self.assertEqual(mesh.source_id, 2_000_001)
             self.assertEqual(mesh.texture_id, 2_000_001)
             self.assertAlmostEqual(mesh.height, 10.0)
             self.assertEqual(len(mesh.faces), 1)
@@ -131,7 +130,6 @@ class ColladaTest(unittest.TestCase):
                 textures,
             )
 
-            self.assertEqual(mesh.source_id, 1_000_001)
             self.assertEqual(mesh.texture_id, 1_000_001)
             self.assertEqual((textures / "1000001.jpg").read_bytes(), JPEG)
 

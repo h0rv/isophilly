@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import shutil
 import sys
 import tempfile
@@ -31,6 +32,45 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _cached_local_digest(path: Path) -> str:
+    stat = path.stat()
+    cache_path = path.with_suffix(f"{path.suffix}.sha256.json")
+    try:
+        cached = json.loads(cache_path.read_text())
+        if (
+            cached["size"] == stat.st_size
+            and cached["mtime_ns"] == stat.st_mtime_ns
+            and _is_sha256(cached["sha256"])
+        ):
+            return cached["sha256"]
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    sha256 = _digest(path)
+    temporary = cache_path.with_suffix(f"{cache_path.suffix}.part")
+    temporary.write_text(
+        json.dumps(
+            {
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "sha256": sha256,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    temporary.replace(cache_path)
+    return sha256
+
+
 def _cached(source: Source) -> Snapshot | None:
     prefix = f"{source.filename}-"
     candidates = sorted(
@@ -41,7 +81,7 @@ def _cached(source: Source) -> Snapshot | None:
     for path in candidates:
         if not source.accepts_size(path.stat().st_size):
             continue
-        sha256 = _digest(path)
+        sha256 = _cached_local_digest(path)
         if path.stem.removeprefix(prefix) != sha256[:12]:
             continue
         modified = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
@@ -75,7 +115,7 @@ def local_snapshot(source: Source, path: Path) -> Snapshot:
         name=source.name,
         url=source.url,
         path=path,
-        sha256=_digest(path),
+        sha256=_cached_local_digest(path),
         size=size,
         fetched_at=modified,
         etag=None,
@@ -112,7 +152,13 @@ def _save_response(source: Source, response: httpx.Response) -> Snapshot:
     sha256 = digest.hexdigest()
     snapshot_path = RAW_DIR / f"{source.filename}-{sha256[:12]}.{source.extension}"
     if snapshot_path.exists():
-        temporary_path.unlink()
+        if (
+            snapshot_path.stat().st_size == temporary_path.stat().st_size
+            and _digest(snapshot_path) == sha256
+        ):
+            temporary_path.unlink()
+        else:
+            temporary_path.replace(snapshot_path)
     else:
         shutil.move(temporary_path, snapshot_path)
     return Snapshot(
@@ -166,6 +212,8 @@ def _download_with_client(source: Source, client: httpx.Client) -> Snapshot:
 
 def _download(source: Source) -> Snapshot:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
+    if source.immutable and (cached := _cached(source)) is not None:
+        return cached
     with httpx.Client(
         headers={"User-Agent": USER_AGENT},
         follow_redirects=True,

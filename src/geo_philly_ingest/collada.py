@@ -463,7 +463,7 @@ def _building_mesh(
     if not 0.0 < height <= 400.0:
         raise ColladaParseError(f"{model.placement.name} has invalid height {height}")
     identifier = dataset.identifier(model.placement.name)
-    return BuildingMesh(identifier, identifier, height, footprint, faces)
+    return BuildingMesh(identifier, height, footprint, faces)
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -504,13 +504,17 @@ def load_collada_meshes(
                 raise ColladaParseError(f"{model.texture_member} is not a complete JPEG")
             _write_atomic(texture_dir / f"{mesh.texture_id}.jpg", texture)
             meshes.append(mesh)
-    meshes.sort(key=lambda mesh: mesh.source_id)
+    meshes.sort(key=lambda mesh: mesh.texture_id)
     return tuple(meshes)
 
 
-def stadium_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
-    return load_collada_meshes(snapshot.path, STADIUM)
+def stadium_meshes(
+    snapshot: Snapshot, texture_dir: Path = MESH_TEXTURE_DIR
+) -> tuple[BuildingMesh, ...]:
+    return load_collada_meshes(snapshot.path, STADIUM, texture_dir)
 
 
-def legacy_downtown_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
-    return load_collada_meshes(snapshot.path, LEGACY_DOWNTOWN)
+def legacy_downtown_meshes(
+    snapshot: Snapshot, texture_dir: Path = MESH_TEXTURE_DIR
+) -> tuple[BuildingMesh, ...]:
+    return load_collada_meshes(snapshot.path, LEGACY_DOWNTOWN, texture_dir)

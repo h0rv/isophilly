@@ -8,8 +8,7 @@
   release-build, or dependency-audit failures.
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
-  has a URL, retrieval time, byte count, and SHA-256 checksum. Confirm that the
-  OSM source also records its generator and data timestamp.
+  has a URL, retrieval time, byte count, and SHA-256 checksum.
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.
@@ -27,11 +26,11 @@
   from the exact release build.
 - Run the visual check at City Hall and across the permanent neighborhood views
   so both official mesh and citywide footprint paths are tested. Confirm that
-  the visible OSM attribution remains present when the legend is closed.
+  the City and PASDA attribution remains present when the info panel is closed.
 
 ## Publication
 
-- Keep the City, OpenDataPhilly, PASDA, and OpenStreetMap attribution visible.
+- Keep the City, OpenDataPhilly, and PASDA attribution visible.
   Re-check the current source terms because the code's MIT license does not
   cover source data or tiles.
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to

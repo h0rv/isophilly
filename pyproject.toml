@@ -42,17 +42,21 @@ quote-style = "double"
 python-version = "3.12"
 
 [tool.poe.tasks]
-test-python = "python -m unittest discover -s tests"
-check-python = { shell = "ruff format --check src scripts tests && ruff check src scripts tests && ty check src scripts tests && python -m unittest discover -s tests" }
-check-rust = { shell = "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features && cargo build --release --locked" }
-check-web = "npm run check"
-audit = { shell = "uv audit --locked --preview-features audit-command && npm audit --audit-level=high && cargo deny check" }
-check = { shell = "poe check-python && poe check-web && poe check-rust && poe audit" }
-ingest = "python -m geo_philly_ingest.ingest"
-neighborhoods = "python scripts/build_neighborhoods.py"
-serve = "cargo run --release -- serve --port 3000"
-visual = { shell = "cargo build --release --locked && npm run visual" }
+test-python = { cmd = "python -m unittest discover -s tests", use_exec = true }
+check-python = { cmd = "bash -lc 'ruff format --check src scripts tests && ruff check src scripts tests && ty check src scripts tests && python -m unittest discover -s tests'", use_exec = true }
+check-rust = { cmd = "bash -lc 'cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features && cargo build --release --locked'", use_exec = true }
+check-web = { cmd = "npm run check", use_exec = true }
+audit = { cmd = "bash -lc 'uv audit --locked --preview-features audit-command && npm audit --audit-level=high && cargo deny check'", use_exec = true }
+check = { cmd = "bash -lc 'poe check-python && poe check-web && poe check-rust && poe audit'", use_exec = true }
+ingest = { cmd = "python -m geo_philly_ingest.ingest", use_exec = true }
+neighborhoods = { cmd = "python scripts/build_neighborhoods.py", use_exec = true }
+serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
+visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
+
+[tool.poe.executor]
+type = "simple"
 
 [tool.poe.tasks.prebuild]
-cmd = "cargo run --release -- prebuild"
+cmd = "cargo run --release --locked -- prebuild"
 help = "Build the tile pyramid; pass --jobs N to override worker count"
+use_exec = true

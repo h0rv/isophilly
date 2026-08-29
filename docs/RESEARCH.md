@@ -1,13 +1,13 @@
 # Research: deterministic isometric Philadelphia
 
-Research date: 2026-08-28. This is deliberately a **data-and-rendering**
+Research updated: 2026-08-29. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
 
 Use the official 2015 Center City I3S scene for detailed architecture and
 facade textures. Across the rest of Philadelphia, extrude official City
-footprints at their supplied heights, sample the 2025 PASDA aerial imagery on
+footprints at their supplied heights, sample the 2024 PASDA aerial imagery on
 the roofs, and derive a restrained wall palette from the same local pixels.
 This gives every neighborhood real geometry, height, roof detail, and local
 color while remaining honest that unseen walls are illustrative.
@@ -66,14 +66,79 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | --- | --- | --- | --- | --- |
 | 1. City clip | [City Limits catalog](https://opendataphilly.org/datasets/city-limits/) and [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/City_Limits/FeatureServer/0) | Official generalized standard boundary; catalog says updated 2012/as needed. | One small polygon; trivial. | Use as outer mask only; do not infer shoreline precision. |
 | 1. Buildings | [Building Footprints catalog](https://opendataphilly.org/datasets/building-footprints/), [GeoJSON download](https://hub.arcgis.com/api/v3/datasets/ab9e89e1273f445bb265846c90b38a96_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1), [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/LI_BUILDING_FOOTPRINTS/FeatureServer/0) | Official planimetric outlines; City service describes early-2015 imagery plus continuous updates, catalog says weekly. It includes houses, commercial/industrial buildings, sheds, garages, etc. | 546,084 polygons; 476.4 MB GeoJSON captured on 2026-08-26; expect several hundred MB RAM in Python/GDAL. Batch/page or download snapshot once—never render straight from HTTP. | Core layer. Dissolve/clip/simplify only after retaining an immutable raw snapshot. |
-| 1. Water | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) (polygon GeoJSON/SHP/API links) | Philadelphia Water Department polygons for rivers, creeks, ponds, reservoirs, water under bridges and edge water. PASDA lists the current hydrographic polygon/arc data as 2025. | Small vector layer; trivial. | Use polygons, not a filled city-boundary void: it preserves river shape and islands. |
-| 1. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/), [GeoJSON download](https://hub.arcgis.com/api/v3/datasets/c36d828494cd44b5bd8b038be696c839_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1), [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Street_Centerline/FeatureServer/0) | Citywide reference base layer. The City explicitly says it is not exact engineering geometry. | Manageable linework, but visually noisy at full city scale. | Filter by class/name/length; render arterials and a low-opacity local grid rather than every segment. |
-| 1. Center City parts | [OpenStreetMap Simple 3D Buildings](https://wiki.openstreetmap.org/wiki/Simple_3D_Buildings) and the [ODbL terms](https://www.openstreetmap.org/copyright) | Current way geometry and tags. The 2026-08-27 snapshot produced 826 usable parts after height checks. | The Overpass JSON is about 0.8 MB. | Use explicit height first, then levels. Skip missing heights. Keep visible contributor attribution. |
+| Removed. Water | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) | Useful vector data, but the current renderer gets water pixels from the aligned aerial image. | Small vector layer. | Do not ingest while it draws no pixels. |
+| Removed. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/) | Citywide reference linework, not exact road surfaces. | Manageable but visually noisy. | Do not ingest while the aerial image is the road surface. |
+| Removed. Center City parts | [OpenStreetMap Simple 3D Buildings](https://wiki.openstreetmap.org/wiki/Simple_3D_Buildings) | The former query produced 827 height-backed parts, but the renderer never drew them. | Small but dependent on a flaky Overpass request. | Remove the source, parser, clean types, attribution, and request failure mode. |
 | 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Render the textured triangles once into the canonical z8 artwork. Get written City permission before redistributing tiles that include the atlases. |
+| 1. Legacy downtown scene | [PASDA 2008 and 2009 downtown KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip) | 2,689 highest-detail models with photographed roofs and facades. It extends farther east, west, and south than the 2015 scene. | The smaller download is about 886 MB. Existing checkouts can reuse the retained 2.4 GB outer archive. | Import only `r0`, suppress overlap under the 2015 scene, and record the real 2008 and 2009 date. |
 | 1. Stadium scene | [PASDA 2008 stadium-area KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/Stadium%20Area%20Processed%20w%20LiDAR-KML.zip) | 814 highest-detail KML/COLLADA components with measured geometry and JPEG material textures. The 2008 source includes the since-demolished Spectrum. | 647 MB nested archive; output keeps 808 current components, 126,181 textured triangles, and about 84 MB of JPEGs. | Render through the same textured-mesh path as Center City; exclude the six Spectrum components and record the historical capture date. |
-| 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025, three-inch orthophotography exposed through an export API and downloadable source TIFF tiles. | A 512-pixel crop per isometric tile avoids a citywide mosaic. First builds pay network latency; a bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
+| 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2024 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer) | 2024 one-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
 | 2. Terrain/height | [2022 LiDAR/LAS catalog](https://opendataphilly.org/datasets/lidar-las-data/); [2022 DEM catalog/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7152); [NOAA LAZ archive](https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/laz/geoid18/9848/index.html) | Citywide capture from Apr. 2022. Classified points can refine roof form and height; the DEM alone is only ground elevation. | The NOAA archive is about 93 GB across 752 LAZ files. A full default import would dwarf the current pipeline. | Keep optional and targeted. Use LAZ surface minus ground only where it materially improves a landmark or roof shape; do not impose a 93 GB first run. |
 | 3. Street facade reference | [KartaView photo API](https://kartaview.org/doc/photos), [license FAQ](https://kartaview.org/doc/faq) | Public crowdsourced photos expose position, heading, time, and image URLs under CC BY-SA 4.0. A Rittenhouse test found only three images within 500 m, from different years. | Coverage and camera pose are uneven. Correctly projecting a photo onto a visible wall also requires occlusion and attribution handling. | Useful future opt-in source, not a citywide default. Audit coverage before downloading, and never smear a nearby photo across an unmatched facade. |
+
+### Citywide texture expansion
+
+The simplest credible next source is not satellite or random plane photography.
+It is a registered ensemble of the City's annual orthophotos. The catalog calls
+2022 a two-inch capture, but the service metadata and raster spacing consistently
+report three-inch pixels for both 2022 and 2023. The
+[2024 metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=PhiladelphiaImagery2024.xml)
+lists no use constraints. Keep 2024 as the canonical surface, align the older
+captures to the same State Plane grid, and select pixels from another year only
+where the current image has a shadow, glare, cloud, or occlusion. A median is
+useful inside a detected defect. Averaging every pixel would ghost cars, trees,
+and changed buildings.
+
+Both older ArcGIS services accept the same EPSG:32129 fixed-grid export scheme:
+
+- [2022 export](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2022/MapServer/export)
+  needs `layers=show:3` because its parent layer is hidden.
+- [2023 export](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2023/MapServer/export)
+  works without a layer override.
+
+For a deterministic repair, normalize each older cell to 2024 using robust
+channel percentiles from its neighbors. Replace a 2024 pixel only when the 2022
+and 2023 colors agree, both are at least 20 luminance steps brighter, and 2024
+luminance is below 70 percent of both. Remove tiny mask regions and feather the
+boundary by two to four output pixels. Keep 2024 whenever the older years
+disagree. This guards against construction, trees, moving cars, and different
+building lean. It repairs some shadows and transient occlusion but cannot invent
+a facade missing from every nadir capture.
+
+True citywide photographed facades need calibrated oblique or stereo frames.
+The City's [2024 imagery procurement answers](https://www.phila.gov/media/20230927120650/RFI-PWD-planimetric-data-20230915-q-and-a.pdf)
+describe controlled EagleView imagery, aerial triangulation, and 2024 LiDAR.
+Ask `maps@phila.gov` for those source frames and written permission to publish
+irreversible rasterized texture tiles. The public
+[Pictometry viewer](https://pictometry.phila.gov/) is evidence that the imagery
+exists, not permission to scrape or redistribute it.
+
+[WorldView 3D](https://developers.maxar.com/docs/ordering/guides/worldview-3d-ordering)
+can provide a commercial 0.5 metre textured surface from stereo satellite
+imagery. It is quote-priced and public redistribution is not automatic. It is
+unlikely to recover rowhouse facades well enough to justify the cost. Do not
+order it without a sample scene and explicit web-tile rights.
+
+Uncalibrated amateur or government oblique photos can help a hand-registered
+landmark. They cannot be averaged into the city map. Without camera pose,
+control points, overlap, and visibility data, automated projection produces
+misregistration and repeated-building artifacts. KartaView is the only useful
+open pilot found near Center City, but its sparse coverage and CC BY-SA terms
+make it an optional, separately attributed source rather than the default.
+
+### Rejected PASDA raw frames
+
+PASDA exposes about 19,208 RGB TIFF frames in a separate `philly_nadir`
+directory. The archive is roughly 1 TB. A sampled 4,872 by 3,248 TIFF had no
+GeoTIFF tags, world file, camera pose, or exterior orientation. It was near
+vertical and showed little useful facade. A coarse feature match against the
+official 2010 orthophoto produced no reliable registration.
+
+The directory exposes filenames but no frame footprint catalog. The imagery
+metadata says there are no use constraints, while related Pictometry material
+has license restrictions. Do not ingest this archive. A future evaluation first
+needs image footprints, camera orientation and calibration, and written
+permission to publish derivatives.
 
 ### Deterministic ingestion rules
 
@@ -97,8 +162,8 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | Component | Why it is useful | Fit |
 | --- | --- | --- |
 | [cannoneyed/isometric-nyc](https://github.com/cannoneyed/isometric-nyc) (MIT) | Reference implementation for an isometric-city pipeline, orthographic 3-D tile renderer, DZI export, bounds clipping, and a React viewer. | Read/copy small pipeline ideas; do not inherit its AI generation, Google 3-D Tiles dependency, 22.9-GB tile corpus, or unmaintained “agent-built” complexity. |
-| [OpenSeadragon](https://github.com/openseadragon/openseadragon) (BSD-3-Clause) + [DZI](https://openseadragon.github.io/examples/tilesource-dzi/) | Mature static deep-zoom viewer. Maps precisely to the desired “one enormous artwork, explore by zooming” interaction. | **Recommended viewer.** No GIS runtime or API key required after publish. |
-| [libvips](https://www.libvips.org/) (LGPL-2.1+) | Fast, memory-efficient image pyramid creation; Isometric NYC uses it to produce its DZI/WebP export. | **Recommended offline tiler**, subject to normal LGPL distribution compliance. |
+| [OpenSeadragon](https://github.com/openseadragon/openseadragon) (BSD-3-Clause) + [DZI](https://openseadragon.github.io/examples/tilesource-dzi/) | Mature static deep-zoom viewer. Maps precisely to the desired “one enormous artwork, explore by zooming” interaction. | Keep as a fallback. The current small canvas viewer already provides bounded pan, zoom, overlays, and prefetch without another dependency. |
+| [libvips](https://www.libvips.org/) (LGPL-2.1+) | Fast, memory-efficient image pyramid creation; Isometric NYC uses it to produce its DZI/WebP export. | Consider only if the current parallel Rust parent-tile builder becomes a measured bottleneck. |
 | [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) (BSD-3-Clause) | Open WebGL map renderer; supports [3-D building/fill-extrusion examples](https://maplibre.org/maplibre-gl-js/docs/examples/). | Use only if v2 truly needs free camera/live GIS layers. It is unnecessary complexity for the artwork-first v1. |
 | [streets-gl](https://github.com/StrandedKitty/streets-gl) | WebGL2 OSM 3-D renderer that generates geometry on the fly (buildings/roads/trees). | Study its batching/render-graph ideas only; its OSM schema and free-camera product are not the Philly source-of-truth path. |
 

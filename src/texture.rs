@@ -12,15 +12,16 @@ use std::{
 use image::RgbImage;
 use reqwest::blocking::Client;
 
-use crate::world::{Bounds, isometric};
+use crate::world::Bounds;
 
-const SOURCE_CACHE_VERSION: &str = "2024-1in-512-v1-classic-iso";
-const SOURCE_SIZE: u32 = 512;
-const SOURCE_ZOOM: u8 = 8;
-const SOURCE_OVERLAP_PIXELS: f32 = 2.0;
+const SOURCE_CACHE_VERSION: &str = "2024-1in-1536m-grid-v1";
+const SOURCE_SIZE: u32 = 2048;
+const SOURCE_CELL_METERS: f32 = 1536.0;
+const SOURCE_PIXEL_METERS: f32 = SOURCE_CELL_METERS / SOURCE_SIZE as f32;
 const SOURCE_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const DOWNLOAD_LOCKS: usize = 256;
-const DECODED_CACHE_IMAGES: usize = 64;
+const DOWNLOAD_SLOTS: usize = 8;
+const DECODED_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer/export";
 
 pub struct AerialSource {
@@ -29,6 +30,7 @@ pub struct AerialSource {
     cached_bytes: AtomicU64,
     temporary_id: AtomicU64,
     download_locks: [Mutex<()>; DOWNLOAD_LOCKS],
+    download_slots: [Mutex<()>; DOWNLOAD_SLOTS],
     decoded: Mutex<DecodedCache>,
 }
 
@@ -36,6 +38,7 @@ pub struct AerialSource {
 struct DecodedCache {
     images: HashMap<PathBuf, Arc<RgbImage>>,
     order: VecDeque<PathBuf>,
+    bytes: usize,
 }
 
 impl AerialSource {
@@ -46,56 +49,72 @@ impl AerialSource {
             .build()
             .map_err(io::Error::other)?;
         let root = root.into();
-        let cached_bytes = directory_size(&root.join(SOURCE_CACHE_VERSION))?;
+        prune_obsolete_namespaces(&root)?;
+        let cached_bytes = prune_active_cache(&root.join(SOURCE_CACHE_VERSION))?;
         Ok(Self {
             client,
             root,
             cached_bytes: AtomicU64::new(cached_bytes),
             temporary_id: AtomicU64::new(0),
             download_locks: std::array::from_fn(|_| Mutex::new(())),
+            download_slots: std::array::from_fn(|_| Mutex::new(())),
             decoded: Mutex::new(DecodedCache::default()),
         })
     }
 
-    fn tile(&self, bounds: Bounds, z: u8, x: u32, y: u32) -> io::Result<AerialImage> {
+    fn tile(&self, key: (i32, i32)) -> io::Result<Arc<RgbImage>> {
+        let (x, y) = key;
         let path = self
             .root
             .join(SOURCE_CACHE_VERSION)
-            .join(z.to_string())
             .join(x.to_string())
             .join(format!("{y}.jpg"));
-        let _guard = self.download_locks[download_shard(z, x, y)]
+        let _guard = self.download_locks[download_shard(x, y)]
             .lock()
             .map_err(|_| io::Error::other("aerial download lock poisoned"))?;
         if let Some(image) = self.decoded(&path)? {
-            return Ok(AerialImage {
-                bounds,
-                image,
-                key: (x, y),
-            });
+            return Ok(image);
         }
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        let image = match fs::read(&path) {
+            Ok(bytes) => match decode_source(&bytes) {
+                Ok(image) => image,
+                Err(_) => {
+                    fs::remove_file(&path)?;
+                    self.cached_bytes
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                            Some(current.saturating_sub(bytes.len() as u64))
+                        })
+                        .map_err(|_| io::Error::other("aerial cache byte count update failed"))?;
+                    let _slot = self.download_slots[download_shard(x, y) % DOWNLOAD_SLOTS]
+                        .lock()
+                        .map_err(|_| io::Error::other("aerial download slot poisoned"))?;
+                    self.download(&path, source_cell_bounds(key))?.1
+                }
+            },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.download(&path, bounds)?
+                let _slot = self.download_slots[download_shard(x, y) % DOWNLOAD_SLOTS]
+                    .lock()
+                    .map_err(|_| io::Error::other("aerial download slot poisoned"))?;
+                self.download(&path, source_cell_bounds(key))?.1
             }
             Err(error) => return Err(error),
         };
-        let image = Arc::new(decode_source(&bytes)?);
+        let image = Arc::new(image);
         self.remember(path, Arc::clone(&image))?;
-        Ok(AerialImage {
-            bounds,
-            image,
-            key: (x, y),
-        })
+        Ok(image)
     }
 
     fn decoded(&self, path: &Path) -> io::Result<Option<Arc<RgbImage>>> {
-        let cache = self
+        let mut cache = self
             .decoded
             .lock()
             .map_err(|_| io::Error::other("decoded aerial cache poisoned"))?;
-        Ok(cache.images.get(path).cloned())
+        let image = cache.images.get(path).cloned();
+        if image.is_some() {
+            cache.order.retain(|cached| cached != path);
+            cache.order.push_back(path.to_path_buf());
+        }
+        Ok(image)
     }
 
     fn remember(&self, path: PathBuf, image: Arc<RgbImage>) -> io::Result<()> {
@@ -106,28 +125,32 @@ impl AerialSource {
         if cache.images.contains_key(&path) {
             return Ok(());
         }
-        while cache.images.len() >= DECODED_CACHE_IMAGES {
+        let bytes = image.as_raw().len();
+        while cache.bytes.saturating_add(bytes) > DECODED_CACHE_MAX_BYTES {
             let Some(oldest) = cache.order.pop_front() else {
                 break;
             };
-            cache.images.remove(&oldest);
+            if let Some(removed) = cache.images.remove(&oldest) {
+                cache.bytes = cache.bytes.saturating_sub(removed.as_raw().len());
+            }
         }
         cache.order.push_back(path.clone());
+        cache.bytes = cache.bytes.saturating_add(bytes);
         cache.images.insert(path, image);
         Ok(())
     }
 
-    fn download(&self, path: &Path, bounds: Bounds) -> io::Result<Vec<u8>> {
-        let response = self.fetch(bounds)?;
+    fn download(&self, path: &Path, bounds: Bounds) -> io::Result<(Vec<u8>, RgbImage)> {
+        let (response, image) = self.fetch(bounds)?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("aerial cache path has no parent"))?;
         fs::create_dir_all(parent)?;
         let _cached = self.write_cached(path, &response)?;
-        Ok(response)
+        Ok((response, image))
     }
 
-    fn fetch(&self, bounds: Bounds) -> io::Result<Vec<u8>> {
+    fn fetch(&self, bounds: Bounds) -> io::Result<(Vec<u8>, RgbImage)> {
         let bbox = format!(
             "{},{},{},{}",
             bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y
@@ -154,7 +177,7 @@ impl AerialSource {
                 .map_err(io::Error::other)
                 .and_then(|bytes| {
                     let bytes = bytes.to_vec();
-                    decode_source(&bytes).map(|_| bytes)
+                    decode_source(&bytes).map(|image| (bytes, image))
                 });
             match result {
                 Ok(response) => return Ok(response),
@@ -176,6 +199,7 @@ impl AerialSource {
         let id = self.temporary_id.fetch_add(1, Ordering::Relaxed);
         let temporary = path.with_extension(format!("jpg.part-{}-{id}", std::process::id()));
         if let Err(error) = fs::write(&temporary, response) {
+            let _removed = fs::remove_file(&temporary);
             self.cached_bytes.fetch_sub(bytes, Ordering::Relaxed);
             return Err(error);
         }
@@ -186,6 +210,7 @@ impl AerialSource {
                 self.cached_bytes.fetch_sub(bytes, Ordering::Relaxed);
             }
             Err(error) => {
+                let _removed = fs::remove_file(&temporary);
                 self.cached_bytes.fetch_sub(bytes, Ordering::Relaxed);
                 return Err(error);
             }
@@ -204,11 +229,10 @@ impl AerialSource {
     }
 }
 
-fn download_shard(z: u8, x: u32, y: u32) -> usize {
-    let hash = x
+fn download_shard(x: i32, y: i32) -> usize {
+    let hash = (x as u32)
         .wrapping_mul(31)
-        .wrapping_add(y.wrapping_mul(17))
-        .wrapping_add(u32::from(z));
+        .wrapping_add((y as u32).wrapping_mul(17));
     hash as usize % DOWNLOAD_LOCKS
 }
 
@@ -225,83 +249,24 @@ fn decode_source(bytes: &[u8]) -> io::Result<RgbImage> {
     Ok(image)
 }
 
-struct AerialImage {
-    bounds: Bounds,
-    image: Arc<RgbImage>,
-    key: (u32, u32),
-}
-
 pub struct AerialTile {
-    images: Vec<AerialImage>,
-    grid_min: (f32, f32),
-    grid_side: f32,
-    grid_count: u32,
+    images: HashMap<(i32, i32), Arc<RgbImage>>,
 }
 
 impl AerialTile {
-    pub fn for_isometric_tile(
-        source: &AerialSource,
-        world_bounds: Bounds,
-        iso_bounds: Bounds,
-        max_height: f32,
-        z: u8,
-        x: u32,
-        y: u32,
-    ) -> io::Result<Self> {
-        let (center_bounds, source_z, source_x, source_y) = if z <= SOURCE_ZOOM {
-            (iso_bounds, z, x, y)
-        } else {
-            let factor = 1_u32 << (z - SOURCE_ZOOM);
-            let width = iso_bounds.width();
-            let height = iso_bounds.height();
-            let offset_x = (x % factor) as f32;
-            let offset_y = (y % factor) as f32;
-            (
-                Bounds {
-                    min_x: iso_bounds.min_x - offset_x * width,
-                    min_y: iso_bounds.min_y - offset_y * height,
-                    max_x: iso_bounds.min_x + (factor as f32 - offset_x) * width,
-                    max_y: iso_bounds.min_y + (factor as f32 - offset_y) * height,
-                },
-                SOURCE_ZOOM,
-                x / factor,
-                y / factor,
-            )
-        };
-        // Elevated geometry visible in this screen tile can originate well outside
-        // its ground footprint. Reuse the neighboring source tiles as a mosaic so
-        // towers never clamp to one edge pixel and overlapping downloads stay shared.
-        let wanted_source = center_bounds.ground_source_bounds().pad(max_height * 1.2);
-        let wanted_iso = wanted_source.isometric(0.0);
-        let count = 1_u32 << source_z;
-        let side = world_bounds.width().max(world_bounds.height()) / count as f32;
-        let min_x = tile_coordinate(wanted_iso.min_x, world_bounds.min_x, side, count);
-        let max_x = tile_coordinate(wanted_iso.max_x, world_bounds.min_x, side, count);
-        let min_y = tile_coordinate(wanted_iso.min_y, world_bounds.min_y, side, count);
-        let max_y = tile_coordinate(wanted_iso.max_y, world_bounds.min_y, side, count);
-        let mut coordinates = vec![(source_x, source_y)];
-        for tile_y in min_y..=max_y {
-            for tile_x in min_x..=max_x {
-                if (tile_x, tile_y) != (source_x, source_y) {
-                    coordinates.push((tile_x, tile_y));
-                }
+    pub fn for_source_bounds(source: &AerialSource, bounds: Bounds) -> io::Result<Self> {
+        let bounds = bounds.pad(SOURCE_PIXEL_METERS * 2.0);
+        let min_x = source_cell(bounds.min_x);
+        let max_x = source_cell(bounds.max_x);
+        let min_y = source_cell(bounds.min_y);
+        let max_y = source_cell(bounds.max_y);
+        let mut images = HashMap::new();
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                images.insert((x, y), source.tile((x, y))?);
             }
         }
-        let mut images = Vec::with_capacity(coordinates.len());
-        for (tile_x, tile_y) in coordinates {
-            let bounds = world_bounds
-                .tile(source_z, tile_x, tile_y)
-                .ground_source_bounds();
-            let overlap =
-                bounds.width().max(bounds.height()) / SOURCE_SIZE as f32 * SOURCE_OVERLAP_PIXELS;
-            images.push(source.tile(bounds.pad(overlap), source_z, tile_x, tile_y)?);
-        }
-        Ok(Self {
-            images,
-            grid_min: (world_bounds.min_x, world_bounds.min_y),
-            grid_side: side,
-            grid_count: count,
-        })
+        Ok(Self { images })
     }
 
     pub fn sample(&self, x: f32, y: f32, block_size: f32) -> Option<[u8; 3]> {
@@ -311,73 +276,100 @@ impl AerialTile {
         let y = (y / block_size)
             .floor()
             .mul_add(block_size, block_size * 0.5);
-        let iso = isometric(x, y, 0.0);
-        let key = (
-            tile_coordinate(iso.0, self.grid_min.0, self.grid_side, self.grid_count),
-            tile_coordinate(iso.1, self.grid_min.1, self.grid_side, self.grid_count),
-        );
-        self.images
-            .iter()
-            .find(|image| image.key == key)
-            .and_then(|image| image.sample(x, y))
-    }
-}
-
-impl AerialImage {
-    fn sample(&self, x: f32, y: f32) -> Option<[u8; 3]> {
-        if x < self.bounds.min_x
-            || x > self.bounds.max_x
-            || y < self.bounds.min_y
-            || y > self.bounds.max_y
-        {
-            return None;
-        }
-        let u = ((x - self.bounds.min_x) / self.bounds.width())
-            .mul_add(self.image.width().saturating_sub(1) as f32, 0.0);
-        let v = ((self.bounds.max_y - y) / self.bounds.height())
-            .mul_add(self.image.height().saturating_sub(1) as f32, 0.0);
-        Some(self.box_average(u, v).map(posterize))
+        self.box_average(x, y).map(|color| color.map(posterize))
     }
 
-    fn box_average(&self, u: f32, v: f32) -> [u8; 3] {
-        let center_x = u.round() as i32;
-        let center_y = v.round() as i32;
+    fn box_average(&self, x: f32, y: f32) -> Option<[u8; 3]> {
+        let center_x = (x / SOURCE_PIXEL_METERS - 0.5).round() as i64;
+        let center_y = (y / SOURCE_PIXEL_METERS - 0.5).round() as i64;
         let mut sum = [0_u32; 3];
-        for y in -1..=1 {
-            for x in -1..=1 {
-                let sample_x = (center_x + x).clamp(0, self.image.width() as i32 - 1) as u32;
-                let sample_y = (center_y + y).clamp(0, self.image.height() as i32 - 1) as u32;
-                let pixel = self.image.get_pixel(sample_x, sample_y).0;
+        for offset_y in -1..=1 {
+            for offset_x in -1..=1 {
+                let pixel_x = center_x + offset_x;
+                let pixel_y = center_y + offset_y;
+                let cell_x = pixel_x.div_euclid(i64::from(SOURCE_SIZE));
+                let cell_y = pixel_y.div_euclid(i64::from(SOURCE_SIZE));
+                let key = (i32::try_from(cell_x).ok()?, i32::try_from(cell_y).ok()?);
+                let image = self.images.get(&key)?;
+                let image_x = u32::try_from(pixel_x.rem_euclid(i64::from(SOURCE_SIZE))).ok()?;
+                let image_y = SOURCE_SIZE
+                    - 1
+                    - u32::try_from(pixel_y.rem_euclid(i64::from(SOURCE_SIZE))).ok()?;
+                let pixel = image.get_pixel(image_x, image_y).0;
                 for channel in 0..3 {
                     sum[channel] += u32::from(pixel[channel]);
                 }
             }
         }
-        sum.map(|channel| (channel / 9) as u8)
+        Some(sum.map(|channel| (channel / 9) as u8))
     }
 }
 
-fn tile_coordinate(value: f32, minimum: f32, side: f32, count: u32) -> u32 {
-    (((value - minimum) / side).floor() as i64).clamp(0, i64::from(count - 1)) as u32
+fn source_cell(value: f32) -> i32 {
+    (value / SOURCE_CELL_METERS).floor() as i32
 }
 
-fn directory_size(path: &Path) -> io::Result<u64> {
-    let mut bytes = 0_u64;
+fn source_cell_bounds((x, y): (i32, i32)) -> Bounds {
+    Bounds {
+        min_x: x as f32 * SOURCE_CELL_METERS,
+        min_y: y as f32 * SOURCE_CELL_METERS,
+        max_x: (x + 1) as f32 * SOURCE_CELL_METERS,
+        max_y: (y + 1) as f32 * SOURCE_CELL_METERS,
+    }
+}
+
+fn prune_active_cache(root: &Path) -> io::Result<u64> {
+    let mut files = Vec::new();
+    collect_cache_files(root, &mut files)?;
+    let mut bytes = files.iter().map(|(_, _, bytes)| bytes).sum::<u64>();
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, path, size) in files {
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".part-"))
+            || bytes > SOURCE_CACHE_MAX_BYTES
+        {
+            fs::remove_file(path)?;
+            bytes = bytes.saturating_sub(size);
+        }
+    }
+    Ok(bytes)
+}
+
+fn collect_cache_files(
+    path: &Path,
+    files: &mut Vec<(std::time::SystemTime, PathBuf, u64)>,
+) -> io::Result<()> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
     for entry in entries {
         let entry = entry?;
         let metadata = entry.metadata()?;
-        bytes = bytes.saturating_add(if metadata.is_dir() {
-            directory_size(&entry.path())?
+        if metadata.is_dir() {
+            collect_cache_files(&entry.path(), files)?;
         } else {
-            metadata.len()
-        });
+            files.push((metadata.modified()?, entry.path(), metadata.len()));
+        }
     }
-    Ok(bytes)
+    Ok(())
+}
+
+fn prune_obsolete_namespaces(root: &Path) -> io::Result<()> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && entry.file_name() != SOURCE_CACHE_VERSION {
+            fs::remove_dir_all(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn posterize(channel: u8) -> u8 {
@@ -387,13 +379,17 @@ fn posterize(channel: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::Ordering};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, atomic::Ordering},
+    };
 
     use image::{Rgb, RgbImage};
 
     use super::{
-        AerialImage, AerialSource, AerialTile, Bounds, DOWNLOAD_LOCKS, SOURCE_CACHE_MAX_BYTES,
-        download_shard, posterize,
+        AerialSource, AerialTile, DOWNLOAD_LOCKS, SOURCE_CACHE_MAX_BYTES, SOURCE_CELL_METERS,
+        SOURCE_PIXEL_METERS, SOURCE_SIZE, download_shard, posterize, prune_active_cache,
+        prune_obsolete_namespaces, source_cell_bounds,
     };
 
     #[test]
@@ -416,67 +412,113 @@ mod tests {
     }
 
     #[test]
-    fn sampling_outside_the_downloaded_bounds_never_clamps_to_an_edge_pixel() {
-        let image = Arc::new(RgbImage::from_pixel(1024, 1024, Rgb([16, 32, 48])));
-        let tile = AerialTile {
-            images: vec![AerialImage {
-                bounds: Bounds {
-                    min_x: 0.0,
-                    min_y: 0.0,
-                    max_x: 100.0,
-                    max_y: 100.0,
-                },
-                image,
-                key: (0, 0),
-            }],
-            grid_min: (-100.0, -100.0),
-            grid_side: 200.0,
-            grid_count: 1,
-        };
+    fn cache_pruning_keeps_only_the_active_namespace() -> std::io::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "geo-philly-aerial-cache-test-{}",
+            std::process::id()
+        ));
+        let old = root.join("old-grid");
+        let active = root.join(super::SOURCE_CACHE_VERSION);
+        std::fs::create_dir_all(&old)?;
+        std::fs::create_dir_all(&active)?;
+        std::fs::write(old.join("tile.jpg"), b"old")?;
 
-        assert_eq!(tile.sample(50.0, 50.0, 1.0), Some([32, 48, 64]));
-        assert_eq!(tile.sample(-1.0, 50.0, 1.0), None);
-        assert_eq!(tile.sample(50.0, 101.0, 1.0), None);
+        prune_obsolete_namespaces(&root)?;
+
+        assert!(!old.exists());
+        assert!(active.exists());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
-    fn overlapping_mosaic_images_use_the_canonical_world_tile() {
-        let bounds = Bounds {
-            min_x: -100.0,
-            min_y: -100.0,
-            max_x: 100.0,
-            max_y: 100.0,
-        };
+    fn active_cache_pruning_removes_orphan_parts() -> std::io::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "geo-philly-aerial-part-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let valid = root.join("tile.jpg");
+        let orphan = root.join("tile.jpg.part-1-1");
+        std::fs::write(&valid, b"valid")?;
+        std::fs::write(&orphan, b"orphan")?;
+
+        assert_eq!(prune_active_cache(&root)?, 5);
+        assert!(valid.exists());
+        assert!(!orphan.exists());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sampling_outside_the_downloaded_grid_never_clamps_to_an_edge_pixel() {
+        let image = Arc::new(RgbImage::from_pixel(
+            SOURCE_SIZE,
+            SOURCE_SIZE,
+            Rgb([16, 32, 48]),
+        ));
         let tile = AerialTile {
-            images: vec![
-                AerialImage {
-                    bounds,
-                    image: Arc::new(RgbImage::from_pixel(512, 512, Rgb([240, 0, 0]))),
-                    key: (1, 1),
-                },
-                AerialImage {
-                    bounds,
-                    image: Arc::new(RgbImage::from_pixel(512, 512, Rgb([16, 32, 48]))),
-                    key: (0, 0),
-                },
-            ],
-            grid_min: (-100.0, -100.0),
-            grid_side: 200.0,
-            grid_count: 2,
+            images: HashMap::from([((0, 0), image)]),
         };
 
-        assert_eq!(tile.sample(0.0, 0.0, 1.0), Some([32, 48, 64]));
+        assert_eq!(tile.sample(192.0, 192.0, 1.0), Some([32, 48, 64]));
+        assert_eq!(tile.sample(-1.0, 50.0, 1.0), None);
+        assert_eq!(tile.sample(50.0, SOURCE_CELL_METERS + 1.0, 1.0), None);
+    }
+
+    #[test]
+    fn box_filter_crosses_fixed_grid_cells_without_clamping() {
+        let tile = AerialTile {
+            images: HashMap::from([
+                (
+                    (0, 0),
+                    Arc::new(RgbImage::from_pixel(
+                        SOURCE_SIZE,
+                        SOURCE_SIZE,
+                        Rgb([16, 32, 48]),
+                    )),
+                ),
+                (
+                    (1, 0),
+                    Arc::new(RgbImage::from_pixel(
+                        SOURCE_SIZE,
+                        SOURCE_SIZE,
+                        Rgb([160, 176, 192]),
+                    )),
+                ),
+            ]),
+        };
+
+        let y = SOURCE_CELL_METERS * 0.5;
+        assert_eq!(
+            tile.sample(SOURCE_CELL_METERS - 1.0, y, 0.25),
+            Some([32, 48, 64])
+        );
+        assert_eq!(
+            tile.sample(SOURCE_CELL_METERS, y, 0.25),
+            Some([112, 128, 144])
+        );
+    }
+
+    #[test]
+    fn adjacent_source_cells_share_one_exact_pixel_grid() {
+        let left = source_cell_bounds((2_138, 185));
+        let right = source_cell_bounds((2_139, 185));
+
+        assert_eq!(left.max_x, right.min_x);
+        assert_eq!(left.width() / SOURCE_SIZE as f32, SOURCE_PIXEL_METERS);
+        assert_eq!(right.width() / SOURCE_SIZE as f32, SOURCE_PIXEL_METERS);
     }
 
     #[test]
     fn download_locks_keep_the_same_tile_single_flight() -> std::io::Result<()> {
-        let first = download_shard(5, 12, 8);
+        let first = download_shard(12, 8);
 
         assert!(first < DOWNLOAD_LOCKS);
-        assert_eq!(first, download_shard(5, 12, 8));
+        assert_eq!(first, download_shard(12, 8));
         assert_eq!(
             (0..DOWNLOAD_LOCKS)
-                .map(|x| download_shard(5, x as u32, 8))
+                .map(|x| download_shard(x as i32, 8))
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             DOWNLOAD_LOCKS
@@ -486,7 +528,7 @@ mod tests {
             .lock()
             .map_err(|_| std::io::Error::other("test download lock poisoned"))?;
         assert!(
-            source.download_locks[download_shard(5, 12, 8)]
+            source.download_locks[download_shard(12, 8)]
                 .try_lock()
                 .is_err()
         );

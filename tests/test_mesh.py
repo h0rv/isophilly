@@ -52,7 +52,6 @@ def mesh(identifier: int, left: float, bottom: float, right: float, top: float) 
     )
     return BuildingMesh(
         identifier,
-        identifier,
         1.0,
         ((left, bottom), (right, bottom), (right, top), (left, top)),
         (face,),
@@ -63,7 +62,6 @@ class I3SMeshTests(unittest.TestCase):
     def test_parses_textured_triangle_in_local_metres(self) -> None:
         mesh = parse_geometry(geometry(), node())
 
-        self.assertEqual(mesh.source_id, 1)
         self.assertEqual(mesh.texture_id, 0)
         self.assertEqual(mesh.height, 10.0)
         self.assertEqual(mesh.faces[0].uvs, ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)))

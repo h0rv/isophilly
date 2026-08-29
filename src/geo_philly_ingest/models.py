@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
 from pathlib import Path
 
 type Point = tuple[float, float]
 type Ring = tuple[Point, ...]
 type Point3D = tuple[float, float, float]
-type Rgb = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,27 +38,6 @@ class Building:
     ring: Ring
 
 
-class RoofShape(IntEnum):
-    FLAT = 0
-    GABLED = 1
-    HIPPED = 2
-    PYRAMIDAL = 3
-    DOME = 4
-    CONE = 5
-    MANSARD = 6
-
-
-@dataclass(frozen=True, slots=True)
-class BuildingPart:
-    osm_id: int
-    height: float
-    min_height: float
-    roof_height: float
-    roof_shape: RoofShape
-    facade_color: Rgb | None
-    ring: Ring
-
-
 @dataclass(frozen=True, slots=True)
 class MeshFace:
     points: tuple[Point3D, ...]
@@ -69,17 +46,10 @@ class MeshFace:
 
 @dataclass(frozen=True, slots=True)
 class BuildingMesh:
-    source_id: int
     texture_id: int
     height: float
     footprint: Ring
     faces: tuple[MeshFace, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class Street:
-    street_class: int
-    points: Ring
 
 
 @dataclass(frozen=True, slots=True)

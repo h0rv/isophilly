@@ -1,4 +1,4 @@
-use std::io;
+use std::{collections::HashMap, io};
 
 use rstar::AABB;
 use tiny_skia::{Color, Pixmap};
@@ -38,17 +38,11 @@ pub fn render_tile(
     draw_city_buildings(
         &mut pixmap,
         world
-            .building_tree
-            .locate_in_envelope_intersecting(&world.source_envelope(bounds))
+            .building_iso_tree
+            .locate_in_envelope_intersecting(&query)
             .filter_map(|item| {
                 let building = &world.buildings[item.index];
-                let center = building.ring.center();
-                let point = AABB::from_corners([center.0, center.1], [center.0, center.1]);
-                let covered = world
-                    .building_mesh_tree
-                    .locate_in_envelope_intersecting(&point)
-                    .any(|item| world.building_meshes[item.index].footprint.contains(center));
-                (!covered).then_some(building)
+                (!world.building_covered_by_mesh[item.index]).then_some(building)
             }),
         &projection,
         aerial,
@@ -81,17 +75,24 @@ fn ground() -> Color {
 fn draw_ground(pixmap: &mut Pixmap, bounds: Bounds, scale: f32, aerial: &AerialTile) {
     let fallback = [217_u8, 209, 195];
     let block_size = block_size(bounds);
+    let mut colors = HashMap::new();
     for py in 0..TILE_SIZE {
         for px in 0..TILE_SIZE {
             let iso_x = (f32::from(px as u16) + 0.5).mul_add(1.0 / scale, bounds.min_x);
             let iso_y = (f32::from(py as u16) + 0.5).mul_add(1.0 / scale, bounds.min_y);
             let (source_x, source_y) = inverse_isometric(iso_x, iso_y);
-            let sampled = aerial.sample(source_x, source_y, block_size);
-            let color = if missing_imagery(sampled) {
-                fallback
-            } else {
-                mix_rgb(fallback, sampled.unwrap_or(fallback), 0.9)
-            };
+            let key = (
+                (source_x / block_size).floor() as i32,
+                (source_y / block_size).floor() as i32,
+            );
+            let color = *colors.entry(key).or_insert_with(|| {
+                let sampled = aerial.sample(source_x, source_y, block_size);
+                if missing_imagery(sampled) {
+                    fallback
+                } else {
+                    mix_rgb(fallback, sampled.unwrap_or(fallback), 0.9)
+                }
+            });
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
             pixmap.data_mut()[offset..offset + 4]
                 .copy_from_slice(&[color[0], color[1], color[2], 255]);

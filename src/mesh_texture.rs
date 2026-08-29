@@ -34,7 +34,7 @@ impl MeshTextureSource {
         if !root.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "the building texture atlases are missing; run `uv run poe ingest`",
+                "the building texture atlases are missing; run `uv run --locked poe ingest`",
             ));
         }
         verify_digest(&root, texture_ids, expected_sha256)?;
@@ -113,7 +113,7 @@ fn verify_digest(root: &Path, texture_ids: &[u32], expected: [u8; 32]) -> io::Re
     if digest.finalize().as_slice() != expected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the building texture atlases do not match philly.bin; rerun `uv run poe ingest`",
+            "the building texture atlases do not match philly.bin; rerun `uv run --locked poe ingest`",
         ));
     }
     Ok(())

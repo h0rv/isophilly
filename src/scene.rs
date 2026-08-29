@@ -9,7 +9,6 @@ use crate::{
 
 const SCHEMA_VERSION: u8 = 1;
 const CURRENT_SCENE: &str = "data/tiles/current.json";
-const CLEAN_METADATA: &str = "data/clean/meta.json";
 const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
 const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);
@@ -39,36 +38,17 @@ struct Landmark {
 #[derive(Clone, Deserialize, Serialize)]
 struct Counts {
     buildings: usize,
-    building_parts: usize,
     building_meshes: usize,
-    water: usize,
-    parks: usize,
-    streets: usize,
-}
-
-#[derive(Deserialize)]
-struct CleanMetadata {
-    artifacts: CleanArtifacts,
-}
-
-#[derive(Deserialize)]
-struct CleanArtifacts {
-    #[serde(rename = "philly.bin")]
-    world: CleanArtifact,
-}
-
-#[derive(Deserialize)]
-struct CleanArtifact {
-    sha256: String,
 }
 
 impl Scene {
     pub(crate) fn from_world(world: &World, tile_version: String) -> io::Result<Self> {
         let bounds = world.iso_bounds;
         let rocky = isometric(ROCKY_SOURCE.0, ROCKY_SOURCE.1, ROCKY_SOURCE.2);
+        let world_sha256 = digest_hex(&world.world_sha256);
         let scene = Self {
             schema_version: SCHEMA_VERSION,
-            world_sha256: read_world_sha256()?,
+            world_sha256,
             iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
             city_hall: world.city_hall_focus(),
             landmarks: vec![Landmark {
@@ -79,11 +59,7 @@ impl Scene {
             }],
             counts: Counts {
                 buildings: world.buildings.len(),
-                building_parts: world.building_parts.len(),
                 building_meshes: world.building_meshes.len(),
-                water: world.water.len(),
-                parks: world.parks.len(),
-                streets: world.streets.len(),
             },
             tile_version,
             max_tile_zoom: ART_ZOOM,
@@ -99,7 +75,7 @@ impl Scene {
             if error.kind() == io::ErrorKind::NotFound {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    "the tile manifest is missing; run `uv run poe prebuild` first",
+                    "the tile manifest is missing; run `uv run --locked poe prebuild` first",
                 )
             } else {
                 error
@@ -107,11 +83,6 @@ impl Scene {
         })?;
         let scene: Self = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
         scene.validate()?;
-        if scene.world_sha256 != read_world_sha256()? {
-            return Err(invalid(
-                "the tile pyramid is stale; run `uv run poe prebuild`",
-            ));
-        }
         Ok(scene)
     }
 
@@ -127,6 +98,10 @@ impl Scene {
         bytes.push(b'\n');
         fs::write(&temporary, bytes)?;
         fs::rename(temporary, path)
+    }
+
+    pub(crate) fn matches_world(&self, digest: &[u8; 32]) -> bool {
+        self.world_sha256 == digest_hex(digest)
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -156,11 +131,8 @@ impl Scene {
     }
 }
 
-fn read_world_sha256() -> io::Result<String> {
-    let bytes = fs::read(CLEAN_METADATA)?;
-    let metadata: CleanMetadata = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    validate_sha256(&metadata.artifacts.world.sha256)?;
-    Ok(metadata.artifacts.world.sha256)
+fn digest_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_sha256(value: &str) -> io::Result<()> {
@@ -180,7 +152,7 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ART_ZOOM, Counts, Landmark, SCHEMA_VERSION, Scene, validate_sha256};
+    use super::{ART_ZOOM, Counts, Landmark, SCHEMA_VERSION, Scene, digest_hex, validate_sha256};
 
     fn scene() -> Scene {
         Scene {
@@ -196,11 +168,7 @@ mod tests {
             }],
             counts: Counts {
                 buildings: 1,
-                building_parts: 0,
                 building_meshes: 1,
-                water: 0,
-                parks: 0,
-                streets: 0,
             },
             tile_version: "v1-test".to_owned(),
             max_tile_zoom: ART_ZOOM,
@@ -226,5 +194,6 @@ mod tests {
         assert!(validate_sha256(&"0".repeat(64)).is_ok());
         assert!(validate_sha256(&"A".repeat(64)).is_err());
         assert!(validate_sha256("short").is_err());
+        assert_eq!(digest_hex(&[0xab; 32]), "ab".repeat(32));
     }
 }

@@ -12,7 +12,7 @@ import {
  *   iso_bounds: [number, number, number, number],
  *   city_hall: [number, number] | null,
  *   landmarks: { name: string, point: [number, number], min_zoom: number, color: string }[],
- *   counts: { buildings: number, building_parts: number, building_meshes: number, water: number, parks: number, streets: number },
+ *   counts: { buildings: number, building_meshes: number },
  *   tile_version: string,
  *   max_tile_zoom: number,
  *   max_zoom: number,
@@ -765,11 +765,12 @@ function isMeta(value) {
         candidate.city_hall.every(Number.isFinite))) &&
     typeof candidate.counts === "object" &&
     candidate.counts !== null &&
-    Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_parts) &&
+    Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).buildings) &&
     Number.isInteger(/** @type {Record<string, unknown>} */ (candidate.counts).building_meshes) &&
     Array.isArray(candidate.landmarks) &&
     candidate.landmarks.every(isLandmark) &&
     typeof candidate.tile_version === "string" &&
+    Number.isInteger(candidate.max_tile_zoom) &&
     Number.isInteger(candidate.max_zoom) &&
     Number.isInteger(candidate.home_zoom)
   );
