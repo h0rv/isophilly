@@ -10,7 +10,7 @@ mod texture;
 mod tile_codec;
 mod world;
 
-use std::{io, num::NonZeroUsize, path::Path, sync::Arc};
+use std::{io, num::NonZeroUsize, path::Path};
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -50,9 +50,9 @@ async fn main() -> io::Result<()> {
         .compact()
         .init();
     let cli = Cli::parse();
-    let world = Arc::new(load_world(Path::new("data/clean/philly.bin"))?);
     match cli.command {
         Command::Prebuild { jobs } => {
+            let world = load_world(Path::new("data/clean/philly.bin"))?;
             let aerial = AerialSource::open("data/aerial")?;
             let mesh_textures = MeshTextureSource::open(
                 "data/clean/mesh-textures",
@@ -66,7 +66,7 @@ async fn main() -> io::Result<()> {
             println!("prebuild using {jobs} workers");
             pool.install(|| prebuild(&world, &aerial, &mesh_textures))
         }
-        Command::Serve { port } => serve(world, port).await,
+        Command::Serve { port } => serve(port).await,
     }
 }
 
