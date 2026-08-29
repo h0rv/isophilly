@@ -11,21 +11,27 @@ import geopandas as gpd
 from shapely import union_all
 from shapely.geometry.base import BaseGeometry
 
+from .collada import (
+    LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET,
+    STADIUM_TEXTURE_ID_OFFSET,
+    legacy_downtown_meshes,
+    stadium_meshes,
+)
 from .config import (
     CLEAN_DIR,
     EPSG,
+    LEGACY_DOWNTOWN_ARCHIVE,
     METADATA_JSON,
     MIN_BUILDING_COUNT,
     SOURCES,
     STREETS_BIN,
     WORLD_BIN,
 )
-from .download import download_all
+from .download import download_all, local_snapshot
 from .geometry import buildings, city_rings, ground_rings, projected, streets
-from .mesh import building_meshes, texture_digest
+from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
 from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot, Street
 from .osm import building_parts, source_metadata
-from .stadium import TEXTURE_ID_OFFSET, stadium_meshes
 
 WORLD_MAGIC = b"GEOPHILY"
 STREET_MAGIC = b"GEOSTRPH"
@@ -166,9 +172,15 @@ def write_metadata(
             "building_part_facade_colors": sum(part.facade_color is not None for part in parts),
             "building_meshes": len(meshes),
             "center_city_building_meshes": sum(
-                mesh.source_id < TEXTURE_ID_OFFSET for mesh in meshes
+                mesh.source_id < LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET for mesh in meshes
             ),
-            "stadium_building_meshes": sum(mesh.source_id >= TEXTURE_ID_OFFSET for mesh in meshes),
+            "legacy_downtown_building_meshes": sum(
+                LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET <= mesh.source_id < STADIUM_TEXTURE_ID_OFFSET
+                for mesh in meshes
+            ),
+            "stadium_building_meshes": sum(
+                mesh.source_id >= STADIUM_TEXTURE_ID_OFFSET for mesh in meshes
+            ),
             "building_mesh_faces": sum(len(mesh.faces) for mesh in meshes),
             "building_texture_atlases": len({mesh.texture_id for mesh in meshes}),
             "water": len(water),
@@ -203,7 +215,23 @@ def city_geometry(snapshot: Snapshot) -> tuple[BaseGeometry, Bounds]:
 
 
 async def main_async() -> None:
-    snapshots = await download_all(SOURCES.all())
+    use_local_legacy_archive = LEGACY_DOWNTOWN_ARCHIVE.is_file()
+    legacy_snapshot_task: asyncio.Task[Snapshot] | None = None
+    async with asyncio.TaskGroup() as group:
+        downloads_task = group.create_task(
+            download_all(SOURCES.downloadable(include_legacy_downtown=not use_local_legacy_archive))
+        )
+        if use_local_legacy_archive:
+            legacy_snapshot_task = group.create_task(
+                asyncio.to_thread(
+                    local_snapshot,
+                    SOURCES.legacy_downtown_meshes,
+                    LEGACY_DOWNTOWN_ARCHIVE,
+                )
+            )
+    snapshots = downloads_task.result()
+    if legacy_snapshot_task is not None:
+        snapshots[SOURCES.legacy_downtown_meshes.filename] = legacy_snapshot_task.result()
     city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city)
     if len(packed_buildings) < MIN_BUILDING_COUNT:
@@ -219,9 +247,18 @@ async def main_async() -> None:
         stadium_task = group.create_task(
             asyncio.to_thread(stadium_meshes, snapshots[SOURCES.stadium_meshes.filename])
         )
-    meshes = sorted(
-        (*center_city_task.result(), *stadium_task.result()), key=lambda mesh: mesh.source_id
+        legacy_downtown_task = group.create_task(
+            asyncio.to_thread(
+                legacy_downtown_meshes,
+                snapshots[SOURCES.legacy_downtown_meshes.filename],
+            )
+        )
+    meshes = merge_mesh_sources(
+        center_city_task.result(),
+        legacy_downtown_task.result(),
+        stadium_task.result(),
     )
+    await asyncio.to_thread(prune_mesh_textures, meshes)
     texture_sha256, texture_bytes = await asyncio.to_thread(texture_digest, meshes)
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)

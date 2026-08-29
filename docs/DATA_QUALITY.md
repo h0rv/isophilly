@@ -12,6 +12,7 @@ Source URLs and full SHA-256 checksums are in
 | Building footprints | 546,084 | 545,672 polygons | Output is polygon parts after clipping, repair, multipart expansion, and the 10 m² cutoff—not a record join count. |
 | OSM Center City building parts | 1,039 ways | 827 polygons | Output keeps parts with a valid height or level count and rejects bad geometry. Of these, 275 have a sourced facade color or material. |
 | Official 2015 Center City 3D scene | 367 leaf chunks | 294,443 textured triangles and 367 JPEG atlases | Output keeps the I3S triangles, UV coordinates, atlas regions, and textures. |
+| Legacy 2008/09 downtown 3D models | 2,689 highest-detail models | Accepted model count is recorded in `meta.json` after overlap suppression | Output keeps r0 photographically textured geometry outside the newer I3S coverage. |
 | Official 2008 stadium-area 3D models | 814 highest-detail models | 126,181 textured triangles and 808 JPEG textures | Output keeps the textured KML/COLLADA geometry and excludes six components belonging to the demolished Spectrum. |
 | Hydrology polygons | 2,000 | 69 polygons | Exactly the 69 source records that intersect the official City Limits mask. |
 | PPR properties | 506 | 659 polygons | 505 records intersect; repair and multipart expansion produce more output polygons. |
@@ -98,6 +99,8 @@ image for roads instead of drawing these centerlines.
 - The stadium scene was captured in 2008. The importer excludes the demolished
   Spectrum, but other structures and surface details can still differ from the
   current aerial photography.
+- The legacy downtown scene was produced in 2008 and 2009. It extends the
+  textured area beyond the 2015 scene but can show buildings that later changed.
 - The 0.35 m footprint and 1 m ground/street simplification tolerances are fixed,
   not zoom-specific. Coordinates become `f32` in the binaries.
 - City Limits is an official generalized cartographic mask, not a surveyed

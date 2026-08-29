@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from geo_philly_ingest.stadium import StadiumParseError, _load_models
+from geo_philly_ingest.collada import (
+    LEGACY_DOWNTOWN,
+    STADIUM,
+    ColladaParseError,
+    load_collada_meshes,
+)
 
 JPEG = b"\xff\xd8fixture\xff\xd9"
 
@@ -61,21 +67,27 @@ def _archive(
     texcoord: bool = True,
     west: float = -75.1700,
     model_name: str = "ph_stadium0001",
+    inner_name: str = "ph_stadium_kml.zip",
+    nested: bool = True,
+    include_region: bool = True,
 ) -> None:
     inner_path = path.with_suffix(".inner.zip")
-    with ZipFile(inner_path, "w", ZIP_DEFLATED) as inner:
-        inner.writestr(f"kml/{model_name}.kml", _top_kml(west=west))
+    model_path = inner_path if nested else path
+    with ZipFile(model_path, "w", ZIP_DEFLATED) as inner:
+        if include_region:
+            inner.writestr(f"kml/{model_name}.kml", _top_kml(west=west))
         inner.writestr(
             f"kml/r0/{model_name}.kml", PLACEMENT_KML.replace("ph_stadium0001", model_name)
         )
         inner.writestr(f"kml/r0/{model_name}.dae", _dae(texcoord=texcoord))
         inner.writestr("kml/r0/tmaps/p1.jpg", JPEG)
-    with ZipFile(path, "w", ZIP_DEFLATED) as outer:
-        outer.write(inner_path, "Stadium Area Processed w LiDAR-KML/ph_stadium_kml.zip")
-    inner_path.unlink()
+    if nested:
+        with ZipFile(path, "w", ZIP_DEFLATED) as outer:
+            outer.write(inner_path, f"models/{inner_name}")
+        inner_path.unlink()
 
 
-class StadiumTest(unittest.TestCase):
+class ColladaTest(unittest.TestCase):
     def test_loads_textured_model_and_flips_collada_v(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -83,15 +95,44 @@ class StadiumTest(unittest.TestCase):
             textures = root / "textures"
             _archive(archive)
 
-            (mesh,) = _load_models(archive, textures, 1)
+            (mesh,) = load_collada_meshes(
+                archive, replace(STADIUM, expected_model_count=1), textures
+            )
 
-            self.assertEqual(mesh.source_id, 1_000_001)
-            self.assertEqual(mesh.texture_id, 1_000_001)
+            self.assertEqual(mesh.source_id, 2_000_001)
+            self.assertEqual(mesh.texture_id, 2_000_001)
             self.assertAlmostEqual(mesh.height, 10.0)
             self.assertEqual(len(mesh.faces), 1)
             self.assertEqual(mesh.faces[0].uvs, ((0.0, 1.0), (1.0, 1.0), (0.0, 0.25)))
             self.assertGreater(mesh.faces[0].points[1][0], mesh.faces[0].points[0][0])
             self.assertGreater(mesh.faces[0].points[2][1], mesh.faces[0].points[0][1])
+            self.assertEqual((textures / "2000001.jpg").read_bytes(), JPEG)
+
+    def test_loads_legacy_downtown_through_the_same_importer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "downtown.zip"
+            textures = root / "textures"
+            _archive(
+                archive,
+                model_name="philly_0001",
+                inner_name="ph_downtown_kml.zip",
+                nested=False,
+                include_region=False,
+            )
+
+            (mesh,) = load_collada_meshes(
+                archive,
+                replace(
+                    LEGACY_DOWNTOWN,
+                    expected_model_count=1,
+                    published_bounds=(-75.17, 39.9, -75.15, 39.91),
+                ),
+                textures,
+            )
+
+            self.assertEqual(mesh.source_id, 1_000_001)
+            self.assertEqual(mesh.texture_id, 1_000_001)
             self.assertEqual((textures / "1000001.jpg").read_bytes(), JPEG)
 
     def test_rejects_textured_triangle_without_uvs(self) -> None:
@@ -99,23 +140,38 @@ class StadiumTest(unittest.TestCase):
             root = Path(temporary)
             archive = root / "stadium.zip"
             _archive(archive, texcoord=False)
-            with self.assertRaisesRegex(StadiumParseError, "TEXCOORD"):
-                _load_models(archive, root / "textures", 1)
+            with self.assertRaisesRegex(ColladaParseError, "TEXCOORD"):
+                load_collada_meshes(
+                    archive,
+                    replace(STADIUM, expected_model_count=1),
+                    root / "textures",
+                )
 
     def test_rejects_geometry_outside_published_region(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / "stadium.zip"
             _archive(archive, west=-75.1501)
-            with self.assertRaisesRegex(StadiumParseError, "outside its KML region"):
-                _load_models(archive, root / "textures", 1)
+            with self.assertRaisesRegex(ColladaParseError, "outside its KML region"):
+                load_collada_meshes(
+                    archive,
+                    replace(STADIUM, expected_model_count=1),
+                    root / "textures",
+                )
 
     def test_excludes_demolished_spectrum_components(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / "stadium.zip"
             _archive(archive, model_name="ph_stadium0778")
-            self.assertEqual(_load_models(archive, root / "textures", 1), ())
+            self.assertEqual(
+                load_collada_meshes(
+                    archive,
+                    replace(STADIUM, expected_model_count=1),
+                    root / "textures",
+                ),
+                (),
+            )
 
 
 if __name__ == "__main__":

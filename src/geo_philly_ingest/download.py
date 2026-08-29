@@ -58,6 +58,31 @@ def _cached(source: Source) -> Snapshot | None:
     return None
 
 
+def local_snapshot(source: Source, path: Path) -> Snapshot:
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError as error:
+        raise DownloadError(
+            f"{source.name} archive is missing: {path}; restore the existing local archive"
+        ) from error
+    if not source.accepts_size(size):
+        raise DownloadError(
+            f"{source.name} archive has only {size:,} bytes; "
+            f"expected at least {source.minimum_bytes:,}"
+        )
+    modified = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+    return Snapshot(
+        name=source.name,
+        url=source.url,
+        path=path,
+        sha256=_digest(path),
+        size=size,
+        fetched_at=modified,
+        etag=None,
+        last_modified=None,
+    )
+
+
 def _retryable(error: httpx.HTTPError) -> bool:
     if isinstance(error, httpx.HTTPStatusError):
         return error.response.status_code in RETRYABLE_HTTP_STATUS

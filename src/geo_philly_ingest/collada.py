@@ -18,17 +18,57 @@ from shapely.geometry import MultiPoint, Polygon
 from .config import MESH_TEXTURE_DIR
 from .models import BuildingMesh, MeshFace, Point, Point3D, Ring, Snapshot
 
-EXPECTED_MODEL_COUNT = 814
-TEXTURE_ID_OFFSET = 1_000_000
+LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET = 1_000_000
+STADIUM_TEXTURE_ID_OFFSET = 2_000_000
 EARTH_RADIUS_METERS = 6_378_137.0
 REGION_TOLERANCE_DEGREES = 0.000_05
+MINIMUM_FOOTPRINT_BUFFER_METERS = 0.25
 # Six source components form the Spectrum, demolished after this 2008 survey.
 # The current aerial layer correctly shows its replacement on this site.
 EXCLUDED_MODEL_NAMES = frozenset(f"ph_stadium{number:04d}" for number in range(773, 779))
 
 
-class StadiumParseError(ValueError):
+class ColladaParseError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ColladaDataset:
+    label: str
+    archive_member: str
+    model_prefix: str
+    expected_model_count: int
+    texture_id_offset: int
+    excluded_model_names: frozenset[str] = frozenset()
+    published_bounds: tuple[float, float, float, float] | None = None
+
+    def model_members(self, members: list[str]) -> tuple[str, ...]:
+        pattern = re.compile(rf"kml/r0/{re.escape(self.model_prefix)}\d+\.kml")
+        return tuple(sorted(member for member in members if pattern.fullmatch(member)))
+
+    def identifier(self, model_name: str) -> int:
+        suffix = model_name.removeprefix(self.model_prefix)
+        if not suffix.isdecimal() or f"{self.model_prefix}{suffix}" != model_name:
+            raise ColladaParseError(f"{self.label} model has an invalid name: {model_name!r}")
+        return self.texture_id_offset + int(suffix)
+
+
+LEGACY_DOWNTOWN = ColladaDataset(
+    label="legacy downtown",
+    archive_member="ph_downtown_kml.zip",
+    model_prefix="philly_",
+    expected_model_count=2_689,
+    texture_id_offset=LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET,
+    published_bounds=(-75.1904191883, 39.9401820483, -75.1335632290, 39.9672535290),
+)
+STADIUM = ColladaDataset(
+    label="stadium",
+    archive_member="ph_stadium_kml.zip",
+    model_prefix="ph_stadium",
+    expected_model_count=814,
+    texture_id_offset=STADIUM_TEXTURE_ID_OFFSET,
+    excluded_model_names=EXCLUDED_MODEL_NAMES,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +107,7 @@ class FloatSource:
         start = index * self.stride
         result = self.values[start : start + self.stride]
         if len(result) != self.stride:
-            raise StadiumParseError(f"COLLADA source index {index} is out of range")
+            raise ColladaParseError(f"COLLADA source index {index} is out of range")
         return result
 
 
@@ -99,13 +139,13 @@ def _descendants(element: ET.Element, name: str) -> tuple[ET.Element, ...]:
 
 def _one(items: tuple[ET.Element, ...], label: str) -> ET.Element:
     if len(items) != 1:
-        raise StadiumParseError(f"expected one {label}; found {len(items)}")
+        raise ColladaParseError(f"expected one {label}; found {len(items)}")
     return items[0]
 
 
 def _text(element: ET.Element, label: str) -> str:
     if element.text is None or not element.text.strip():
-        raise StadiumParseError(f"{label} is empty")
+        raise ColladaParseError(f"{label} is empty")
     return element.text.strip()
 
 
@@ -117,18 +157,18 @@ def _finite_float(element: ET.Element, name: str) -> float:
     try:
         value = float(_child_text(element, name))
     except ValueError as error:
-        raise StadiumParseError(f"{name} must be numeric") from error
+        raise ColladaParseError(f"{name} must be numeric") from error
     if not math.isfinite(value):
-        raise StadiumParseError(f"{name} must be finite")
+        raise ColladaParseError(f"{name} must be finite")
     return value
 
 
 def _member_relative_to(member: str, reference: str) -> str:
     if not reference or reference.startswith(("/", "\\")):
-        raise StadiumParseError(f"invalid archive reference: {reference!r}")
+        raise ColladaParseError(f"invalid archive reference: {reference!r}")
     normalized = posixpath.normpath(posixpath.join(posixpath.dirname(member), reference))
     if normalized == ".." or normalized.startswith("../"):
-        raise StadiumParseError(f"archive reference escapes its directory: {reference!r}")
+        raise ColladaParseError(f"archive reference escapes its directory: {reference!r}")
     return PurePosixPath(normalized).as_posix()
 
 
@@ -137,41 +177,50 @@ def _xml(archive: ZipFile, member: str) -> ET.Element:
         with archive.open(member) as source:
             return ET.parse(source).getroot()
     except KeyError as error:
-        raise StadiumParseError(f"archive member is missing: {member}") from error
+        raise ColladaParseError(f"archive member is missing: {member}") from error
     except ET.ParseError as error:
-        raise StadiumParseError(f"invalid XML in {member}: {error}") from error
+        raise ColladaParseError(f"invalid XML in {member}: {error}") from error
 
 
 @contextmanager
-def _model_archive(source: Path) -> Iterator[ZipFile]:
+def _model_archive(source: Path, dataset: ColladaDataset) -> Iterator[ZipFile]:
     try:
         outer = ZipFile(source)
     except (BadZipFile, OSError) as error:
-        raise StadiumParseError(f"cannot open stadium archive: {source}") from error
+        raise ColladaParseError(f"cannot open {dataset.label} archive: {source}") from error
     with outer:
+        if dataset.model_members(outer.namelist()):
+            yield outer
+            return
         inner_members = tuple(
-            member for member in outer.namelist() if member.endswith("/ph_stadium_kml.zip")
+            member
+            for member in outer.namelist()
+            if PurePosixPath(member).name == dataset.archive_member
         )
-        inner_member = _text_member(inner_members, "ph_stadium_kml.zip")
+        inner_member = _text_member(inner_members, dataset.archive_member)
         with outer.open(inner_member) as inner:
             try:
                 with ZipFile(inner) as models:
                     yield models
             except BadZipFile as error:
-                raise StadiumParseError("nested stadium model archive is invalid") from error
+                raise ColladaParseError(
+                    f"nested {dataset.label} model archive is invalid"
+                ) from error
 
 
 def _text_member(members: tuple[str, ...], label: str) -> str:
     if len(members) != 1:
-        raise StadiumParseError(f"expected one {label}; found {len(members)}")
+        raise ColladaParseError(f"expected one {label}; found {len(members)}")
     return members[0]
 
 
-def _parse_region(archive: ZipFile, name: str) -> Region:
+def _parse_region(archive: ZipFile, name: str, dataset: ColladaDataset) -> Region:
+    if dataset.published_bounds is not None:
+        return Region(*dataset.published_bounds)
     root = _xml(archive, f"kml/{name}.kml")
     boxes = _descendants(root, "LatLonAltBox")
     if not boxes:
-        raise StadiumParseError(f"{name} has no published region")
+        raise ColladaParseError(f"{name} has no published region")
     regions = tuple(
         Region(
             west=_finite_float(box, "west"),
@@ -182,7 +231,7 @@ def _parse_region(archive: ZipFile, name: str) -> Region:
         for box in boxes
     )
     if any(candidate != regions[0] for candidate in regions[1:]):
-        raise StadiumParseError(f"{name} has inconsistent LOD regions")
+        raise ColladaParseError(f"{name} has inconsistent LOD regions")
     return regions[0]
 
 
@@ -192,18 +241,18 @@ def _parse_placement(archive: ZipFile, kml_member: str) -> Placement:
     model = _one(_children(placemark, "Model"), "Model")
     name = _child_text(placemark, "name")
     if _child_text(model, "altitudeMode") != "clampToGround":
-        raise StadiumParseError(f"{name} does not clamp to ground")
+        raise ColladaParseError(f"{name} does not clamp to ground")
     orientation = _one(_children(model, "Orientation"), "Orientation")
     if any(_finite_float(orientation, axis) != 0.0 for axis in ("heading", "tilt", "roll")):
-        raise StadiumParseError(f"{name} has an unsupported orientation")
+        raise ColladaParseError(f"{name} has an unsupported orientation")
     scale = _one(_children(model, "Scale"), "Scale")
     if any(_finite_float(scale, axis) != 1.0 for axis in ("x", "y", "z")):
-        raise StadiumParseError(f"{name} has an unsupported scale")
+        raise ColladaParseError(f"{name} has an unsupported scale")
     location = _one(_children(model, "Location"), "Location")
     link = _one(_children(model, "Link"), "Link")
     dae_member = _member_relative_to(kml_member, _child_text(link, "href"))
     if PurePosixPath(dae_member).stem != name:
-        raise StadiumParseError(f"{name} points to unexpected mesh {dae_member}")
+        raise ColladaParseError(f"{name} points to unexpected mesh {dae_member}")
     return Placement(
         name=name,
         longitude=_finite_float(location, "longitude"),
@@ -218,12 +267,12 @@ def _parse_sources(mesh: ET.Element) -> dict[str, FloatSource]:
     for source in _children(mesh, "source"):
         source_id = source.get("id")
         if not source_id:
-            raise StadiumParseError("COLLADA source has no id")
+            raise ColladaParseError("COLLADA source has no id")
         array = _one(_children(source, "float_array"), f"float array for {source_id}")
         try:
             values = tuple(float(value) for value in _text(array, source_id).split())
         except ValueError as error:
-            raise StadiumParseError(f"{source_id} contains invalid floats") from error
+            raise ColladaParseError(f"{source_id} contains invalid floats") from error
         accessor = _one(_descendants(source, "accessor"), f"accessor for {source_id}")
         count = int(accessor.get("count", "-1"))
         stride = int(accessor.get("stride", "-1"))
@@ -233,14 +282,14 @@ def _parse_sources(mesh: ET.Element) -> dict[str, FloatSource]:
             or stride <= 0
             or not all(math.isfinite(value) for value in values)
         ):
-            raise StadiumParseError(f"{source_id} has invalid dimensions")
+            raise ColladaParseError(f"{source_id} has invalid dimensions")
         result[source_id] = FloatSource(values, stride)
     return result
 
 
 def _source_id(reference: str | None, label: str) -> str:
     if not reference or not reference.startswith("#") or len(reference) == 1:
-        raise StadiumParseError(f"{label} has an invalid source")
+        raise ColladaParseError(f"{label} has an invalid source")
     return reference[1:]
 
 
@@ -249,7 +298,7 @@ def _vertices_sources(mesh: ET.Element) -> dict[str, str]:
     for vertices in _children(mesh, "vertices"):
         vertices_id = vertices.get("id")
         if not vertices_id:
-            raise StadiumParseError("COLLADA vertices has no id")
+            raise ColladaParseError("COLLADA vertices has no id")
         positions = tuple(
             item for item in _children(vertices, "input") if item.get("semantic") == "POSITION"
         )
@@ -284,7 +333,7 @@ def _appearance(root: ET.Element, dae_member: str) -> tuple[str, frozenset[str]]
         symbol for symbol, material_id in bindings.items() if material_id in textured_materials
     )
     if not symbols:
-        raise StadiumParseError("COLLADA model has no textured material binding")
+        raise ColladaParseError("COLLADA model has no textured material binding")
     return texture_member, symbols
 
 
@@ -296,7 +345,7 @@ def _parse_triangle_faces(
     inputs = _children(triangles, "input")
     offsets = tuple(int(item.get("offset", "-1")) for item in inputs)
     if not offsets or min(offsets) < 0:
-        raise StadiumParseError("triangle input has an invalid offset")
+        raise ColladaParseError("triangle input has an invalid offset")
     input_stride = max(offsets) + 1
     vertex_input = _one(
         tuple(item for item in inputs if item.get("semantic") == "VERTEX"), "VERTEX input"
@@ -310,19 +359,19 @@ def _parse_triangle_faces(
         positions = sources[vertices_sources[vertices_id]]
         uvs = sources[_source_id(uv_input.get("source"), "TEXCOORD input")]
     except KeyError as error:
-        raise StadiumParseError("triangle input refers to an unknown source") from error
+        raise ColladaParseError("triangle input refers to an unknown source") from error
     if positions.stride != 3 or uvs.stride != 2:
-        raise StadiumParseError("COLLADA position or UV source has an invalid stride")
+        raise ColladaParseError("COLLADA position or UV source has an invalid stride")
     vertex_offset = int(vertex_input.get("offset", "-1"))
     uv_offset = int(uv_input.get("offset", "-1"))
     indices_element = _one(_children(triangles, "p"), "triangle indices")
     try:
         indices = tuple(int(value) for value in _text(indices_element, "indices").split())
     except ValueError as error:
-        raise StadiumParseError("triangle indices must be integers") from error
+        raise ColladaParseError("triangle indices must be integers") from error
     triangle_count = int(triangles.get("count", "-1"))
     if triangle_count <= 0 or len(indices) != triangle_count * 3 * input_stride:
-        raise StadiumParseError("triangle count does not match its indices")
+        raise ColladaParseError("triangle count does not match its indices")
 
     points: list[Point3D] = []
     texture_points: list[Point] = []
@@ -341,14 +390,14 @@ def _parse_triangle_faces(
     )
 
 
-def _parse_model(archive: ZipFile, kml_member: str) -> ParsedModel:
+def _parse_model(archive: ZipFile, kml_member: str, dataset: ColladaDataset) -> ParsedModel:
     placement = _parse_placement(archive, kml_member)
     root = _xml(archive, placement.dae_member)
     if _child_text(_one(_descendants(root, "asset"), "asset"), "up_axis") != "Z_UP":
-        raise StadiumParseError(f"{placement.name} is not Z-up")
+        raise ColladaParseError(f"{placement.name} is not Z-up")
     unit = _one(_descendants(root, "unit"), "unit")
     if float(unit.get("meter", "nan")) != 1.0:
-        raise StadiumParseError(f"{placement.name} is not measured in metres")
+        raise ColladaParseError(f"{placement.name} is not measured in metres")
     geometry = _one(_descendants(root, "geometry"), "geometry")
     mesh = _one(_children(geometry, "mesh"), "mesh")
     sources = _parse_sources(mesh)
@@ -361,10 +410,10 @@ def _parse_model(archive: ZipFile, kml_member: str) -> ParsedModel:
         for face in _parse_triangle_faces(triangles, sources, vertices)
     )
     if not faces:
-        raise StadiumParseError(f"{placement.name} has no textured faces")
+        raise ColladaParseError(f"{placement.name} has no textured faces")
     return ParsedModel(
         placement=placement,
-        region=_parse_region(archive, placement.name),
+        region=_parse_region(archive, placement.name, dataset),
         texture_member=texture_member,
         faces=faces,
     )
@@ -381,10 +430,12 @@ def _geographic_points(model: ParsedModel) -> tuple[Point3D, ...]:
     return tuple(result)
 
 
-def _building_mesh(model: ParsedModel, transformer: Transformer) -> BuildingMesh:
+def _building_mesh(
+    model: ParsedModel, transformer: Transformer, dataset: ColladaDataset
+) -> BuildingMesh:
     geographic = _geographic_points(model)
     if not model.region.contains(geographic):
-        raise StadiumParseError(f"{model.placement.name} falls outside its KML region")
+        raise ColladaParseError(f"{model.placement.name} falls outside its KML region")
     xs, ys = transformer.transform(
         [point[0] for point in geographic], [point[1] for point in geographic]
     )
@@ -401,14 +452,17 @@ def _building_mesh(model: ParsedModel, transformer: Transformer) -> BuildingMesh
         for index in range(0, len(projected), 3)
     )
     hull = MultiPoint([(x, y) for x, y, _ in projected]).convex_hull
+    if hull.is_empty:
+        raise ColladaParseError(f"{model.placement.name} has no polygon footprint")
+    if not isinstance(hull, Polygon):
+        hull = hull.buffer(MINIMUM_FOOTPRINT_BUFFER_METERS, cap_style="square")
     if not isinstance(hull, Polygon) or hull.is_empty:
-        raise StadiumParseError(f"{model.placement.name} has no polygon footprint")
+        raise ColladaParseError(f"{model.placement.name} has no polygon footprint")
     footprint: Ring = tuple((float(x), float(y)) for x, y in hull.exterior.coords[:-1])
     height = max(point[2] for point in projected)
     if not 0.0 < height <= 400.0:
-        raise StadiumParseError(f"{model.placement.name} has invalid height {height}")
-    model_number = int(model.placement.name.removeprefix("ph_stadium"))
-    identifier = TEXTURE_ID_OFFSET + model_number
+        raise ColladaParseError(f"{model.placement.name} has invalid height {height}")
+    identifier = dataset.identifier(model.placement.name)
     return BuildingMesh(identifier, identifier, height, footprint, faces)
 
 
@@ -425,34 +479,29 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def _load_models(
-    source: Path, texture_dir: Path, expected_model_count: int
+def load_collada_meshes(
+    source: Path, dataset: ColladaDataset, texture_dir: Path = MESH_TEXTURE_DIR
 ) -> tuple[BuildingMesh, ...]:
     transformer = Transformer.from_crs(4326, 32129, always_xy=True)
     meshes: list[BuildingMesh] = []
-    with _model_archive(source) as archive:
-        members = tuple(
-            sorted(
-                member
-                for member in archive.namelist()
-                if re.fullmatch(r"kml/r0/ph_stadium\d+\.kml", member)
-            )
-        )
-        if len(members) != expected_model_count:
-            raise StadiumParseError(
-                f"stadium archive has {len(members)} models; expected {expected_model_count}"
+    with _model_archive(source, dataset) as archive:
+        members = dataset.model_members(archive.namelist())
+        if len(members) != dataset.expected_model_count:
+            raise ColladaParseError(
+                f"{dataset.label} archive has {len(members)} models; "
+                f"expected {dataset.expected_model_count}"
             )
         for member in members:
-            if PurePosixPath(member).stem in EXCLUDED_MODEL_NAMES:
+            if PurePosixPath(member).stem in dataset.excluded_model_names:
                 continue
-            model = _parse_model(archive, member)
-            mesh = _building_mesh(model, transformer)
+            model = _parse_model(archive, member, dataset)
+            mesh = _building_mesh(model, transformer, dataset)
             try:
                 texture = archive.read(model.texture_member)
             except KeyError as error:
-                raise StadiumParseError(f"missing texture {model.texture_member}") from error
+                raise ColladaParseError(f"missing texture {model.texture_member}") from error
             if not texture.startswith(b"\xff\xd8") or not texture.endswith(b"\xff\xd9"):
-                raise StadiumParseError(f"{model.texture_member} is not a complete JPEG")
+                raise ColladaParseError(f"{model.texture_member} is not a complete JPEG")
             _write_atomic(texture_dir / f"{mesh.texture_id}.jpg", texture)
             meshes.append(mesh)
     meshes.sort(key=lambda mesh: mesh.source_id)
@@ -460,4 +509,8 @@ def _load_models(
 
 
 def stadium_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
-    return _load_models(snapshot.path, MESH_TEXTURE_DIR, EXPECTED_MODEL_COUNT)
+    return load_collada_meshes(snapshot.path, STADIUM)
+
+
+def legacy_downtown_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:
+    return load_collada_meshes(snapshot.path, LEGACY_DOWNTOWN)

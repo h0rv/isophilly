@@ -4,9 +4,9 @@ See [live city overlays](docs/LIVE_CITY.md) for SEPTA, neighborhood, and day/nig
 
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
-scene, the official 2008 stadium-area textured models, and 2024 City aerial
-photography. Explore the whole city in a browser, from the regional silhouette
-to individual buildings.
+scene, the legacy 2008/09 downtown and stadium-area textured models, and 2024
+City aerial photography. Explore the whole city in a browser, from the regional
+silhouette to individual buildings.
 
 The expensive geospatial import happens once in Python. A compact Rust service
 loads that result, renders lossless WebP tiles in parallel, and caches them on disk. The
@@ -28,9 +28,12 @@ Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
 `ingest` downloads official City Limits, Building Footprints, Hydrology, PPR
 Properties, and Street Centerline snapshots. It also downloads height-backed
 OpenStreetMap building parts and the official 2015 Center City 3D model. It
-also imports the official 2008 stadium-area KML/COLLADA models. It writes the
-compact `philly.bin` and `streets.bin` inputs plus a `meta.json` provenance
-record. The download and conversion are the slow first run step.
+also imports the highest-detail legacy downtown and stadium KML/COLLADA models.
+For the downtown source, new checkouts download PASDA's smaller `kml00.zip`.
+Existing checkouts reuse `data/raw/Philadelphia2008_downtown_kml.zip` when it is
+present. It writes the compact `philly.bin` and `streets.bin` inputs plus a
+`meta.json` provenance record. The download and conversion are the slow first
+run step.
 The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
 Existing checkouts must rerun `ingest` because world format version 5 adds the
@@ -80,7 +83,7 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-Official Center City I3S + stadium COLLADA + City footprints + PASDA aerial
+2015 I3S + 2008/09 downtown/stadium COLLADA + City footprints + PASDA aerial
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
@@ -114,7 +117,10 @@ contains 367 atlas chunks and 294,443 textured triangles. Those triangles
 preserve real facades, setbacks, roof equipment, sloped roofs, and landmark
 silhouettes. The stadium district adds 808 textured models and 126,181
 triangles. Six obsolete Spectrum components are excluded because that arena was
-demolished after the 2008 source capture.
+demolished after the 2008 source capture. The legacy downtown r0 source adds
+2,689 detailed textured components around the 2015 scene. Models covered by the
+newer scene are suppressed before packing, so the same building is not drawn
+twice.
 
 The source code is [MIT licensed](LICENSE). That license does not grant rights
 to the source datasets or generated map tiles; their provenance and publication

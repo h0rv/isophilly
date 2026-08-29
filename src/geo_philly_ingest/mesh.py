@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 from pyproj import Transformer
+from shapely import STRtree
 from shapely.geometry import MultiPoint, Polygon
 
 from .config import MESH_TEXTURE_DIR, RAW_DIR
@@ -258,13 +259,55 @@ async def _load_node(
 def texture_digest(meshes: list[BuildingMesh]) -> tuple[bytes, int]:
     digest = hashlib.sha256()
     size = 0
-    for mesh in meshes:
+    ordered = sorted(meshes, key=lambda mesh: mesh.texture_id)
+    texture_ids = [mesh.texture_id for mesh in ordered]
+    if len(texture_ids) != len(set(texture_ids)):
+        raise MeshParseError("building mesh texture IDs must be unique")
+    for mesh in ordered:
         path = MESH_TEXTURE_DIR / f"{mesh.texture_id}.jpg"
         data = path.read_bytes()
         digest.update(struct.pack("<I", mesh.texture_id))
         digest.update(data)
         size += len(data)
     return digest.digest(), size
+
+
+def merge_mesh_sources(
+    *sources: tuple[BuildingMesh, ...],
+) -> list[BuildingMesh]:
+    """Merge highest-to-lowest priority sources without overlapping meshes."""
+    selected: list[BuildingMesh] = []
+    coverage: list[Polygon] = []
+    tree: STRtree | None = None
+    for source in sources:
+        accepted: list[BuildingMesh] = []
+        accepted_footprints: list[Polygon] = []
+        for mesh in source:
+            footprint = Polygon(mesh.footprint)
+            if footprint.is_empty or not footprint.is_valid or footprint.area <= 0.0:
+                raise MeshParseError(f"building mesh {mesh.source_id} has an invalid footprint")
+            covered = False
+            if tree is not None:
+                for raw_index in tree.query(footprint, predicate="intersects"):
+                    higher = coverage[int(raw_index)]
+                    overlap = higher.intersection(footprint).area / footprint.area
+                    if higher.covers(footprint.representative_point()) or overlap >= 0.25:
+                        covered = True
+                        break
+            if not covered:
+                accepted.append(mesh)
+                accepted_footprints.append(footprint)
+        selected.extend(accepted)
+        coverage.extend(accepted_footprints)
+        tree = STRtree(coverage)
+    return sorted(selected, key=lambda mesh: mesh.source_id)
+
+
+def prune_mesh_textures(meshes: list[BuildingMesh]) -> None:
+    expected = {f"{mesh.texture_id}.jpg" for mesh in meshes}
+    for path in MESH_TEXTURE_DIR.glob("*.jpg"):
+        if path.name not in expected:
+            path.unlink()
 
 
 async def building_meshes(snapshot: Snapshot) -> tuple[BuildingMesh, ...]:

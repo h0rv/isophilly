@@ -3,13 +3,13 @@
 `uv run poe ingest` downloads content-addressed snapshots of five City of
 Philadelphia ArcGIS layers and one OpenStreetMap query. It also downloads the
 official 2015 Center City 3D model into a versioned local cache and downloads
-the official 2008 stadium-area KML/COLLADA archive. It processes them offline
-and writes:
+the legacy 2008/09 downtown and stadium-area KML/COLLADA archives. It processes
+them offline and writes:
 
 - `data/clean/philly.bin`: the version 5 building, building part, building mesh,
   water, and park world read by the Rust server.
-- `data/clean/mesh-textures/`: the 367 JPEG atlases used by the official I3S
-  scene and 808 JPEG textures used by the stadium models.
+- `data/clean/mesh-textures/`: the JPEG atlases used by the accepted I3S,
+  legacy downtown, and stadium meshes.
 - `data/clean/streets.bin`: a separate optional street-centerline artifact.
 - `data/clean/meta.json`: source URLs, request times, HTTP validators, SHA-256
   checksums, CRS, bounds, counts, and output checksums.
@@ -53,6 +53,13 @@ checksum is recorded and pinned.
   The importer reads each binary geometry resource and its matching JPEG atlas.
   It converts longitude and latitude offsets to EPSG:32129, applies each atlas
   region to the UV coordinates, and checks a 400 metre height ceiling.
+- PASDA's legacy downtown package contains 2,689 highest-detail (`r0`)
+  KML/COLLADA components. The photographs and geometry were produced in 2008
+  and 2009 even though PASDA also publishes the files under a 2010 download
+  path. New checkouts use `kml00.zip`, which contains r0 and r1, and import r0
+  only. The importer can instead read the retained 2.4 GB outer archive without
+  downloading a duplicate. It validates every model against the audited r0
+  geographic envelope.
 - The City of Philadelphia's 2008 stadium-area archive contains 814 highest
   detail (`r0`) KML/COLLADA models around the sports complex. The importer
   validates their published KML bounds, metre scale, Z-up axis, neutral
@@ -65,6 +72,11 @@ checksum is recorded and pinned.
   models have 126,181 textured triangles. Their diffuse-only triangles
   are omitted because they are source solids without photographic material,
   not textured exterior surfaces.
+- Mesh sources are merged in this order: 2015 I3S, 2008/09 legacy downtown,
+  2008 stadium, then City footprint fallback. A lower-priority mesh is removed
+  when a newer footprint covers its representative point or at least one
+  quarter of its area. The runtime's existing mesh footprint test suppresses
+  the final untextured footprint fallback.
 
 ## World binary format
 
@@ -112,7 +124,7 @@ Roof shape values are 0 flat, 1 gabled, 2 hipped, 3 pyramidal, 4 dome, 5 cone,
 and 6 mansard. The clean metadata stores the Overpass generator, data timestamp,
 query URL, response checksum, and part count.
 
-The I3S scene and stadium COLLADA archive expose triangle positions, UV
+The I3S scene and both COLLADA archives expose triangle positions, UV
 coordinates, and JPEG textures. The renderer samples those textures on the
 matching triangles. It returns an error when a texture is missing, so it cannot
 replace a textured building with a plain polygon.

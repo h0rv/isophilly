@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import struct
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from geo_philly_ingest.mesh import MeshParseError, parse_geometry
+from geo_philly_ingest.mesh import (
+    MeshParseError,
+    merge_mesh_sources,
+    parse_geometry,
+    texture_digest,
+)
+from geo_philly_ingest.models import BuildingMesh, MeshFace
 
 
 def node(vertex_count: int = 3) -> dict[str, object]:
@@ -36,6 +45,20 @@ def geometry() -> bytes:
     )
 
 
+def mesh(identifier: int, left: float, bottom: float, right: float, top: float) -> BuildingMesh:
+    face = MeshFace(
+        ((left, bottom, 0.0), (right, bottom, 0.0), (left, top, 1.0)),
+        ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+    )
+    return BuildingMesh(
+        identifier,
+        identifier,
+        1.0,
+        ((left, bottom), (right, bottom), (right, top), (left, top)),
+        (face,),
+    )
+
+
 class I3SMeshTests(unittest.TestCase):
     def test_parses_textured_triangle_in_local_metres(self) -> None:
         mesh = parse_geometry(geometry(), node())
@@ -57,6 +80,36 @@ class I3SMeshTests(unittest.TestCase):
     def test_rejects_truncated_geometry(self) -> None:
         with self.assertRaisesRegex(MeshParseError, "bytes"):
             parse_geometry(geometry()[:-1], node())
+
+    def test_higher_priority_mesh_suppresses_overlapping_lower_source(self) -> None:
+        high = mesh(1, 0.0, 0.0, 10.0, 10.0)
+        overlapped = mesh(1_000_001, 8.0, 2.0, 12.0, 8.0)
+        separate = mesh(1_000_002, 20.0, 0.0, 24.0, 4.0)
+
+        self.assertEqual(
+            merge_mesh_sources((high,), (overlapped, separate)),
+            [high, separate],
+        )
+
+    def test_touching_meshes_from_different_sources_are_both_kept(self) -> None:
+        high = mesh(1, 0.0, 0.0, 10.0, 10.0)
+        touching = mesh(1_000_001, 10.0, 0.0, 14.0, 4.0)
+
+        self.assertEqual(merge_mesh_sources((high,), (touching,)), [high, touching])
+
+    def test_texture_digest_is_independent_of_mesh_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            texture_dir = Path(temporary)
+            first = mesh(2, 0.0, 0.0, 1.0, 1.0)
+            second = mesh(1, 2.0, 0.0, 3.0, 1.0)
+            (texture_dir / "1.jpg").write_bytes(b"first")
+            (texture_dir / "2.jpg").write_bytes(b"second")
+
+            with patch("geo_philly_ingest.mesh.MESH_TEXTURE_DIR", texture_dir):
+                forward = texture_digest([first, second])
+                reverse = texture_digest([second, first])
+
+            self.assertEqual(forward, reverse)
 
 
 if __name__ == "__main__":

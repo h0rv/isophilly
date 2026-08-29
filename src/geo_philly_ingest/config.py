@@ -11,6 +11,7 @@ WORLD_BIN = CLEAN_DIR / "philly.bin"
 STREETS_BIN = CLEAN_DIR / "streets.bin"
 METADATA_JSON = CLEAN_DIR / "meta.json"
 MESH_TEXTURE_DIR = CLEAN_DIR / "mesh-textures"
+LEGACY_DOWNTOWN_ARCHIVE = RAW_DIR / "Philadelphia2008_downtown_kml.zip"
 
 # NAD83 / Pennsylvania South: the City's local State Plane projection in metres.
 # This is equivalent to EPSG:2272 with US-survey-foot coordinates converted to metres,
@@ -58,6 +59,7 @@ class Sources:
     streets: Source
     building_parts: Source
     downtown_meshes: Source
+    legacy_downtown_meshes: Source
     stadium_meshes: Source
 
     def all(self) -> tuple[Source, ...]:
@@ -69,8 +71,14 @@ class Sources:
             self.streets,
             self.building_parts,
             self.downtown_meshes,
+            self.legacy_downtown_meshes,
             self.stadium_meshes,
         )
+
+    def downloadable(self, *, include_legacy_downtown: bool) -> tuple[Source, ...]:
+        if include_legacy_downtown:
+            return self.all()
+        return tuple(source for source in self.all() if source is not self.legacy_downtown_meshes)
 
 
 CENTER_CITY_BOUNDS = (39.94018, -75.19042, 39.96987, -75.13356)
@@ -130,6 +138,16 @@ SOURCES = Sources(
         "Philadelphia_Buildings/SceneServer?f=pjson",
         "json",
         minimum_bytes=5_000,
+        attribution="City of Philadelphia via PASDA",
+        terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
+        "file=Philadelphia_Building_3DModels.xml",
+    ),
+    legacy_downtown_meshes=Source(
+        "Philadelphia 2008/09 Legacy Downtown Textured 3D Models",
+        "legacy-downtown-2008-09",
+        "https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip",
+        "zip",
+        minimum_bytes=800_000_000,
         attribution="City of Philadelphia via PASDA",
         terms_url="https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?"
         "file=Philadelphia_Building_3DModels.xml",
