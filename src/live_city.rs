@@ -122,7 +122,12 @@ impl LiveCity {
         if let Some(cached) = cache.as_ref()
             && cached.fetched.elapsed() < CACHE_TTL
         {
-            return Ok((Arc::clone(&cached.snapshot), "fresh"));
+            let state = if cached.snapshot.stale {
+                "stale"
+            } else {
+                "fresh"
+            };
+            return Ok((Arc::clone(&cached.snapshot), state));
         }
 
         let (surface, rail) = tokio::join!(self.fetch_surface(), self.fetch_rail());
@@ -141,7 +146,12 @@ impl LiveCity {
             if let Some(cached) = cache.as_ref() {
                 let mut stale = cached.snapshot.as_ref().clone();
                 stale.stale = true;
-                return Ok((Arc::new(stale), "stale"));
+                let snapshot = Arc::new(stale);
+                *cache = Some(CachedSnapshot {
+                    fetched: Instant::now(),
+                    snapshot: Arc::clone(&snapshot),
+                });
+                return Ok((snapshot, "stale"));
             }
             return Err(failures.join("; "));
         }
