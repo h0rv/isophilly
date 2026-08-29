@@ -12,6 +12,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
+    live_city::{LiveCity, vehicles},
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, tile_path},
     render::render_blank_tile,
@@ -21,11 +22,12 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     world: Arc<World>,
     tile_dir: PathBuf,
     tile_version: String,
     blank_tile: Arc<Vec<u8>>,
+    pub(crate) live_city: Arc<LiveCity>,
 }
 
 #[derive(Serialize)]
@@ -77,10 +79,14 @@ pub async fn serve(world: Arc<World>, port: u16) -> io::Result<()> {
         tile_dir,
         tile_version,
         blank_tile: Arc::new(render_blank_tile()?),
+        live_city: Arc::new(LiveCity::new()?),
     };
     let app = Router::new()
         .route("/", get(index))
         .route("/app.js", get(app_js))
+        .route("/city-overlay.js", get(city_overlay_js))
+        .route("/neighborhoods.json", get(neighborhoods))
+        .route("/api/vehicles", get(vehicles))
         .route("/meta", get(meta))
         .route("/tiles/{z}/{x}/{y}", get(tile))
         .with_state(state)
@@ -109,6 +115,18 @@ async fn index() -> Result<impl IntoResponse, StatusCode> {
 
 async fn app_js() -> Result<impl IntoResponse, StatusCode> {
     static_file("static/app.js", "text/javascript; charset=utf-8").await
+}
+
+async fn city_overlay_js() -> Result<impl IntoResponse, StatusCode> {
+    static_file("static/city-overlay.js", "text/javascript; charset=utf-8").await
+}
+
+async fn neighborhoods() -> Result<impl IntoResponse, StatusCode> {
+    static_file(
+        "static/neighborhoods.json",
+        "application/json; charset=utf-8",
+    )
+    .await
 }
 
 async fn static_file(

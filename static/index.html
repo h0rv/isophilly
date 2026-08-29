@@ -20,9 +20,11 @@
     h1 { margin: 0; font-size: 1.05rem; letter-spacing: -.025em; }
     #status { color: #c7bfb2; font-size: .8rem; }
     .orientation { color: #9f978c; font-size: .72rem; white-space: nowrap; }
+    #sun-state { color: #9f978c; font-size: .7rem; white-space: nowrap; }
     .controls { display: flex; gap: .3rem; margin-left: auto; }
     button { min-width: 1.8rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .25rem .5rem; cursor: pointer; font: inherit; }
     button:hover { background: #464039; }
+    button[aria-pressed="true"] { border-color: #d39a62; background: #594333; }
     button:focus-visible, summary:focus-visible { outline: 2px solid #c88a6b; outline-offset: 2px; }
     details { position: relative; font-size: .75rem; }
     summary { cursor: pointer; color: #c7bfb2; }
@@ -41,14 +43,17 @@
       .legend { max-width: calc(100vw - 1rem); white-space: normal; }
     }
   </style>
-  <script src="/app.js" defer></script>
+  <script src="/app.js" type="module"></script>
 </head>
 <body>
   <header>
     <h1>geo-philly</h1>
     <span id="status" aria-live="polite">loading city geometry…</span>
     <span class="orientation" title="North points up and right">↗ N</span>
+    <span id="sun-state" aria-live="off"></span>
     <nav class="controls" aria-label="Map controls">
+      <button id="transit-toggle" aria-pressed="true" title="Toggle live SEPTA vehicles">Transit</button>
+      <button id="neighborhoods-toggle" aria-pressed="false" title="Toggle neighborhood boundaries">Neighborhoods</button>
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
       <button id="home">City Hall</button>
@@ -60,6 +65,10 @@
         <div>Drag or use arrow keys to explore.</div>
         <div>Wheel, pinch, or use + and − to zoom.</div>
         <div>Press 0 to return to City Hall.</div>
+        <div>Transit shows SEPTA surface vehicles and Regional Rail. Subway positions are not published.</div>
+        <div>Planning neighborhood boundaries are general, not official. Cultural areas are approximate and separately marked.</div>
+        <div><a href="https://api.septa.org/" target="_blank" rel="noreferrer">live vehicles: SEPTA</a></div>
+        <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">planning neighborhoods: Philadelphia City Planning Commission</a></div>
         <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer" target="_blank" rel="noreferrer">2024 aerial: City of Philadelphia / PASDA</a></div>
         <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 textured buildings: City of Philadelphia</a></div>
         <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">city data: City of Philadelphia</a></div>

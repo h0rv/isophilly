@@ -1,5 +1,12 @@
 // @ts-check
 
+import {
+  isometricLonLat,
+  isVehicleSnapshot,
+  lightingState,
+  solarPosition,
+} from "./city-overlay.js";
+
 /**
  * @typedef {{
  *   iso_bounds: [number, number, number, number],
@@ -13,19 +20,29 @@
  * }} Meta
  */
 
+/** @typedef {{ name: string, kind: "planning_neighborhood" | "cultural_area", label: [number, number], rings: [number, number][][], note?: string }} Neighborhood */
+/** @typedef {{ source: string, disclaimer: string, features: Neighborhood[] }} Neighborhoods */
+/** @typedef {{ id: string, mode: "surface" | "regional_rail", route: string, label: string, destination: string, latitude: number, longitude: number, heading: number }} Vehicle */
+
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
 const homeElement = document.querySelector("#home");
 const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
+const transitElement = document.querySelector("#transit-toggle");
+const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
+const sunElement = document.querySelector("#sun-state");
 if (
   !(canvasElement instanceof HTMLCanvasElement) ||
   !(statusElement instanceof HTMLSpanElement) ||
   !(homeElement instanceof HTMLButtonElement) ||
   !(zoomInElement instanceof HTMLButtonElement) ||
   !(zoomOutElement instanceof HTMLButtonElement) ||
-  !(retryElement instanceof HTMLButtonElement)
+  !(retryElement instanceof HTMLButtonElement) ||
+  !(transitElement instanceof HTMLButtonElement) ||
+  !(neighborhoodsElement instanceof HTMLButtonElement) ||
+  !(sunElement instanceof HTMLSpanElement)
 ) {
   throw new Error("map controls are missing");
 }
@@ -35,6 +52,9 @@ const home = homeElement;
 const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
+const transitToggle = transitElement;
+const neighborhoodsToggle = neighborhoodsElement;
+const sunState = sunElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
 const ctx = context;
@@ -53,6 +73,13 @@ let pinch;
 /** @type {{ x: number, y: number } | undefined} */
 let lastPointer;
 let drawing = false;
+/** @type {Neighborhoods | undefined} */
+let neighborhoodData;
+let showNeighborhoods = false;
+let showTransit = true;
+/** @type {Map<string, { vehicle: Vehicle, from: [number, number], to: [number, number], changedAt: number }>} */
+let liveVehicles = new Map();
+let vehicleUpdatedAt = 0;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
 /** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
@@ -67,6 +94,8 @@ let activeView = "";
 /** @type {string | undefined} */
 let scheduledPrefetch;
 const prefetchedViews = new Set();
+const VEHICLE_INTERPOLATION_MS = 15_000;
+const LIGHTING_TIME = new URLSearchParams(location.search).get("time");
 
 function city() {
   if (meta === undefined) throw new Error("city metadata is not loaded");
@@ -296,6 +325,9 @@ function drawNow() {
       }
     }
   }
+  drawLighting();
+  if (showNeighborhoods) drawNeighborhoods(viewZoom, panX, panY, scale);
+  if (showTransit) drawVehicles(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   drawLandmarks(viewZoom, panX, panY, scale);
   const pending = requested - loaded - failed;
@@ -310,6 +342,104 @@ function drawNow() {
   canvas.dataset.cameraX = String(cameraX);
   canvas.dataset.cameraY = String(cameraY);
   if (pending === 0 && failed === 0) schedulePrefetch(view, z, coordinates, count);
+}
+
+function drawLighting() {
+  const requested = LIGHTING_TIME === null ? new Date() : new Date(LIGHTING_TIME);
+  const instant = Number.isNaN(requested.getTime()) ? new Date() : requested;
+  const solar = solarPosition(instant, 39.9526, -75.1652);
+  const lighting = lightingState(solar.altitude);
+  canvas.dataset.light = lighting.phase;
+  sunState.textContent = `${lighting.phase} · sun ${Math.round(solar.altitude)}°`;
+  if (lighting.alpha === 0) return;
+  ctx.save();
+  ctx.globalAlpha = lighting.alpha;
+  ctx.fillStyle = lighting.color;
+  ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+  ctx.restore();
+}
+
+/** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
+function drawNeighborhoods(z, panX, panY, scale) {
+  if (neighborhoodData === undefined || z < 3) return;
+  for (const area of neighborhoodData.features) {
+    ctx.save();
+    ctx.strokeStyle = area.kind === "cultural_area" ? "#f2ad66" : "#2d2924aa";
+    ctx.lineWidth = area.kind === "cultural_area" ? 2 : 1;
+    if (area.kind === "cultural_area") ctx.setLineDash([5, 4]);
+    for (const ring of area.rings) {
+      ctx.beginPath();
+      for (let index = 0; index < ring.length; index += 1) {
+        const point = ring[index];
+        if (point === undefined) continue;
+        const [isoX, isoY] = isometricLonLat(point[0], point[1]);
+        const x = panX + (isoX - city().iso_bounds[0]) * scale;
+        const y = panY + (isoY - city().iso_bounds[1]) * scale;
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (z < 5) continue;
+    const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
+    const x = panX + (isoX - city().iso_bounds[0]) * scale;
+    const y = panY + (isoY - city().iso_bounds[1]) * scale;
+    if (x < -80 || y < -20 || x > viewportWidth + 80 || y > viewportHeight + 20) continue;
+    const label = area.kind === "cultural_area" ? `${area.name} · cultural area` : area.name;
+    ctx.font =
+      area.kind === "cultural_area"
+        ? "600 11px ui-sans-serif, system-ui"
+        : "500 10px ui-sans-serif, system-ui";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#f6f0e6dd";
+    ctx.strokeText(label, x, y);
+    ctx.fillStyle = area.kind === "cultural_area" ? "#7a3e25" : "#302d28";
+    ctx.fillText(label, x, y);
+  }
+}
+
+/** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
+function drawVehicles(z, panX, panY, scale) {
+  if (z < 4) return;
+  const now = Date.now();
+  for (const current of liveVehicles.values()) {
+    const progress = Math.min(1, Math.max(0, (now - current.changedAt) / VEHICLE_INTERPOLATION_MS));
+    const isoX = current.from[0] + (current.to[0] - current.from[0]) * progress;
+    const isoY = current.from[1] + (current.to[1] - current.from[1]) * progress;
+    const x = panX + (isoX - city().iso_bounds[0]) * scale;
+    const y = panY + (isoY - city().iso_bounds[1]) * scale;
+    if (x < -15 || y < -15 || x > viewportWidth + 15 || y > viewportHeight + 15) continue;
+    ctx.save();
+    ctx.fillStyle = current.vehicle.mode === "regional_rail" ? "#54c5d2" : "#f2ad50";
+    ctx.strokeStyle = "#191714";
+    ctx.lineWidth = 1.5;
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.rotate((current.vehicle.heading * Math.PI) / 180);
+    ctx.beginPath();
+    if (current.vehicle.mode === "regional_rail") {
+      ctx.moveTo(0, -5);
+      ctx.lineTo(5, 0);
+      ctx.lineTo(0, 5);
+      ctx.lineTo(-5, 0);
+    } else {
+      ctx.moveTo(0, -5);
+      ctx.lineTo(4, 4);
+      ctx.lineTo(-4, 4);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    if (z >= 7) {
+      const label = current.vehicle.route || current.vehicle.label;
+      ctx.font = "600 9px ui-sans-serif, system-ui";
+      ctx.fillStyle = "#191714";
+      ctx.fillText(label, x + 6, y - 5);
+    }
+  }
+  canvas.dataset.vehicles = String(liveVehicles.size);
+  canvas.dataset.vehiclesUpdated = String(vehicleUpdatedAt);
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
@@ -516,6 +646,69 @@ retry.addEventListener("click", () => {
   retry.hidden = true;
   draw();
 });
+transitToggle.addEventListener("click", () => {
+  showTransit = !showTransit;
+  transitToggle.setAttribute("aria-pressed", String(showTransit));
+  if (showTransit && liveVehicles.size === 0) void loadVehicles();
+  draw();
+});
+neighborhoodsToggle.addEventListener("click", () => {
+  showNeighborhoods = !showNeighborhoods;
+  neighborhoodsToggle.setAttribute("aria-pressed", String(showNeighborhoods));
+  draw();
+});
+
+async function loadNeighborhoods() {
+  try {
+    const response = await fetch("/neighborhoods.json");
+    if (!response.ok) throw new Error(`neighborhood request failed: ${response.status}`);
+    /** @type {unknown} */
+    const loaded = await response.json();
+    if (!isNeighborhoods(loaded)) throw new Error("neighborhood data has the wrong shape");
+    neighborhoodData = loaded;
+    neighborhoodsToggle.title = loaded.disclaimer;
+    draw();
+  } catch {
+    neighborhoodsToggle.disabled = true;
+    neighborhoodsToggle.title = "Neighborhood boundaries are unavailable";
+  }
+}
+
+async function loadVehicles() {
+  try {
+    const response = await fetch("/api/vehicles");
+    if (!response.ok) throw new Error(`vehicle request failed: ${response.status}`);
+    /** @type {unknown} */
+    const loaded = await response.json();
+    if (!isVehicleSnapshot(loaded)) throw new Error("vehicle data has the wrong shape");
+    const now = Date.now();
+    const next = new Map();
+    for (const vehicle of loaded.vehicles) {
+      const target = isometricLonLat(vehicle.longitude, vehicle.latitude);
+      const previous = liveVehicles.get(vehicle.id);
+      let from = target;
+      if (previous !== undefined) {
+        const progress = Math.min(
+          1,
+          Math.max(0, (now - previous.changedAt) / VEHICLE_INTERPOLATION_MS),
+        );
+        from = [
+          previous.from[0] + (previous.to[0] - previous.from[0]) * progress,
+          previous.from[1] + (previous.to[1] - previous.from[1]) * progress,
+        ];
+      }
+      next.set(vehicle.id, { vehicle, from, to: target, changedAt: now });
+    }
+    liveVehicles = next;
+    vehicleUpdatedAt = loaded.updated_at;
+    transitToggle.title = loaded.stale
+      ? `${loaded.vehicles.length} SEPTA vehicles · cached data`
+      : `${loaded.vehicles.length} live SEPTA vehicles`;
+    draw();
+  } catch {
+    transitToggle.title = "Live SEPTA positions are temporarily unavailable";
+  }
+}
 
 async function loadMeta() {
   try {
@@ -528,9 +721,34 @@ async function loadMeta() {
     retry.hidden = true;
     resize();
     centerAt(initialCenter(), initialTileZoom());
+    void loadNeighborhoods();
+    void loadVehicles();
   } catch {
     statusText.textContent = "Run the ingest command to load city geometry.";
   }
+}
+
+/** @param {unknown} value @returns {value is Neighborhoods} */
+function isNeighborhoods(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = /** @type {Record<string, unknown>} */ (value);
+  return (
+    typeof candidate.source === "string" &&
+    typeof candidate.disclaimer === "string" &&
+    Array.isArray(candidate.features) &&
+    candidate.features.every((feature) => {
+      if (typeof feature !== "object" || feature === null) return false;
+      const area = /** @type {Record<string, unknown>} */ (feature);
+      return (
+        typeof area.name === "string" &&
+        (area.kind === "planning_neighborhood" || area.kind === "cultural_area") &&
+        Array.isArray(area.label) &&
+        area.label.length === 2 &&
+        area.label.every(Number.isFinite) &&
+        Array.isArray(area.rings)
+      );
+    })
+  );
 }
 
 /** @param {unknown} value @returns {value is Meta} */
@@ -571,4 +789,11 @@ function isLandmark(value) {
   );
 }
 
-loadMeta();
+setInterval(() => {
+  if (showTransit) draw();
+}, 1_000);
+setInterval(() => {
+  if (showTransit) void loadVehicles();
+}, 15_000);
+setInterval(draw, 60_000);
+void loadMeta();

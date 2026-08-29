@@ -1,5 +1,7 @@
 # geo-philly
 
+See [live city overlays](docs/LIVE_CITY.md) for SEPTA, neighborhood, and day/night data provenance.
+
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
 scene, and 2024 City aerial photography. Explore the whole city in a browser,

@@ -1,12 +1,13 @@
 {
   "private": true,
+  "type": "module",
   "devDependencies": {
     "@biomejs/biome": "2.4.6",
     "playwright-core": "1.55.0",
     "typescript": "5.9.3"
   },
   "scripts": {
-    "check": "biome check static/app.js scripts/visual-check.mjs && tsc --noEmit",
+    "check": "biome check static/app.js static/city-overlay.js tests/city-overlay.test.js scripts/visual-check.mjs && tsc --noEmit && node --test tests/city-overlay.test.js",
     "visual": "node scripts/visual-check.mjs"
   }
 }

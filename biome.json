@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
   "files": {
-    "includes": ["static/app.js", "scripts/visual-check.mjs"]
+    "includes": ["static/app.js", "static/city-overlay.js", "tests/city-overlay.test.js", "scripts/visual-check.mjs"]
   },
   "linter": {
     "enabled": true,
