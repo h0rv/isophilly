@@ -381,7 +381,7 @@ impl World {
         let query = AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
         for item in self
             .building_iso_tree
-            .locate_in_envelope_intersecting(&query)
+            .locate_in_envelope_intersecting(query)
         {
             source.include(self.buildings[item.index].ring.bounds);
         }
@@ -396,7 +396,7 @@ impl World {
 
     pub fn has_content(&self, query: &AABB<[f32; 2]>) -> bool {
         self.city_tree
-            .locate_in_envelope_intersecting(query)
+            .locate_in_envelope_intersecting(*query)
             .any(|item| self.city[item.index].intersects(query))
     }
 
@@ -574,7 +574,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
             let query =
                 AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
             building_mesh_tree
-                .locate_in_envelope_intersecting(&query)
+                .locate_in_envelope_intersecting(query)
                 .any(|item| mesh_covers_building(building, &building_meshes[item.index]))
         })
         .collect();

@@ -39,7 +39,7 @@ pub fn render_tile(
         &mut pixmap,
         world
             .building_iso_tree
-            .locate_in_envelope_intersecting(&query)
+            .locate_in_envelope_intersecting(query)
             .filter_map(|item| {
                 let building = &world.buildings[item.index];
                 (!world.building_covered_by_mesh[item.index]
@@ -69,7 +69,7 @@ pub fn render_tile(
         &mut pixmap,
         world
             .mesh_face_tree
-            .locate_in_envelope_intersecting(&query)
+            .locate_in_envelope_intersecting(query)
             .map(|item| &world.mesh_faces[item.index]),
         &projection,
         mesh_textures,
