@@ -1,11 +1,6 @@
 // @ts-check
 
-import {
-  isometricLonLat,
-  isVehicleSnapshot,
-  lightingState,
-  solarPosition,
-} from "./city-overlay.js";
+import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js";
 
 /**
  * @typedef {{
@@ -20,17 +15,16 @@ import {
  * }} Meta
  */
 
-/** @typedef {{ name: string, kind: "planning_neighborhood" | "cultural_area", label: [number, number], rings: [number, number][][], note?: string }} Neighborhood */
-/** @typedef {{ source: string, disclaimer: string, features: Neighborhood[] }} Neighborhoods */
-/** @typedef {{ id: string, mode: "surface" | "regional_rail", route: string, label: string, destination: string, latitude: number, longitude: number, heading: number }} Vehicle */
+/** @typedef {{ schema_version: 1, tile_version: string, tiles: string[] }} TileCoverage */
 
+/** @typedef {{ name: string, kind: "planning_neighborhood" | "local_area", label: [number, number], rings: [number, number][][], note?: string }} Neighborhood */
+/** @typedef {{ source: string, disclaimer: string, features: Neighborhood[] }} Neighborhoods */
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
 const homeElement = document.querySelector("#home");
 const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
-const transitElement = document.querySelector("#transit-toggle");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
 const sunElement = document.querySelector("#sun-state");
 if (
@@ -40,7 +34,6 @@ if (
   !(zoomInElement instanceof HTMLButtonElement) ||
   !(zoomOutElement instanceof HTMLButtonElement) ||
   !(retryElement instanceof HTMLButtonElement) ||
-  !(transitElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
   !(sunElement instanceof HTMLSpanElement)
 ) {
@@ -52,7 +45,6 @@ const home = homeElement;
 const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
-const transitToggle = transitElement;
 const neighborhoodsToggle = neighborhoodsElement;
 const sunState = sunElement;
 const context = canvas.getContext("2d");
@@ -61,6 +53,8 @@ const ctx = context;
 
 /** @type {Meta | undefined} */
 let meta;
+/** @type {Set<string> | undefined} */
+let availableTiles;
 let zoom = 1;
 let cameraX = 0;
 let cameraY = 0;
@@ -76,10 +70,6 @@ let drawing = false;
 /** @type {Neighborhoods | undefined} */
 let neighborhoodData;
 let showNeighborhoods = false;
-let showTransit = true;
-/** @type {Map<string, { vehicle: Vehicle, from: [number, number], to: [number, number], changedAt: number }>} */
-let liveVehicles = new Map();
-let vehicleUpdatedAt = 0;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
 /** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
@@ -94,7 +84,6 @@ let activeView = "";
 /** @type {string | undefined} */
 let scheduledPrefetch;
 const prefetchedViews = new Set();
-const VEHICLE_INTERPOLATION_MS = 15_000;
 const LIGHTING_TIME = new URLSearchParams(location.search).get("time");
 
 function city() {
@@ -118,6 +107,11 @@ function resize() {
 /** @param {number} z @param {number} x @param {number} y */
 function key(z, x, y) {
   return `${z}/${x}/${y}`;
+}
+
+/** @param {number} z @param {number} x @param {number} y */
+function hasTile(z, x, y) {
+  return availableTiles?.has(key(z, x, y)) ?? false;
 }
 
 function pruneTiles() {
@@ -183,6 +177,13 @@ function schedulePrefetch(view, z, coordinates, count) {
 /** @param {number} z @param {number} x @param {number} y */
 function requestTile(z, x, y) {
   const id = key(z, x, y);
+  if (!hasTile(z, x, y)) {
+    if (z > 0) {
+      const parentZ = Math.min(z - 1, PREVIEW_TILE_ZOOM);
+      requestTile(parentZ, x >> (z - parentZ), y >> (z - parentZ));
+    }
+    return undefined;
+  }
   const cached = tiles.get(id);
   if (cached !== undefined) {
     tiles.delete(id);
@@ -306,7 +307,8 @@ function drawNow() {
   let uncovered = 0;
   let failed = 0;
   for (const { x, y } of coordinates) {
-    requested += 1;
+    const present = hasTile(z, x, y);
+    if (present) requested += 1;
     const destination = tileRectangle(panX, panY, tileSize, x, y);
     const image = requestTile(z, x, y);
     if (image?.complete && image.naturalWidth) {
@@ -319,15 +321,16 @@ function drawNow() {
         destination.height,
       );
     } else {
-      if (failures.get(key(z, x, y))?.terminal) failed += 1;
-      if (!drawParent(z, x, y, destination)) {
+      if (present && failures.get(key(z, x, y))?.terminal) failed += 1;
+      if (present && !drawParent(z, x, y, destination)) {
         uncovered += 1;
+      } else if (!present) {
+        drawParent(z, x, y, destination);
       }
     }
   }
   drawLighting();
   if (showNeighborhoods) drawNeighborhoods(viewZoom, panX, panY, scale);
-  if (showTransit) drawVehicles(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   drawLandmarks(viewZoom, panX, panY, scale);
   const pending = requested - loaded - failed;
@@ -364,9 +367,9 @@ function drawNeighborhoods(z, panX, panY, scale) {
   if (neighborhoodData === undefined || z < 3) return;
   for (const area of neighborhoodData.features) {
     ctx.save();
-    ctx.strokeStyle = area.kind === "cultural_area" ? "#f2ad66" : "#2d2924aa";
-    ctx.lineWidth = area.kind === "cultural_area" ? 2 : 1;
-    if (area.kind === "cultural_area") ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = area.kind === "local_area" ? "#f2ad66" : "#2d2924aa";
+    ctx.lineWidth = area.kind === "local_area" ? 2 : 1;
+    if (area.kind === "local_area") ctx.setLineDash([5, 4]);
     for (const ring of area.rings) {
       ctx.beginPath();
       for (let index = 0; index < ring.length; index += 1) {
@@ -386,60 +389,17 @@ function drawNeighborhoods(z, panX, panY, scale) {
     const x = panX + (isoX - city().iso_bounds[0]) * scale;
     const y = panY + (isoY - city().iso_bounds[1]) * scale;
     if (x < -80 || y < -20 || x > viewportWidth + 80 || y > viewportHeight + 20) continue;
-    const label = area.kind === "cultural_area" ? `${area.name} · cultural area` : area.name;
+    const label = area.name;
     ctx.font =
-      area.kind === "cultural_area"
+      area.kind === "local_area"
         ? "600 11px ui-sans-serif, system-ui"
         : "500 10px ui-sans-serif, system-ui";
     ctx.lineWidth = 3;
     ctx.strokeStyle = "#f6f0e6dd";
     ctx.strokeText(label, x, y);
-    ctx.fillStyle = area.kind === "cultural_area" ? "#7a3e25" : "#302d28";
+    ctx.fillStyle = area.kind === "local_area" ? "#7a3e25" : "#302d28";
     ctx.fillText(label, x, y);
   }
-}
-
-/** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
-function drawVehicles(z, panX, panY, scale) {
-  if (z < 4) return;
-  const now = Date.now();
-  for (const current of liveVehicles.values()) {
-    const progress = Math.min(1, Math.max(0, (now - current.changedAt) / VEHICLE_INTERPOLATION_MS));
-    const isoX = current.from[0] + (current.to[0] - current.from[0]) * progress;
-    const isoY = current.from[1] + (current.to[1] - current.from[1]) * progress;
-    const x = panX + (isoX - city().iso_bounds[0]) * scale;
-    const y = panY + (isoY - city().iso_bounds[1]) * scale;
-    if (x < -15 || y < -15 || x > viewportWidth + 15 || y > viewportHeight + 15) continue;
-    ctx.save();
-    ctx.fillStyle = current.vehicle.mode === "regional_rail" ? "#54c5d2" : "#f2ad50";
-    ctx.strokeStyle = "#191714";
-    ctx.lineWidth = 1.5;
-    ctx.translate(Math.round(x), Math.round(y));
-    ctx.rotate((current.vehicle.heading * Math.PI) / 180);
-    ctx.beginPath();
-    if (current.vehicle.mode === "regional_rail") {
-      ctx.moveTo(0, -5);
-      ctx.lineTo(5, 0);
-      ctx.lineTo(0, 5);
-      ctx.lineTo(-5, 0);
-    } else {
-      ctx.moveTo(0, -5);
-      ctx.lineTo(4, 4);
-      ctx.lineTo(-4, 4);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-    if (z >= 7) {
-      const label = current.vehicle.route || current.vehicle.label;
-      ctx.font = "600 9px ui-sans-serif, system-ui";
-      ctx.fillStyle = "#191714";
-      ctx.fillText(label, x + 6, y - 5);
-    }
-  }
-  canvas.dataset.vehicles = String(liveVehicles.size);
-  canvas.dataset.vehiclesUpdated = String(vehicleUpdatedAt);
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
@@ -646,12 +606,6 @@ retry.addEventListener("click", () => {
   retry.hidden = true;
   draw();
 });
-transitToggle.addEventListener("click", () => {
-  showTransit = !showTransit;
-  transitToggle.setAttribute("aria-pressed", String(showTransit));
-  if (showTransit && liveVehicles.size === 0) void loadVehicles();
-  draw();
-});
 neighborhoodsToggle.addEventListener("click", () => {
   showNeighborhoods = !showNeighborhoods;
   neighborhoodsToggle.setAttribute("aria-pressed", String(showNeighborhoods));
@@ -674,58 +628,61 @@ async function loadNeighborhoods() {
   }
 }
 
-async function loadVehicles() {
-  try {
-    const response = await fetch("/api/vehicles");
-    if (!response.ok) throw new Error(`vehicle request failed: ${response.status}`);
-    /** @type {unknown} */
-    const loaded = await response.json();
-    if (!isVehicleSnapshot(loaded)) throw new Error("vehicle data has the wrong shape");
-    const now = Date.now();
-    const next = new Map();
-    for (const vehicle of loaded.vehicles) {
-      const target = isometricLonLat(vehicle.longitude, vehicle.latitude);
-      const previous = liveVehicles.get(vehicle.id);
-      let from = target;
-      if (previous !== undefined) {
-        const progress = Math.min(
-          1,
-          Math.max(0, (now - previous.changedAt) / VEHICLE_INTERPOLATION_MS),
-        );
-        from = [
-          previous.from[0] + (previous.to[0] - previous.from[0]) * progress,
-          previous.from[1] + (previous.to[1] - previous.from[1]) * progress,
-        ];
-      }
-      next.set(vehicle.id, { vehicle, from, to: target, changedAt: now });
-    }
-    liveVehicles = next;
-    vehicleUpdatedAt = loaded.updated_at;
-    transitToggle.title = loaded.stale
-      ? `${loaded.vehicles.length} SEPTA vehicles · cached data`
-      : `${loaded.vehicles.length} live SEPTA vehicles`;
-    draw();
-  } catch {
-    transitToggle.title = "Live SEPTA positions are temporarily unavailable";
-  }
-}
-
 async function loadMeta() {
   try {
-    const response = await fetch("/meta");
+    const [response, coverageResponse] = await Promise.all([
+      fetch("/meta"),
+      fetch("/coverage.json"),
+    ]);
     if (!response.ok) throw new Error(`metadata request failed: ${response.status}`);
+    if (!coverageResponse.ok) {
+      throw new Error(`coverage request failed: ${coverageResponse.status}`);
+    }
     /** @type {unknown} */
     const loaded = await response.json();
+    /** @type {unknown} */
+    const loadedCoverage = await coverageResponse.json();
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
+    if (!isTileCoverage(loadedCoverage)) {
+      throw new Error("coverage response has the wrong shape");
+    }
+    if (loadedCoverage.tile_version !== loaded.tile_version) {
+      throw new Error("metadata and tile coverage versions do not match");
+    }
     meta = loaded;
+    availableTiles = new Set(loadedCoverage.tiles);
     retry.hidden = true;
     resize();
     centerAt(initialCenter(), initialTileZoom());
     void loadNeighborhoods();
-    void loadVehicles();
   } catch {
     statusText.textContent = "Run the ingest command to load city geometry.";
   }
+}
+
+/** @param {unknown} value @returns {value is TileCoverage} */
+function isTileCoverage(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = /** @type {Record<string, unknown>} */ (value);
+  if (
+    candidate.schema_version !== 1 ||
+    typeof candidate.tile_version !== "string" ||
+    !Array.isArray(candidate.tiles) ||
+    !candidate.tiles.every(isTileKey)
+  ) {
+    return false;
+  }
+  return new Set(candidate.tiles).size === candidate.tiles.length;
+}
+
+/** @param {unknown} value */
+function isTileKey(value) {
+  if (typeof value !== "string") return false;
+  const match = /^(?<z>[0-8])\/(?<x>0|[1-9]\d*)\/(?<y>0|[1-9]\d*)$/.exec(value);
+  if (match?.groups === undefined) return false;
+  const z = Number(match.groups.z);
+  const count = 2 ** z;
+  return Number(match.groups.x) < count && Number(match.groups.y) < count;
 }
 
 /** @param {unknown} value @returns {value is Neighborhoods} */
@@ -741,7 +698,7 @@ function isNeighborhoods(value) {
       const area = /** @type {Record<string, unknown>} */ (feature);
       return (
         typeof area.name === "string" &&
-        (area.kind === "planning_neighborhood" || area.kind === "cultural_area") &&
+        (area.kind === "planning_neighborhood" || area.kind === "local_area") &&
         Array.isArray(area.label) &&
         area.label.length === 2 &&
         area.label.every(Number.isFinite) &&
@@ -790,11 +747,5 @@ function isLandmark(value) {
   );
 }
 
-setInterval(() => {
-  if (showTransit) draw();
-}, 1_000);
-setInterval(() => {
-  if (showTransit) void loadVehicles();
-}, 15_000);
 setInterval(draw, 60_000);
 void loadMeta();

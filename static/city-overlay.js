@@ -116,33 +116,3 @@ export function lightingState(altitude) {
     return { phase: "twilight", color: "#34446b", alpha: 0.12 + (-altitude / 6) * 0.16 };
   return { phase: "night", color: "#10172e", alpha: 0.42 };
 }
-
-/** @param {unknown} value @returns {value is { updated_at: number, stale: boolean, vehicles: Vehicle[] }} */
-export function isVehicleSnapshot(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = /** @type {Record<string, unknown>} */ (value);
-  return (
-    Number.isInteger(candidate.updated_at) &&
-    typeof candidate.stale === "boolean" &&
-    Array.isArray(candidate.vehicles) &&
-    candidate.vehicles.every(isVehicle)
-  );
-}
-
-/** @typedef {{ id: string, mode: "surface" | "regional_rail", route: string, label: string, destination: string, latitude: number, longitude: number, heading: number }} Vehicle */
-
-/** @param {unknown} value @returns {value is Vehicle} */
-function isVehicle(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const item = /** @type {Record<string, unknown>} */ (value);
-  return (
-    typeof item.id === "string" &&
-    (item.mode === "surface" || item.mode === "regional_rail") &&
-    typeof item.route === "string" &&
-    typeof item.label === "string" &&
-    typeof item.destination === "string" &&
-    Number.isFinite(item.latitude) &&
-    Number.isFinite(item.longitude) &&
-    Number.isFinite(item.heading)
-  );
-}

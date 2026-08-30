@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
@@ -31,6 +31,267 @@ server.stderr.on("data", (chunk) => {
 
 /** @param {number} milliseconds */
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const pyramidAudits = [
+  {
+    name: "rittenhouse",
+    x: 79,
+    y: 71,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 38, uniformTwoByTwo: 20, edgeDensity: 60 },
+  },
+  {
+    name: "point-breeze",
+    x: 72,
+    y: 75,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 55, uniformTwoByTwo: 30, edgeDensity: 45 },
+  },
+  {
+    name: "italian-market",
+    x: 83,
+    y: 76,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 55, uniformTwoByTwo: 30, edgeDensity: 45 },
+  },
+  {
+    name: "east-passyunk",
+    x: 76,
+    y: 78,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 55, uniformTwoByTwo: 30, edgeDensity: 45 },
+  },
+];
+
+/**
+ * Decode fixed z8 mosaics in the browser so the release gate checks the same
+ * lossless WebP bytes that production serves. The thresholds are intentionally
+ * derived from the v39 audit and require the two-pixel /128 aerial treatment.
+ *
+ * @param {import("playwright-core").Browser} browser
+ * @param {Record<string, unknown>} meta
+ */
+async function auditPyramid(browser, meta) {
+  const page = await browser.newPage();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  const results = [];
+  for (const audit of pyramidAudits) {
+    const result = await page.evaluate(
+      async ({ audit, origin, tileVersion }) => {
+        const size = 256;
+        const canvas = document.createElement("canvas");
+        canvas.width = audit.columns * size;
+        canvas.height = audit.rows * size;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (context === null) throw new Error("audit canvas is unavailable");
+        const percentile95 = (values) => {
+          if (values.length === 0) return 0;
+          const ordered = values.toSorted((left, right) => left - right);
+          return ordered[Math.floor((ordered.length - 1) * 0.95)];
+        };
+        const emptyTiles = [];
+        for (let row = 0; row < audit.rows; row += 1) {
+          for (let column = 0; column < audit.columns; column += 1) {
+            const x = audit.x + column;
+            const y = audit.y + row;
+            const response = await fetch(
+              `${origin}/tiles/8/${x}/${y}.webp?v=${encodeURIComponent(tileVersion)}`,
+            );
+            if (!response.ok) throw new Error(`audit tile ${x}/${y} returned ${response.status}`);
+            if (response.headers.get("x-tile-cache") === "empty") emptyTiles.push(`${x}/${y}`);
+            const bitmap = await createImageBitmap(await response.blob());
+            if (bitmap.width !== size || bitmap.height !== size) {
+              throw new Error(`audit tile ${x}/${y} is ${bitmap.width}x${bitmap.height}`);
+            }
+            context.drawImage(bitmap, column * size, row * size);
+            bitmap.close();
+          }
+        }
+        const width = canvas.width;
+        const height = canvas.height;
+        const pixels = context.getImageData(0, 0, width, height).data;
+        const offset = (x, y) => (y * width + x) * 4;
+        const difference = (left, right) =>
+          (Math.abs(pixels[left] - pixels[right]) +
+            Math.abs(pixels[left + 1] - pixels[right + 1]) +
+            Math.abs(pixels[left + 2] - pixels[right + 2])) /
+          3;
+        const same = (left, right) =>
+          pixels[left] === pixels[right] &&
+          pixels[left + 1] === pixels[right + 1] &&
+          pixels[left + 2] === pixels[right + 2];
+
+        let comparisons = 0;
+        let equal = 0;
+        let edges = 0;
+        let transparent = 0;
+        const columnDifferences = [];
+        const rowDifferences = [];
+        for (let x = 1; x < width; x += 1) {
+          let total = 0;
+          for (let y = 0; y < height; y += 1) {
+            const left = offset(x - 1, y);
+            const right = offset(x, y);
+            const delta = difference(left, right);
+            total += delta;
+            comparisons += 1;
+            if (same(left, right)) equal += 1;
+            if (delta > 4) edges += 1;
+          }
+          columnDifferences.push(total / height);
+        }
+        for (let y = 1; y < height; y += 1) {
+          let total = 0;
+          for (let x = 0; x < width; x += 1) {
+            const above = offset(x, y - 1);
+            const below = offset(x, y);
+            const delta = difference(above, below);
+            total += delta;
+            comparisons += 1;
+            if (same(above, below)) equal += 1;
+            if (delta > 4) edges += 1;
+          }
+          rowDifferences.push(total / width);
+        }
+        for (let index = 3; index < pixels.length; index += 4) {
+          if (pixels[index] !== 255) transparent += 1;
+        }
+
+        let twoByTwo = 0;
+        let uniformTwoByTwo = 0;
+        for (let y = 0; y < height - 1; y += 1) {
+          for (let x = 0; x < width - 1; x += 1) {
+            const topLeft = offset(x, y);
+            twoByTwo += 1;
+            if (
+              same(topLeft, offset(x + 1, y)) &&
+              same(topLeft, offset(x, y + 1)) &&
+              same(topLeft, offset(x + 1, y + 1))
+            ) {
+              uniformTwoByTwo += 1;
+            }
+          }
+        }
+
+        const blankTiles = [];
+        for (let row = 0; row < audit.rows; row += 1) {
+          for (let column = 0; column < audit.columns; column += 1) {
+            const colors = new Set();
+            for (let y = row * size; y < (row + 1) * size; y += 8) {
+              for (let x = column * size; x < (column + 1) * size; x += 8) {
+                const index = offset(x, y);
+                colors.add(`${pixels[index]},${pixels[index + 1]},${pixels[index + 2]}`);
+              }
+            }
+            if (colors.size < 8) blankTiles.push(`${audit.x + column}/${audit.y + row}`);
+          }
+        }
+
+        const verticalSeams = columnDifferences.filter((_, index) => (index + 1) % size === 0);
+        const horizontalSeams = rowDifferences.filter((_, index) => (index + 1) % size === 0);
+        const internalColumns = columnDifferences.filter((_, index) => (index + 1) % size !== 0);
+        const internalRows = rowDifferences.filter((_, index) => (index + 1) % size !== 0);
+        return {
+          name: audit.name,
+          equalAdjacentPercent: Number(((100 * equal) / comparisons).toFixed(2)),
+          uniformTwoByTwoPercent: Number(((100 * uniformTwoByTwo) / twoByTwo).toFixed(2)),
+          edgeDensityPercent: Number(((100 * edges) / comparisons).toFixed(2)),
+          transparentPixels: transparent,
+          blankTiles: [...emptyTiles, ...blankTiles],
+          seamRatio: Number(
+            (
+              Math.max(0, ...verticalSeams, ...horizontalSeams) /
+              Math.max(1, percentile95([...internalColumns, ...internalRows]))
+            ).toFixed(2),
+          ),
+        };
+      },
+      {
+        audit,
+        origin,
+        tileVersion: String(meta.tile_version),
+      },
+    );
+    results.push({ ...result, limits: audit.limits });
+  }
+  await page.close();
+  const failures = [];
+  for (const result of results) {
+    if (result.equalAdjacentPercent > result.limits.equalAdjacent) {
+      failures.push(`${result.name} remains too blocky (${result.equalAdjacentPercent}% equal)`);
+    }
+    if (result.uniformTwoByTwoPercent > result.limits.uniformTwoByTwo) {
+      failures.push(`${result.name} has ${result.uniformTwoByTwoPercent}% uniform 2x2 blocks`);
+    }
+    if (result.edgeDensityPercent < result.limits.edgeDensity) {
+      failures.push(`${result.name} detail density is only ${result.edgeDensityPercent}%`);
+    }
+    if (result.transparentPixels !== 0) {
+      failures.push(`${result.name} has ${result.transparentPixels} transparent pixels`);
+    }
+    if (result.blankTiles.length > 0) {
+      failures.push(`${result.name} has blank tiles: ${result.blankTiles.join(", ")}`);
+    }
+    if (result.seamRatio > 2.5) {
+      failures.push(`${result.name} tile seam ratio is ${result.seamRatio}`);
+    }
+  }
+  return { results, failures };
+}
+
+async function auditTextureCoverage() {
+  const path = fileURLToPath(new URL("../data/clean/texture-coverage.json", import.meta.url));
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    return {
+      available: false,
+      failures: [
+        `texture coverage report is unavailable; run ingest first: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  }
+  const failures = [];
+  const citywide = raw.citywide;
+  if (
+    typeof citywide?.photographed_building_percent !== "number" ||
+    citywide.photographed_building_percent < 2.15
+  ) {
+    failures.push("citywide photographed building coverage fell below 2.15%");
+  }
+  if (
+    typeof citywide?.photographed_footprint_percent !== "number" ||
+    citywide.photographed_footprint_percent < 6
+  ) {
+    failures.push("citywide photographed footprint coverage fell below 6.0%");
+  }
+  const areas = Array.isArray(raw.areas) ? raw.areas : [];
+  const byName = new Map(areas.map((area) => [area.name, area]));
+  for (const required of ["Rittenhouse Square", "Point Breeze", "Bella Vista"]) {
+    if (!byName.has(required)) failures.push(`texture coverage report is missing ${required}`);
+  }
+  const rittenhouse = byName.get("Rittenhouse Square");
+  if (
+    typeof rittenhouse?.photographed_building_percent !== "number" ||
+    rittenhouse.photographed_building_percent < 70
+  ) {
+    failures.push("Rittenhouse photographed building coverage fell below 70%");
+  }
+  if (
+    typeof rittenhouse?.photographed_footprint_percent !== "number" ||
+    rittenhouse.photographed_footprint_percent < 83
+  ) {
+    failures.push("Rittenhouse photographed footprint coverage fell below 83%");
+  }
+  return { available: true, citywide, areas: Object.fromEntries(byName), failures };
+}
 
 async function waitForServer() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -245,7 +506,9 @@ async function interactions(browser, meta) {
   const cameraAfter = Number(await canvas.getAttribute("data-camera-x"));
   if (!(cameraAfter > cameraBefore)) throw new Error("keyboard pan did not move the camera");
   await page.locator("#home").click();
-  await page.locator("details").click();
+  await page.locator("details").evaluate((element) => {
+    element.open = true;
+  });
   await page.screenshot({ path: `${artifactDir}/mobile.png` });
 
   const landmarks = /** @type {{ name: string }[]} */ (meta.landmarks);
@@ -324,6 +587,8 @@ try {
     headless: true,
     args: ["--no-sandbox", "--disable-gpu"],
   });
+  const pyramidAudit = await auditPyramid(browser, meta);
+  const textureCoverageAudit = await auditTextureCoverage();
   const results = [];
   for (const zoom of zooms) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
@@ -375,11 +640,17 @@ try {
     gitDirty: gitStatus.length > 0,
     tileVersion: meta.tile_version,
     rendering,
+    pyramidAudit,
+    textureCoverageAudit,
     views: results,
     interactions: interactionResults,
   };
   await writeFile(`${artifactDir}/report.json`, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  const auditFailures = [...pyramidAudit.failures, ...textureCoverageAudit.failures];
+  if (auditFailures.length > 0) {
+    throw new Error(`visual regression audit failed:\n${auditFailures.join("\n")}`);
+  }
 } catch (error) {
   process.stderr.write(`\nserver output:\n${serverOutput}\n`);
   throw error;

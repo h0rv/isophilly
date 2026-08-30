@@ -7,11 +7,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use serde::Serialize;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
-    live_city::{LiveCity, vehicles},
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, TileInventory, tile_path},
     render::render_blank_tile,
@@ -26,11 +26,18 @@ pub(crate) struct AppState {
     scene: Arc<Scene>,
     tile_dir: PathBuf,
     tile_inventory: Arc<TileInventory>,
+    coverage_json: Arc<Vec<u8>>,
     blank_tile: Arc<Vec<u8>>,
-    pub(crate) live_city: Arc<LiveCity>,
 }
 
-const PYRAMID_VERSION: &str = "v39-texture-first-footprints";
+#[derive(Serialize)]
+struct TileCoverage {
+    schema_version: u8,
+    tile_version: String,
+    tiles: Vec<String>,
+}
+
+const PYRAMID_VERSION: &str = "v41-pasda-2025-aerial";
 
 pub async fn serve(port: u16) -> io::Result<()> {
     let scene = Arc::new(Scene::read_current()?);
@@ -43,20 +50,26 @@ pub async fn serve(port: u16) -> io::Result<()> {
             ),
         )
     })?);
+    let coverage_json = serde_json::to_vec(&TileCoverage {
+        schema_version: 1,
+        tile_version: scene.tile_version.clone(),
+        tiles: tile_inventory.tile_keys(),
+    })
+    .map_err(io::Error::other)?;
     let state = AppState {
         scene,
         tile_dir,
         tile_inventory,
+        coverage_json: Arc::new(coverage_json),
         blank_tile: Arc::new(render_blank_tile()?),
-        live_city: Arc::new(LiveCity::new()?),
     };
     let app = Router::new()
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/city-overlay.js", get(city_overlay_js))
         .route("/neighborhoods.json", get(neighborhoods))
-        .route("/api/vehicles", get(vehicles))
         .route("/meta", get(meta))
+        .route("/coverage.json", get(coverage))
         .route("/tiles/{z}/{x}/{y}", get(tile))
         .with_state(state)
         .layer(
@@ -160,6 +173,16 @@ async fn static_file(
 
 async fn meta(State(state): State<AppState>) -> Json<Scene> {
     Json(state.scene.as_ref().clone())
+}
+
+async fn coverage(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        state.coverage_json.as_ref().clone(),
+    )
 }
 
 async fn tile(

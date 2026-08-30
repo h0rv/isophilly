@@ -22,13 +22,13 @@ SOURCE_PAGE: Final = (
 )
 DISCLAIMER: Final = (
     "PCPC describes these as general historic and development boundaries; they are not "
-    "official boundaries. Cultural areas are approximate and separately identified."
+    "official boundaries. Locally named areas are approximate and separately identified."
 )
 
 
 class Neighborhood(TypedDict):
     name: str
-    kind: Literal["planning_neighborhood", "cultural_area"]
+    kind: Literal["planning_neighborhood", "local_area"]
     label: list[float]
     rings: list[list[list[float]]]
     note: NotRequired[str]
@@ -97,7 +97,7 @@ def build(source: Mapping[str, object]) -> NeighborhoodCollection:
     neighborhoods.append(
         {
             "name": "Gayborhood",
-            "kind": "cultural_area",
+            "kind": "local_area",
             "label": [-75.16165, 39.94755],
             "rings": [
                 [
@@ -109,7 +109,7 @@ def build(source: Mapping[str, object]) -> NeighborhoodCollection:
                 ]
             ],
             "note": (
-                "Approximate cultural area from Visit Philadelphia's 11th-to-Broad and "
+                "Approximate locally named area from Visit Philadelphia's 11th-to-Broad and "
                 "Pine-to-Chestnut description; nested within Washington Square West."
             ),
         }

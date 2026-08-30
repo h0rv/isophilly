@@ -59,6 +59,15 @@ struct TileFingerprint {
 }
 
 impl TileInventory {
+    pub fn tile_keys(&self) -> Vec<String> {
+        let mut entries: Vec<_> = self.entries.keys().copied().collect();
+        entries.sort_unstable();
+        entries
+            .into_iter()
+            .map(|(z, x, y)| format!("{z}/{x}/{y}"))
+            .collect()
+    }
+
     pub fn expected_bytes(&self, z: u8, x: u32, y: u32) -> Option<u64> {
         self.entries.get(&(z, x, y)).map(|entry| entry.bytes)
     }

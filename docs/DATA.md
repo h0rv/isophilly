@@ -95,10 +95,11 @@ ring:
 
 ## Aerial image and tile pyramid
 
-The ground image comes from the 2024 Philadelphia service at
-[PASDA](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer).
-The source advertises one inch imagery. Source crops use EPSG:32129 and persist
-under `data/aerial/` with an 8 GiB limit. Each fixed 1,536 metre cell contains
+The ground image comes from the 2025 Philadelphia service at
+[PASDA](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer).
+The source metadata reports three-inch native imagery. Source crops use
+EPSG:32129 and persist under `data/aerial/` with an 8 GiB limit. Each fixed
+1,536 metre cell contains
 2,048 by 2,048 pixels, for a 0.75 metre render sample interval. The 3 by 3 filter can
 cross cell boundaries instead of clamping to an edge pixel. Starting a build
 removes obsolete aerial cache namespaces, so the 8 GiB limit applies across

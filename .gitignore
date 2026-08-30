@@ -22,6 +22,7 @@ dist/
 # Node / viewer
 node_modules/
 artifacts/visual/
+.wrangler/
 
 # OS
 .DS_Store

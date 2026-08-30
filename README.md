@@ -1,10 +1,10 @@
 # geo-philly
 
-See [live city overlays](docs/LIVE_CITY.md) for SEPTA, neighborhood, and day/night data provenance.
+See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data provenance.
 
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
-scene, the legacy 2008/09 downtown and stadium-area textured models, and 2024
+scene, the legacy 2008/09 downtown and stadium-area textured models, and 2025
 City aerial photography. Explore the whole city in a browser, from the regional
 silhouette to individual buildings.
 
@@ -52,7 +52,7 @@ The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
 the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
 It does not switch to another renderer or replace textures with plain geometry.
 
-Aerial crops come from the native one inch 2024 PASDA service. The renderer
+Aerial crops come from the native three-inch 2025 PASDA service. The renderer
 divides EPSG:32129 into fixed 1,536 metre cells, and each cell contains 2,048 by 2,048
 pixels. Every output tile samples the same source pixel grid, so tile borders
 cannot change the sampling phase. At most eight requests reach PASDA at once.
@@ -65,6 +65,34 @@ After the first ingest, the usual development loop is only:
 ```sh
 uv run --locked poe serve
 ```
+
+Optional EagleView access is configured through one immutable Pydantic Settings
+model. Copy `.example.env` to `.env`, add credentials issued through the official
+developer API, and run `uv run --locked poe eagleview-smoke`. The smoke test is
+bounded to one City Hall cell and downloads at most one image. The normal ingest
+and prebuild commands do not read these credentials.
+
+## Static hosting
+
+The finished map can run as plain files on Cloudflare Workers Static Assets.
+The export includes the viewer, metadata, tile coverage, and every tile listed
+in the SHA-256 inventory. It does not include a Worker script or any paid
+Cloudflare service.
+
+```sh
+npm ci
+uv run --locked poe static-export
+uv run --locked poe static-dry-run
+uv run --locked poe static-preview
+```
+
+The current export has 12,344 files and uses 615.5 MiB. Its largest file is
+about 126 KiB. The exporter rejects builds that exceed the Cloudflare Free plan
+limits of 20,000 files or 25 MiB per file. Static asset requests and storage do
+not incur a charge. See the official [Static Assets limits and
+billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
+documentation. Run `npx wrangler deploy` when the dry run and local preview
+pass and you are ready to publish.
 
 Generated data and tiles are intentionally gitignored. See the [data pipeline
 and attribution notes](docs/DATA.md) before publishing a build.

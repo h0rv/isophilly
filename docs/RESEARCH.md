@@ -7,7 +7,7 @@ recommendation, not a proposal to train or ship a generative-image product.
 
 Use the official 2015 Center City I3S scene for detailed architecture and
 facade textures. Across the rest of Philadelphia, extrude official City
-footprints at their supplied heights, sample the 2024 PASDA aerial imagery on
+footprints at their supplied heights, sample the 2025 PASDA aerial imagery on
 the roofs, and derive a restrained wall palette from the same local pixels.
 This gives every neighborhood real geometry, height, roof detail, and local
 color while remaining honest that unseen walls are illustrative.
@@ -72,7 +72,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Render the textured triangles once into the canonical z8 artwork. Get written City permission before redistributing tiles that include the atlases. |
 | 1. Legacy downtown scene | [PASDA 2008 and 2009 downtown KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip) | 2,689 highest-detail models with photographed roofs and facades. It extends farther east, west, and south than the 2015 scene. | The smaller download is about 886 MB. Existing checkouts can reuse the retained 2.4 GB outer archive. | Import only `r0`, suppress overlap under the 2015 scene, and record the real 2008 and 2009 date. |
 | 1. Stadium scene | [PASDA 2008 stadium-area KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/Stadium%20Area%20Processed%20w%20LiDAR-KML.zip) | 814 highest-detail KML/COLLADA components with measured geometry and JPEG material textures. The 2008 source includes the since-demolished Spectrum. | 647 MB nested archive; output keeps 808 current components, 126,181 textured triangles, and about 84 MB of JPEGs. | Render through the same textured-mesh path as Center City; exclude the six Spectrum components and record the historical capture date. |
-| 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2024 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer) | 2024 one-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
+| 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025 three-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
 | 2. Terrain/height | [2022 LiDAR/LAS catalog](https://opendataphilly.org/datasets/lidar-las-data/); [2022 DEM catalog/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7152); [NOAA LAZ archive](https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/laz/geoid18/9848/index.html) | Citywide capture from Apr. 2022. Classified points can refine roof form and height; the DEM alone is only ground elevation. | The NOAA archive is about 93 GB across 752 LAZ files. A full default import would dwarf the current pipeline. | Keep optional and targeted. Use LAZ surface minus ground only where it materially improves a landmark or roof shape; do not impose a 93 GB first run. |
 | 3. Street facade reference | [KartaView photo API](https://kartaview.org/doc/photos), [license FAQ](https://kartaview.org/doc/faq) | Public crowdsourced photos expose position, heading, time, and image URLs under CC BY-SA 4.0. A Rittenhouse test found only three images within 500 m, from different years. | Coverage and camera pose are uneven. Correctly projecting a photo onto a visible wall also requires occlusion and attribution handling. | Useful future opt-in source, not a citywide default. Audit coverage before downloading, and never smear a nearby photo across an unmatched facade. |
 
@@ -82,8 +82,8 @@ The simplest credible next source is not satellite or random plane photography.
 It is a registered ensemble of the City's annual orthophotos. The catalog calls
 2022 a two-inch capture, but the service metadata and raster spacing consistently
 report three-inch pixels for both 2022 and 2023. The
-[2024 metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=PhiladelphiaImagery2024.xml)
-lists no use constraints. Keep 2024 as the canonical surface, align the older
+[2025 metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=PhiladelphiaImagery2025.xml)
+lists no use constraints. Keep 2025 as the canonical surface, align the older
 captures to the same State Plane grid, and select pixels from another year only
 where the current image has a shadow, glare, cloud, or occlusion. A median is
 useful inside a detected defect. Averaging every pixel would ghost cars, trees,
@@ -96,11 +96,11 @@ Both older ArcGIS services accept the same EPSG:32129 fixed-grid export scheme:
 - [2023 export](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2023/MapServer/export)
   works without a layer override.
 
-For a deterministic repair, normalize each older cell to 2024 using robust
-channel percentiles from its neighbors. Replace a 2024 pixel only when the 2022
-and 2023 colors agree, both are at least 20 luminance steps brighter, and 2024
+For a deterministic repair, normalize each older cell to 2025 using robust
+channel percentiles from its neighbors. Replace a 2025 pixel only when the 2022
+and 2023 colors agree, both are at least 20 luminance steps brighter, and 2025
 luminance is below 70 percent of both. Remove tiny mask regions and feather the
-boundary by two to four output pixels. Keep 2024 whenever the older years
+boundary by two to four output pixels. Keep 2025 whenever the older years
 disagree. This guards against construction, trees, moving cars, and different
 building lean. It repairs some shadows and transient occlusion but cannot invent
 a facade missing from every nadir capture.
@@ -112,6 +112,62 @@ Ask `maps@phila.gov` for those source frames and written permission to publish
 irreversible rasterized texture tiles. The public
 [Pictometry viewer](https://pictometry.phila.gov/) is evidence that the imagery
 exists, not permission to scrape or redistribute it.
+
+#### EagleView/Pictometry access
+
+The viewer can be driven deterministically, but it is not a public image API.
+Philadelphia's Atlas and Pictometry front ends mount EagleView's credentialed
+Embedded Explorer. Its documented API can set an exact longitude, latitude,
+zoom, pitch, and rotation and reports the resulting view through
+`onViewUpdate`. It does not document a method for downloading the underlying
+image, its camera model, or a citywide archive. Reusing a browser token or a
+credential embedded in the City's deployment would be brittle and outside the
+intended access path.
+
+EagleView's separate Imagery API is the correct deterministic source. Its
+[official demo](https://www.eagleview.com/blog/developer-demo-see-the-imagery-api-in-action/)
+documents discovery, 256 by 256 ortho and oblique tiles, images up to 4096 by
+4096 pixels, and an orthomosaic endpoint. The
+[official API reference](https://developer.eagleview.com/docs/imagery/api-documentation.md)
+documents the exact operations needed for a reproducible import:
+
+- `POST /imagery/v3/discovery/rank/location` ranks north, east, south, west,
+  and orthogonal captures for a point or polygon;
+- `POST /imagery/v3/discovery/orthomosaics/search` finds stitched top-down imagery;
+- `GET /imagery/v3/images/{image_urn}/location` returns a geospatial crop; and
+- `GET /imagery/v3/images/{image_urn}/tiles/{z}/{x}/{y}` returns 256-pixel tiles.
+
+The default documented limits are five discovery or image requests per second
+and 300 tile requests per second. The normal citywide workflow would:
+
+1. submit the Philadelphia boundary as an authorized area of interest;
+2. discover captures once and pin capture IDs, dates, orientations, and checksums;
+3. enumerate our canonical z8 cells, request every intersecting oblique image,
+   and retain the best two opposing views where the license permits it;
+4. project visible facade samples onto the existing textured meshes or City
+   footprints, with depth and occlusion checks; and
+5. pre-render the static pyramid so no EagleView credentials or source pixels
+   reach the browser.
+
+The free developer sandbox uses a vendor-selected sample area. EagleView's
+[current trial](https://www.eagleview.com/blog/eagleview/eagleview-launches-an-early-access-free-imagery-api-trial-to-power-the-next-generation-of-geospatial-applications/)
+allows a developer-selected two-square-mile area for 30 days, which is enough
+for a Center City proof but not Philadelphia. Before implementing an importer,
+obtain either City-approved bulk delivery or production Imagery API access with
+explicit derivative-tile publication rights. Then implement against the
+official OpenAPI specification and recorded credentials rather than reverse
+engineering the public viewer.
+
+Discovery metadata includes capture date, ground sample distance, image ground
+footprint, tile bounds, an estimated requested pixel, and a `look_at` estimate
+with camera center, azimuth, and elevation. The public specification does not
+expose focal length, principal point, distortion, or roll. It is enough to pull
+deterministic crops and derive honest local facade colors, but not enough by
+itself for exact photographic UV projection. A production agreement should
+also include full exterior/interior camera calibration or a prepared textured
+3-D deliverable, plus explicit rights for bulk retrieval, persistent caching,
+derivative texture atlases, public web tiles, attribution, and post-contract
+retention.
 
 [WorldView 3D](https://developers.maxar.com/docs/ordering/guides/worldview-3d-ordering)
 can provide a commercial 0.5 metre textured surface from stereo satellite

@@ -14,7 +14,6 @@ use reqwest::blocking::Client;
 
 use crate::world::Bounds;
 
-const SOURCE_CACHE_VERSION: &str = "2024-1in-1536m-grid-v1";
 const SOURCE_SIZE: u32 = 2048;
 const SOURCE_CELL_METERS: f32 = 1536.0;
 const SOURCE_PIXEL_METERS: f32 = SOURCE_CELL_METERS / SOURCE_SIZE as f32;
@@ -22,10 +21,25 @@ const SOURCE_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const DOWNLOAD_LOCKS: usize = 256;
 const DOWNLOAD_SLOTS: usize = 8;
 const DECODED_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
-const SOURCE_URL: &str = "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2024/MapServer/export";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AerialDataset {
+    export_url: &'static str,
+    image_layer: u8,
+    spatial_reference: u32,
+    cache_namespace: &'static str,
+}
+
+const AERIAL_DATASET: AerialDataset = AerialDataset {
+    export_url: "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer/export",
+    image_layer: 3,
+    spatial_reference: 32129,
+    cache_namespace: "2025-3in-1536m-grid-v1",
+};
 
 pub struct AerialSource {
     client: Client,
+    dataset: AerialDataset,
     root: PathBuf,
     cached_bytes: AtomicU64,
     temporary_id: AtomicU64,
@@ -43,16 +57,18 @@ struct DecodedCache {
 
 impl AerialSource {
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
+        let dataset = AERIAL_DATASET;
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .user_agent("geo-philly/0.1 (public-data texture cache)")
             .build()
             .map_err(io::Error::other)?;
         let root = root.into();
-        prune_obsolete_namespaces(&root)?;
-        let cached_bytes = prune_active_cache(&root.join(SOURCE_CACHE_VERSION))?;
+        prune_obsolete_namespaces(&root, dataset.cache_namespace)?;
+        let cached_bytes = prune_active_cache(&root.join(dataset.cache_namespace))?;
         Ok(Self {
             client,
+            dataset,
             root,
             cached_bytes: AtomicU64::new(cached_bytes),
             temporary_id: AtomicU64::new(0),
@@ -66,7 +82,7 @@ impl AerialSource {
         let (x, y) = key;
         let path = self
             .root
-            .join(SOURCE_CACHE_VERSION)
+            .join(self.dataset.cache_namespace)
             .join(x.to_string())
             .join(format!("{y}.jpg"));
         let _guard = self.download_locks[download_shard(x, y)]
@@ -156,11 +172,14 @@ impl AerialSource {
             bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y
         );
         let size = format!("{SOURCE_SIZE},{SOURCE_SIZE}");
+        let layers = format!("show:{}", self.dataset.image_layer);
+        let spatial_reference = self.dataset.spatial_reference.to_string();
         let query = [
             ("bbox", bbox.as_str()),
-            ("bboxSR", "32129"),
+            ("bboxSR", spatial_reference.as_str()),
             ("size", size.as_str()),
-            ("imageSR", "32129"),
+            ("imageSR", spatial_reference.as_str()),
+            ("layers", layers.as_str()),
             ("format", "jpg"),
             ("transparent", "false"),
             ("f", "image"),
@@ -169,7 +188,7 @@ impl AerialSource {
         for attempt in 0..6 {
             let result = self
                 .client
-                .get(SOURCE_URL)
+                .get(self.dataset.export_url)
                 .query(&query)
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
@@ -357,7 +376,7 @@ fn collect_cache_files(
     Ok(())
 }
 
-fn prune_obsolete_namespaces(root: &Path) -> io::Result<()> {
+fn prune_obsolete_namespaces(root: &Path, active_namespace: &str) -> io::Result<()> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -365,7 +384,7 @@ fn prune_obsolete_namespaces(root: &Path) -> io::Result<()> {
     };
     for entry in entries {
         let entry = entry?;
-        if entry.file_type()?.is_dir() && entry.file_name() != SOURCE_CACHE_VERSION {
+        if entry.file_type()?.is_dir() && entry.file_name() != active_namespace {
             fs::remove_dir_all(entry.path())?;
         }
     }
@@ -387,10 +406,24 @@ mod tests {
     use image::{Rgb, RgbImage};
 
     use super::{
-        AerialSource, AerialTile, DOWNLOAD_LOCKS, SOURCE_CACHE_MAX_BYTES, SOURCE_CELL_METERS,
-        SOURCE_PIXEL_METERS, SOURCE_SIZE, download_shard, posterize, prune_active_cache,
-        prune_obsolete_namespaces, source_cell_bounds,
+        AERIAL_DATASET, AerialSource, AerialTile, DOWNLOAD_LOCKS, SOURCE_CACHE_MAX_BYTES,
+        SOURCE_CELL_METERS, SOURCE_PIXEL_METERS, SOURCE_SIZE, download_shard, posterize,
+        prune_active_cache, prune_obsolete_namespaces, source_cell_bounds,
     };
+
+    #[test]
+    fn active_source_is_2025_imagery_on_the_fixed_state_plane_grid() {
+        assert!(
+            AERIAL_DATASET
+                .export_url
+                .contains("PhiladelphiaImagery2025")
+        );
+        assert_eq!(AERIAL_DATASET.image_layer, 3);
+        assert_eq!(AERIAL_DATASET.spatial_reference, 32129);
+        assert_eq!(AERIAL_DATASET.cache_namespace, "2025-3in-1536m-grid-v1");
+        assert_eq!(SOURCE_CELL_METERS, 1536.0);
+        assert_eq!(SOURCE_PIXEL_METERS, 0.75);
+    }
 
     #[test]
     fn posterize_compresses_extremes_into_fixed_sixteen_value_steps() {
@@ -418,12 +451,12 @@ mod tests {
             std::process::id()
         ));
         let old = root.join("old-grid");
-        let active = root.join(super::SOURCE_CACHE_VERSION);
+        let active = root.join(AERIAL_DATASET.cache_namespace);
         std::fs::create_dir_all(&old)?;
         std::fs::create_dir_all(&active)?;
         std::fs::write(old.join("tile.jpg"), b"old")?;
 
-        prune_obsolete_namespaces(&root)?;
+        prune_obsolete_namespaces(&root, AERIAL_DATASET.cache_namespace)?;
 
         assert!(!old.exists());
         assert!(active.exists());

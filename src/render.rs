@@ -101,7 +101,7 @@ fn draw_ground(pixmap: &mut Pixmap, bounds: Bounds, scale: f32, aerial: &AerialT
 }
 
 fn block_size(bounds: Bounds) -> f32 {
-    bounds.width() / 96.0
+    bounds.width() / 128.0
 }
 
 fn missing_imagery(color: Option<[u8; 3]>) -> bool {
@@ -112,4 +112,22 @@ fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
     std::array::from_fn(|index| {
         (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount).round() as u8
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_size;
+    use crate::world::Bounds;
+
+    #[test]
+    fn aerial_blocks_are_two_output_pixels_wide() {
+        let bounds = Bounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 256.0,
+            max_y: 256.0,
+        };
+
+        assert_eq!(block_size(bounds), 2.0);
+    }
 }

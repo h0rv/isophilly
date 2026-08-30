@@ -26,14 +26,17 @@ from .config import (
     MESH_TEXTURE_DIR,
     METADATA_JSON,
     MIN_BUILDING_COUNT,
+    ROOT,
     SOURCES,
     STADIUM_ARCHIVE,
+    TEXTURE_COVERAGE_JSON,
     WORLD_BIN,
 )
 from .download import download_all, local_snapshot
 from .geometry import buildings, city_rings, projected
 from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
 from .models import Bounds, Building, BuildingMesh, MeshFace, Ring, Snapshot
+from .quality import texture_coverage_report, write_texture_coverage
 
 WORLD_MAGIC = b"GEOPHILY"
 VERSION = 6
@@ -126,6 +129,7 @@ def write_metadata(
     city: list[Ring],
     texture_sha256: bytes,
     texture_bytes: int,
+    texture_coverage: dict[str, object],
 ) -> None:
     heights = [building.height for building in packed_buildings]
     mesh_heights = [mesh.height for mesh in meshes]
@@ -167,6 +171,7 @@ def write_metadata(
             "buildings": {"min": min(heights), "max": max(heights)},
             "building_meshes": {"min": min(mesh_heights), "max": max(mesh_heights)},
         },
+        "texture_coverage": texture_coverage["citywide"],
         "artifacts": {
             WORLD_BIN.name: {
                 "bytes": world_path.stat().st_size,
@@ -281,6 +286,22 @@ async def main_async() -> None:
     await asyncio.to_thread(prune_mesh_textures, meshes, texture_dir)
     texture_sha256, texture_bytes = await asyncio.to_thread(texture_digest, meshes, texture_dir)
     print(f"verified {texture_bytes / 1_000_000:.1f} MB of texture atlases", flush=True)
+    print("measuring photographed building coverage", flush=True)
+    texture_coverage = await asyncio.to_thread(
+        texture_coverage_report,
+        packed_buildings,
+        meshes,
+        ROOT / "static" / "neighborhoods.json",
+    )
+    write_texture_coverage(staging / TEXTURE_COVERAGE_JSON.name, texture_coverage)
+    citywide_coverage = texture_coverage["citywide"]
+    if not isinstance(citywide_coverage, dict):
+        raise ValueError("citywide texture coverage is invalid")
+    print(
+        f"photographed facade coverage: "
+        f"{citywide_coverage['photographed_building_percent']}% of buildings",
+        flush=True,
+    )
 
     staged_world = staging / WORLD_BIN.name
     staged_metadata = staging / METADATA_JSON.name
@@ -302,6 +323,7 @@ async def main_async() -> None:
         packed_city,
         texture_sha256,
         texture_bytes,
+        texture_coverage,
     )
     (staging / "streets.bin").unlink(missing_ok=True)
     await asyncio.to_thread(publish_clean, staging)

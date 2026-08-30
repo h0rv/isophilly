@@ -486,12 +486,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
                 AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
             building_mesh_tree
                 .locate_in_envelope_intersecting(&query)
-                .any(|item| {
-                    building_meshes[item.index]
-                        .footprint
-                        .squared_distance_to_ring(&building.ring)
-                        <= MESH_COVERAGE_BUFFER_METERS.powi(2)
-                })
+                .any(|item| mesh_covers_building(building, &building_meshes[item.index]))
         })
         .collect();
     let mut texture_ids: Vec<_> = building_meshes.iter().map(|mesh| mesh.texture_id).collect();
@@ -512,6 +507,12 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         max_height,
         world_sha256,
     })
+}
+
+fn mesh_covers_building(building: &Building, mesh: &BuildingMesh) -> bool {
+    mesh.height * 2.0 >= building.height
+        && mesh.footprint.squared_distance_to_ring(&building.ring)
+            <= MESH_COVERAGE_BUFFER_METERS.powi(2)
 }
 
 fn squared_distance(left: (f32, f32), right: (f32, f32)) -> f32 {
@@ -723,9 +724,21 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Cursor, MESH_FACE_BYTES, inverse_isometric,
-        isometric, parse_world,
+        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, Cursor,
+        MESH_FACE_BYTES, Ring, inverse_isometric, isometric, mesh_covers_building, parse_world,
     };
+
+    fn square(size: f32) -> Ring {
+        Ring {
+            bounds: Bounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: size,
+                max_y: size,
+            },
+            points: vec![(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)],
+        }
+    }
 
     fn golden_world() -> std::io::Result<Vec<u8>> {
         let hex = include_str!("../tests/fixtures/world-v6.hex")
@@ -850,6 +863,23 @@ mod tests {
         assert!(ring.intersects(&rstar::AABB::from_corners([1.5, 1.5], [3.0, 3.0])));
         assert!(!ring.intersects(&rstar::AABB::from_corners([3.0, 3.0], [4.0, 4.0])));
         assert!(!ring.intersects(&rstar::AABB::from_corners([5.0, 5.0], [6.0, 6.0])));
+    }
+
+    #[test]
+    fn stale_short_mesh_does_not_hide_current_tower() {
+        let building = Building {
+            height: 100.0,
+            ring: square(10.0),
+        };
+        let mesh = BuildingMesh {
+            texture_id: 1,
+            height: 49.0,
+            footprint: square(10.0),
+            center: (5.0, 5.0),
+            highest_point: (5.0, 5.0, 49.0),
+        };
+
+        assert!(!mesh_covers_building(&building, &mesh));
     }
 
     #[test]

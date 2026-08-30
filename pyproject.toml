@@ -10,6 +10,7 @@ dependencies = [
     "shapely>=2.0",
     "geopandas>=1.0",
     "httpx>=0.28",
+    "pydantic-settings>=2.10",
     "pyarrow>=20",
     "pyogrio>=0.10",
     "pyproj>=3.7",
@@ -50,8 +51,13 @@ audit = { cmd = "bash -lc 'uv audit --locked --preview-features audit-command &&
 check = { cmd = "bash -lc 'poe check-python && poe check-web && poe check-rust && poe audit'", use_exec = true }
 ingest = { cmd = "python -m geo_philly_ingest.ingest", use_exec = true }
 neighborhoods = { cmd = "python scripts/build_neighborhoods.py", use_exec = true }
+eagleview-plan = { cmd = "python -m geo_philly_ingest.eagleview", use_exec = true }
+eagleview-smoke = { cmd = "python -m geo_philly_ingest.eagleview --smoke", use_exec = true }
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
+static-export = { cmd = "python scripts/export_static.py", use_exec = true }
+static-preview = { cmd = "bash -lc 'poe static-export && npx wrangler dev'", use_exec = true }
+static-dry-run = { cmd = "bash -lc 'poe static-export && npx wrangler deploy --dry-run'", use_exec = true }
 
 [tool.poe.executor]
 type = "simple"

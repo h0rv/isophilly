@@ -1,0 +1,20 @@
+/tiles/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/meta
+  Cache-Control: no-store
+
+/coverage.json
+  Cache-Control: no-store
+
+/texture-coverage.json
+  Cache-Control: public, max-age=3600
+
+/app.js
+  Cache-Control: no-cache
+
+/city-overlay.js
+  Cache-Control: no-cache
+
+/neighborhoods.json
+  Cache-Control: public, max-age=3600

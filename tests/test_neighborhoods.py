@@ -27,7 +27,7 @@ def feature(name: str, index: int) -> dict[str, object]:
 
 
 class NeighborhoodTests(unittest.TestCase):
-    def test_cultural_area_stays_separate_from_planning_neighborhoods(self) -> None:
+    def test_local_area_stays_separate_from_planning_neighborhoods(self) -> None:
         names = ["Bella Vista", "Washington Square West", "Rittenhouse Square"]
         names.extend(f"Area {index}" for index in range(137))
 
@@ -37,7 +37,7 @@ class NeighborhoodTests(unittest.TestCase):
         washington_square_west = next(
             area for area in result["features"] if area["name"] == "Washington Square West"
         )
-        self.assertEqual(gayborhood["kind"], "cultural_area")
+        self.assertEqual(gayborhood["kind"], "local_area")
         self.assertEqual(washington_square_west["kind"], "planning_neighborhood")
         self.assertEqual(len(result["features"]), 141)
 

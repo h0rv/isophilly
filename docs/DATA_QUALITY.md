@@ -36,11 +36,11 @@ median, a 10.67 metre ninetieth percentile, and a 297.49 metre maximum.
 
 The detailed I3S and COLLADA areas use observed source geometry, UV coordinates,
 and photographs. Outside those areas, the renderer uses the City footprint and
-height. It samples the 2024 aerial image for the roof and derives one restrained
+height. It samples the 2025 aerial image for the roof and derives one restrained
 wall color from nearby pixels. A fallback wall is an illustration, not an
 observed facade.
 
-The 2024 orthophoto is suitable for the ground and roofs. It is not a facade
+The 2025 orthophoto is suitable for the ground and roofs. It is not a facade
 source. Orthorectification moves roof pixels back onto their mapped footprint
 and removes most building lean. Stretching roof or shadow pixels down a wall
 would create false detail, so the renderer does not do that.
