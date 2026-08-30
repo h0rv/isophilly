@@ -135,6 +135,24 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(snapshot.path, cached)
         client.assert_not_called()
 
+    def test_mutable_source_uses_verified_cache_unless_refresh_is_requested(self) -> None:
+        payload = b"cached source"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        cached = root / f"test-data-{sha256[:12]}.bin"
+        cached.write_bytes(payload)
+
+        with (
+            patch("isophilly_ingest.download.RAW_DIR", root),
+            patch("isophilly_ingest.download.httpx.Client") as client,
+        ):
+            snapshot = _download(self.source)
+
+        self.assertEqual(snapshot.path, cached)
+        client.assert_not_called()
+
     def test_local_digest_is_reused_while_file_is_unchanged(self) -> None:
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)

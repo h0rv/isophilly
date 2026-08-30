@@ -26,17 +26,17 @@ uv run --locked poe serve
 ```
 
 Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
-`ingest` downloads official City Limits, Building Footprints, and the 2015
-Center City 3D model. It also imports the highest-detail legacy downtown and
-stadium KML/COLLADA models.
+`ingest` downloads official City Limits, Building Footprints, hydrology, park
+boundaries, OpenStreetMap building parts, and the 2015 Center City 3D model. It
+also imports the highest-detail legacy downtown and stadium KML/COLLADA models.
 For the downtown source, new checkouts download PASDA's smaller `kml00.zip`.
 Existing checkouts reuse `data/raw/Philadelphia2008_downtown_kml.zip` when it is
 present. It writes one `philly.bin` input plus a `meta.json` provenance record.
 The download and conversion are the slow first run step.
 The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
-Existing checkouts must rerun `ingest` because world format version 6 removes
-unused layers and adds the City boundary to the single render input.
+Existing checkouts must rerun `ingest` because world format version 8 adds
+surface masks and height-backed building parts to the single render input.
 `prebuild` renders the detailed z8 scene and creates z0 through z7 by resizing
 those tiles. This gives every overview the same textured scene instead of a
 different drawing style. The command uses the available logical CPU count,
@@ -116,7 +116,7 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-2015 I3S + 2008/09 downtown/stadium COLLADA + City footprints + PASDA aerial
+2015 I3S + 2008/09 COLLADA + City footprints + OSM parts + PASDA aerial
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
@@ -143,9 +143,10 @@ files from an edge cache.
 This is an early public prototype, not an authoritative map or surveying tool.
 The current City footprint layer contains 545,672 usable structure polygons.
 Outside the detailed mesh, roofs sample the matching aerial pixels and walls
-use a muted palette derived from those pixels. The source height fields drive
-extrusion, so this citywide treatment preserves real outlines and local color
-without claiming to reconstruct unseen facades. The detailed Center City scene
+use a pixel palette derived from those pixels, with restrained floor and window
+rhythms. Height-backed OpenStreetMap parts replace a parent footprint when they
+cover most of it, preserving documented setbacks and towers without claiming
+to reconstruct unseen facades. The detailed Center City scene
 contains 367 atlas chunks and 294,443 textured triangles. Those triangles
 preserve real facades, setbacks, roof equipment, sloped roofs, and landmark
 silhouettes. The stadium district adds 808 textured models and 126,181

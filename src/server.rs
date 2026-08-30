@@ -37,7 +37,7 @@ struct TileCoverage {
     tiles: Vec<String>,
 }
 
-const PYRAMID_VERSION: &str = "v41-pasda-2025-aerial";
+const PYRAMID_VERSION: &str = "v44-building-parts";
 
 pub async fn serve(port: u16) -> io::Result<()> {
     let scene = Arc::new(Scene::read_current()?);

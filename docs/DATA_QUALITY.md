@@ -12,6 +12,7 @@ services. The exact URLs, checksums, and clean counts are in
 | 2015 Center City I3S | 367 leaf chunks and 294,443 textured triangles | This is the newest and highest priority detailed source. |
 | 2008 and 2009 legacy downtown | 2,689 `r0` models and 668,082 valid textured triangles before overlap suppression | The clean count is lower because the 2015 scene wins where they overlap. |
 | 2008 stadium area | 808 retained `r0` models and 126,181 textured triangles | Six obsolete Spectrum components are excluded. |
+| OpenStreetMap Center City building parts | 827 height-backed parts in the current snapshot | Parts improve setbacks and roof forms only where photographed meshes are absent. |
 
 The City Limits extent is about 27.29 by 30.52 kilometres in EPSG:32129. The
 boundary controls tile presence so the viewer does not create an unbounded
@@ -36,9 +37,10 @@ median, a 10.67 metre ninetieth percentile, and a 297.49 metre maximum.
 
 The detailed I3S and COLLADA areas use observed source geometry, UV coordinates,
 and photographs. Outside those areas, the renderer uses the City footprint and
-height. It samples the 2025 aerial image for the roof and derives one restrained
-wall color from nearby pixels. A fallback wall is an illustration, not an
-observed facade.
+height, refined by height-backed OpenStreetMap parts where available. It samples
+the 2025 aerial image for the roof and derives a restrained pixel wall palette
+from nearby pixels. Floor lines and window bands are procedural illustrations,
+not observed facades.
 
 The 2025 orthophoto is suitable for the ground and roofs. It is not a facade
 source. Orthorectification moves roof pixels back onto their mapped footprint
@@ -54,7 +56,7 @@ permission from the City or PASDA.
 
 ## Known limits
 
-- World format version 6 stores exterior footprint rings. Courtyards and atria
+- World format version 8 stores exterior footprint rings. Courtyards and atria
   in the original footprint source are filled by the fallback extrusion.
 - The 2015 scene covers only Center City. The legacy downtown source is older
   and can show buildings that changed after 2009.

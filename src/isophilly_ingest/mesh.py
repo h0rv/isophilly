@@ -180,13 +180,13 @@ async def _get(client: httpx.AsyncClient, url: str) -> bytes:
 
 async def _cached_resource(client: httpx.AsyncClient, url: str, path: Path) -> bytes:
     try:
-        cached = await asyncio.to_thread(path.read_bytes)
+        cached = path.read_bytes()
     except FileNotFoundError:
         cached = b""
     if cached:
         return cached
     data = await _get(client, url)
-    await asyncio.to_thread(_write_atomic, path, data)
+    _write_atomic(path, data)
     return data
 
 
@@ -255,7 +255,7 @@ async def _load_node(
         geometry = geometry_task.result()
         texture = texture_task.result()
     if not texture.startswith(b"\xff\xd8"):
-        await asyncio.to_thread(texture_path.unlink, missing_ok=True)
+        texture_path.unlink(missing_ok=True)
         texture = await _cached_resource(
             client,
             f"{base_url}/layers/0/nodes/{resource_id}/textures/0",
@@ -263,7 +263,7 @@ async def _load_node(
         )
     if not texture.startswith(b"\xff\xd8") or not texture.endswith(b"\xff\xd9"):
         raise MeshParseError(f"I3S texture {resource_id} is not a complete JPEG")
-    return await asyncio.to_thread(parse_geometry, geometry, node)
+    return parse_geometry(geometry, node)
 
 
 def texture_digest(

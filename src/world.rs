@@ -279,6 +279,44 @@ pub struct Building {
     pub height: f32,
     pub ring: Ring,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoofShape {
+    Flat,
+    Gabled,
+    Hipped,
+    Pyramidal,
+    Dome,
+    Cone,
+    Mansard,
+}
+impl TryFrom<u8> for RoofShape {
+    type Error = io::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Flat),
+            1 => Ok(Self::Gabled),
+            2 => Ok(Self::Hipped),
+            3 => Ok(Self::Pyramidal),
+            4 => Ok(Self::Dome),
+            5 => Ok(Self::Cone),
+            6 => Ok(Self::Mansard),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported roof shape",
+            )),
+        }
+    }
+}
+#[derive(Clone)]
+pub struct BuildingPart {
+    pub osm_id: u64,
+    pub height: f32,
+    pub min_height: f32,
+    pub roof_height: f32,
+    pub roof_shape: RoofShape,
+    pub ring: Ring,
+}
 #[derive(Clone)]
 pub struct MeshFace {
     pub points: [(f32, f32, f32); 3],
@@ -311,15 +349,23 @@ impl RTreeObject for Indexed {
 
 pub struct World {
     pub buildings: Vec<Building>,
+    pub building_parts: Vec<BuildingPart>,
     pub building_meshes: Vec<BuildingMesh>,
     pub mesh_faces: Vec<TexturedFace>,
     pub texture_ids: Vec<u32>,
     pub texture_sha256: [u8; 32],
     pub city: Vec<Ring>,
+    pub water: Vec<Ring>,
+    pub parks: Vec<Ring>,
     pub building_iso_tree: RTree<Indexed>,
     pub building_covered_by_mesh: Vec<bool>,
+    pub building_detailed_by_parts: Vec<bool>,
+    pub building_part_iso_tree: RTree<Indexed>,
+    pub building_part_covered_by_mesh: Vec<bool>,
     pub mesh_face_tree: RTree<Indexed>,
     pub city_tree: RTree<Indexed>,
+    pub water_tree: RTree<Indexed>,
+    pub park_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
     pub max_height: f32,
     pub world_sha256: [u8; 32],
@@ -338,6 +384,12 @@ impl World {
             .locate_in_envelope_intersecting(&query)
         {
             source.include(self.buildings[item.index].ring.bounds);
+        }
+        for item in self
+            .building_part_iso_tree
+            .locate_in_envelope_intersecting(&query)
+        {
+            source.include(self.building_parts[item.index].ring.bounds);
         }
         source
     }
@@ -382,7 +434,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
             "not isophilly data",
         ));
     }
-    if cursor.u32()? != 6 {
+    if cursor.u32()? != 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -395,8 +447,11 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         ));
     }
     let building_count = cursor.u32()? as usize;
+    let building_part_count = cursor.u32()? as usize;
     let building_mesh_count = cursor.u32()? as usize;
     let city_ring_count = cursor.u32()? as usize;
+    let water_count = cursor.u32()? as usize;
+    let park_count = cursor.u32()? as usize;
     let texture_sha256 = cursor
         .take(32)?
         .try_into()
@@ -412,6 +467,31 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         let height = cursor.f32()?;
         let ring = cursor.ring()?;
         buildings.push(Building { height, ring });
+    }
+    let mut building_parts = Vec::with_capacity(building_part_count);
+    for _ in 0..building_part_count {
+        let osm_id = cursor.u64()?;
+        let height = cursor.f32()?;
+        let min_height = cursor.f32()?;
+        let roof_height = cursor.f32()?;
+        let roof_shape = RoofShape::try_from(cursor.u8()?)?;
+        if !(0.0..=400.0).contains(&height)
+            || !(0.0..height).contains(&min_height)
+            || !(0.0..=height - min_height).contains(&roof_height)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "building part heights are outside the supported range",
+            ));
+        }
+        building_parts.push(BuildingPart {
+            osm_id,
+            height,
+            min_height,
+            roof_height,
+            roof_shape,
+            ring: cursor.ring()?,
+        });
     }
     let mut building_meshes = Vec::with_capacity(building_mesh_count);
     let mut mesh_faces = Vec::new();
@@ -465,6 +545,12 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let city = (0..city_ring_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
+    let water = (0..water_count)
+        .map(|_| cursor.ring())
+        .collect::<io::Result<Vec<_>>>()?;
+    let parks = (0..park_count)
+        .map(|_| cursor.ring())
+        .collect::<io::Result<Vec<_>>>()?;
     if cursor.remaining() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -474,9 +560,12 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let max_height = buildings
         .iter()
         .map(|building| building.height)
+        .chain(building_parts.iter().map(|part| part.height))
         .chain(building_meshes.iter().map(|mesh| mesh.height))
         .fold(0.0, f32::max);
     let building_iso_tree = index_buildings(&buildings);
+    let building_source_tree = index_source_buildings(&buildings);
+    let building_part_iso_tree = index_building_parts(&building_parts);
     let building_mesh_tree = index_building_meshes(&building_meshes);
     let building_covered_by_mesh = buildings
         .iter()
@@ -489,20 +578,41 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
                 .any(|item| mesh_covers_building(building, &building_meshes[item.index]))
         })
         .collect();
+    let building_part_covered_by_mesh = building_parts
+        .iter()
+        .map(|part| {
+            let bounds = part.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
+            let query =
+                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+            building_mesh_tree
+                .locate_in_envelope_intersecting(&query)
+                .any(|item| mesh_covers_part(part, &building_meshes[item.index]))
+        })
+        .collect();
+    let building_detailed_by_parts =
+        detailed_buildings(&buildings, &building_source_tree, &building_parts);
     let mut texture_ids: Vec<_> = building_meshes.iter().map(|mesh| mesh.texture_id).collect();
     texture_ids.sort_unstable();
     texture_ids.dedup();
     Ok(World {
         building_iso_tree,
         building_covered_by_mesh,
+        building_detailed_by_parts,
+        building_part_iso_tree,
+        building_part_covered_by_mesh,
         mesh_face_tree: index_mesh_faces(&mesh_faces),
         city_tree: index_rings(&city),
+        water_tree: index_rings(&water),
+        park_tree: index_rings(&parks),
         buildings,
+        building_parts,
         building_meshes,
         mesh_faces,
         texture_ids,
         texture_sha256,
         city,
+        water,
+        parks,
         iso_bounds: bounds.isometric(max_height),
         max_height,
         world_sha256,
@@ -510,9 +620,18 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
 }
 
 fn mesh_covers_building(building: &Building, mesh: &BuildingMesh) -> bool {
-    mesh.height * 2.0 >= building.height
-        && mesh.footprint.squared_distance_to_ring(&building.ring)
+    mesh_covers_ring(&building.ring, building.height, mesh)
+}
+
+fn mesh_covers_part(part: &BuildingPart, mesh: &BuildingMesh) -> bool {
+    mesh.height >= part.height * 0.9
+        && mesh.footprint.squared_distance_to_ring(&part.ring)
             <= MESH_COVERAGE_BUFFER_METERS.powi(2)
+}
+
+fn mesh_covers_ring(ring: &Ring, height: f32, mesh: &BuildingMesh) -> bool {
+    mesh.height * 2.0 >= height
+        && mesh.footprint.squared_distance_to_ring(ring) <= MESH_COVERAGE_BUFFER_METERS.powi(2)
 }
 
 fn squared_distance(left: (f32, f32), right: (f32, f32)) -> f32 {
@@ -529,15 +648,43 @@ fn index_buildings(buildings: &[Building]) -> RTree<Indexed> {
     )
 }
 
+fn index_source_buildings(buildings: &[Building]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        buildings
+            .iter()
+            .enumerate()
+            .map(|(index, building)| indexed(index, building.ring.bounds))
+            .collect(),
+    )
+}
+
+fn index_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| indexed(index, building_part_iso_bounds(part)))
+            .collect(),
+    )
+}
+
 fn building_iso_bounds(building: &Building) -> Bounds {
+    elevated_ring_iso_bounds(&building.ring, 0.0, building.height)
+}
+
+fn building_part_iso_bounds(part: &BuildingPart) -> Bounds {
+    elevated_ring_iso_bounds(&part.ring, part.min_height, part.height)
+}
+
+fn elevated_ring_iso_bounds(ring: &Ring, min_height: f32, height: f32) -> Bounds {
     let mut bounds = Bounds {
         min_x: f32::INFINITY,
         min_y: f32::INFINITY,
         max_x: f32::NEG_INFINITY,
         max_y: f32::NEG_INFINITY,
     };
-    for &(x, y) in &building.ring.points {
-        for z in [0.0, building.height] {
+    for &(x, y) in &ring.points {
+        for z in [min_height, height] {
             let point = isometric(x, y, z);
             bounds.min_x = bounds.min_x.min(point.0);
             bounds.min_y = bounds.min_y.min(point.1);
@@ -546,6 +693,47 @@ fn building_iso_bounds(building: &Building) -> Bounds {
         }
     }
     bounds
+}
+
+fn detailed_buildings(
+    buildings: &[Building],
+    building_tree: &RTree<Indexed>,
+    parts: &[BuildingPart],
+) -> Vec<bool> {
+    let building_areas: Vec<f32> = buildings
+        .iter()
+        .map(|building| ring_area(&building.ring))
+        .collect();
+    let mut covered_areas = vec![0.0; buildings.len()];
+    for part in parts {
+        let center = part.ring.center();
+        let point = AABB::from_point([center.0, center.1]);
+        let parent = building_tree
+            .locate_in_envelope_intersecting(&point)
+            .filter(|item| buildings[item.index].ring.contains(center))
+            .min_by(|left, right| {
+                building_areas[left.index].total_cmp(&building_areas[right.index])
+            });
+        if let Some(parent) = parent {
+            covered_areas[parent.index] += ring_area(&part.ring).min(building_areas[parent.index]);
+        }
+    }
+    covered_areas
+        .iter()
+        .zip(building_areas)
+        .map(|(covered, area)| area > 0.0 && *covered >= area * 0.65)
+        .collect()
+}
+
+fn ring_area(ring: &Ring) -> f32 {
+    ring.points
+        .iter()
+        .zip(ring.points.iter().cycle().skip(1))
+        .take(ring.points.len())
+        .map(|(left, right)| left.0.mul_add(right.1, -(right.0 * left.1)))
+        .sum::<f32>()
+        .abs()
+        * 0.5
 }
 fn index_building_meshes(meshes: &[BuildingMesh]) -> RTree<Indexed> {
     RTree::bulk_load(
@@ -634,6 +822,19 @@ impl<'a> Cursor<'a> {
             .try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u32"))?;
         Ok(u32::from_le_bytes(bytes))
+    }
+    fn u64(&mut self) -> io::Result<u64> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid u64"))?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+    fn u8(&mut self) -> io::Result<u8> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated u8"))
     }
     fn f32(&mut self) -> io::Result<f32> {
         let bytes: [u8; 4] = self
@@ -724,8 +925,9 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, Cursor,
-        MESH_FACE_BYTES, Ring, inverse_isometric, isometric, mesh_covers_building, parse_world,
+        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, BuildingPart, Cursor,
+        MESH_FACE_BYTES, Ring, RoofShape, detailed_buildings, index_source_buildings,
+        inverse_isometric, isometric, mesh_covers_building, mesh_covers_part, parse_world,
     };
 
     fn square(size: f32) -> Ring {
@@ -741,7 +943,7 @@ mod tests {
     }
 
     fn golden_world() -> std::io::Result<Vec<u8>> {
-        let hex = include_str!("../tests/fixtures/world-v6.hex")
+        let hex = include_str!("../tests/fixtures/world-v8.hex")
             .trim()
             .as_bytes();
         if !hex.len().is_multiple_of(2) {
@@ -883,6 +1085,47 @@ mod tests {
     }
 
     #[test]
+    fn shorter_photo_mesh_does_not_hide_a_newer_building_part() {
+        let part = BuildingPart {
+            osm_id: 1,
+            height: 341.0,
+            min_height: 277.0,
+            roof_height: 0.0,
+            roof_shape: RoofShape::Flat,
+            ring: square(10.0),
+        };
+        let old_mesh = BuildingMesh {
+            texture_id: 1,
+            height: 277.0,
+            footprint: square(10.0),
+            center: (5.0, 5.0),
+            highest_point: (5.0, 5.0, 277.0),
+        };
+
+        assert!(!mesh_covers_part(&part, &old_mesh));
+    }
+
+    #[test]
+    fn building_parts_replace_a_parent_only_when_they_cover_most_of_it() {
+        let buildings = vec![Building {
+            height: 20.0,
+            ring: square(10.0),
+        }];
+        let tree = index_source_buildings(&buildings);
+        let part = |size| BuildingPart {
+            osm_id: 1,
+            height: 30.0,
+            min_height: 0.0,
+            roof_height: 0.0,
+            roof_shape: RoofShape::Flat,
+            ring: square(size),
+        };
+
+        assert_eq!(detailed_buildings(&buildings, &tree, &[part(9.0)]), [true]);
+        assert_eq!(detailed_buildings(&buildings, &tree, &[part(4.0)]), [false]);
+    }
+
+    #[test]
     fn local_north_uses_the_classic_isometric_angle() {
         let city_hall = (821_700.0, 75_000.0);
         let north = (
@@ -941,15 +1184,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_python_v6_golden_world() -> std::io::Result<()> {
+    fn parses_python_v8_golden_world() -> std::io::Result<()> {
         let bytes = golden_world()?;
         let digest = Sha256::digest(&bytes).into();
         let world = parse_world(&bytes, digest)?;
 
         assert_eq!(world.buildings.len(), 1);
+        assert_eq!(world.building_parts.len(), 1);
+        assert_eq!(world.building_parts[0].osm_id, 42);
+        assert_eq!(world.building_parts[0].roof_shape, RoofShape::Pyramidal);
         assert_eq!(world.building_meshes.len(), 1);
         assert_eq!(world.mesh_faces.len(), 1);
         assert_eq!(world.city.len(), 1);
+        assert_eq!(world.water.len(), 1);
+        assert_eq!(world.parks.len(), 1);
         assert_eq!(world.texture_ids, vec![7]);
         assert_eq!(
             world.texture_sha256,

@@ -1,6 +1,6 @@
 // @ts-check
 
-import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js";
+import { isometricLonLat, lightingState, mapColorFilter, solarPosition } from "./city-overlay.js";
 
 /**
  * @typedef {{
@@ -26,6 +26,7 @@ const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
+const colorElement = document.querySelector("#color-toggle");
 const sunElement = document.querySelector("#sun-state");
 if (
   !(canvasElement instanceof HTMLCanvasElement) ||
@@ -35,6 +36,7 @@ if (
   !(zoomOutElement instanceof HTMLButtonElement) ||
   !(retryElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
+  !(colorElement instanceof HTMLButtonElement) ||
   !(sunElement instanceof HTMLSpanElement)
 ) {
   throw new Error("map controls are missing");
@@ -46,6 +48,7 @@ const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
 const neighborhoodsToggle = neighborhoodsElement;
+const colorToggle = colorElement;
 const sunState = sunElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
@@ -70,6 +73,7 @@ let drawing = false;
 /** @type {Neighborhoods | undefined} */
 let neighborhoodData;
 let showNeighborhoods = false;
+let vividColors = true;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
 /** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
@@ -306,6 +310,7 @@ function drawNow() {
   let loaded = 0;
   let uncovered = 0;
   let failed = 0;
+  ctx.filter = mapColorFilter(vividColors);
   for (const { x, y } of coordinates) {
     const present = hasTile(z, x, y);
     if (present) requested += 1;
@@ -329,6 +334,7 @@ function drawNow() {
       }
     }
   }
+  ctx.filter = "none";
   drawLighting();
   if (showNeighborhoods) drawNeighborhoods(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
@@ -609,6 +615,11 @@ retry.addEventListener("click", () => {
 neighborhoodsToggle.addEventListener("click", () => {
   showNeighborhoods = !showNeighborhoods;
   neighborhoodsToggle.setAttribute("aria-pressed", String(showNeighborhoods));
+  draw();
+});
+colorToggle.addEventListener("click", () => {
+  vividColors = !vividColors;
+  colorToggle.setAttribute("aria-pressed", String(vividColors));
   draw();
 });
 

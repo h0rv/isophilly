@@ -210,9 +210,9 @@ def _download_with_client(source: Source, client: httpx.Client) -> Snapshot:
     raise AssertionError("download retry loop is exhaustive")
 
 
-def _download(source: Source) -> Snapshot:
+def _download(source: Source, refresh: bool = False) -> Snapshot:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    if source.immutable and (cached := _cached(source)) is not None:
+    if (source.immutable or not refresh) and (cached := _cached(source)) is not None:
         return cached
     with httpx.Client(
         headers={"User-Agent": USER_AGENT},
@@ -222,9 +222,18 @@ def _download(source: Source) -> Snapshot:
         return _download_with_client(source, client)
 
 
-async def download_all(sources: tuple[Source, ...]) -> dict[str, Snapshot]:
+async def download_all(
+    sources: tuple[Source, ...], *, refresh: bool = False
+) -> dict[str, Snapshot]:
+    snapshots: dict[str, Snapshot] = {}
     tasks: dict[str, asyncio.Task[Snapshot]] = {}
     async with asyncio.TaskGroup() as group:
         for source in sources:
-            tasks[source.filename] = group.create_task(asyncio.to_thread(_download, source))
-    return {name: task.result() for name, task in tasks.items()}
+            if not refresh and (cached := _cached(source)) is not None:
+                snapshots[source.filename] = cached
+                continue
+            tasks[source.filename] = group.create_task(
+                asyncio.to_thread(_download, source, refresh)
+            )
+    snapshots.update({name: task.result() for name, task in tasks.items()})
+    return snapshots

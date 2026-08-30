@@ -7,7 +7,14 @@ from pathlib import Path
 from isophilly_ingest.config import DEFAULT_HEIGHT_METERS
 from isophilly_ingest.geometry import height_from_values
 from isophilly_ingest.ingest import write_world
-from isophilly_ingest.models import Bounds, Building, BuildingMesh, MeshFace
+from isophilly_ingest.models import (
+    Bounds,
+    Building,
+    BuildingMesh,
+    BuildingPart,
+    MeshFace,
+    RoofShape,
+)
 
 
 class BoundsTests(unittest.TestCase):
@@ -39,7 +46,7 @@ class HeightTests(unittest.TestCase):
 
 
 class WorldFormatTests(unittest.TestCase):
-    def test_python_writer_matches_rust_v6_golden_world(self) -> None:
+    def test_python_writer_matches_rust_v8_golden_world(self) -> None:
         output = BytesIO()
         face = MeshFace(
             ((2.0, 3.0, 0.0), (4.0, 3.0, 0.0), (2.0, 5.0, 12.0)),
@@ -55,13 +62,25 @@ class WorldFormatTests(unittest.TestCase):
         write_world(
             output,
             [Building(8.0, ((1.0, 2.0), (3.0, 2.0), (1.0, 4.0)))],
+            [
+                BuildingPart(
+                    osm_id=42,
+                    height=18.0,
+                    min_height=3.0,
+                    roof_height=2.0,
+                    roof_shape=RoofShape.PYRAMIDAL,
+                    ring=((4.0, 4.0), (7.0, 4.0), (7.0, 7.0), (4.0, 7.0)),
+                )
+            ],
             [mesh],
             [((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))],
+            [((1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0))],
+            [((6.0, 6.0), (9.0, 6.0), (9.0, 9.0), (6.0, 9.0))],
             Bounds(0.0, 0.0, 10.0, 10.0),
             bytes(range(32)),
         )
 
-        fixture = Path(__file__).with_name("fixtures").joinpath("world-v6.hex")
+        fixture = Path(__file__).with_name("fixtures").joinpath("world-v8.hex")
         self.assertEqual(output.getvalue().hex(), fixture.read_text().strip())
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -33,13 +34,14 @@ from .config import (
     WORLD_BIN,
 )
 from .download import download_all, local_snapshot
-from .geometry import buildings, city_rings, projected
+from .geometry import buildings, city_rings, ground_rings, projected
 from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
-from .models import Bounds, Building, BuildingMesh, MeshFace, Ring, Snapshot
+from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot
+from .osm import building_parts, source_metadata
 from .quality import texture_coverage_report, write_texture_coverage
 
 WORLD_MAGIC = b"GEOPHILY"
-VERSION = 6
+VERSION = 8
 
 
 def load(snapshot: Snapshot) -> gpd.GeoDataFrame:
@@ -62,11 +64,28 @@ def write_face(file: BinaryIO, face: MeshFace) -> None:
         file.write(struct.pack("<fffff", x, y, z, u, v))
 
 
+def write_building_part(file: BinaryIO, part: BuildingPart) -> None:
+    file.write(
+        struct.pack(
+            "<QfffB",
+            part.osm_id,
+            part.height,
+            part.min_height,
+            part.roof_height,
+            int(part.roof_shape),
+        )
+    )
+    write_ring(file, part.ring)
+
+
 def write_world(
     file: BinaryIO,
     packed_buildings: list[Building],
+    parts: list[BuildingPart],
     meshes: list[BuildingMesh],
     city: list[Ring],
+    water: list[Ring],
+    parks: list[Ring],
     bounds: Bounds,
     texture_sha256: bytes,
 ) -> None:
@@ -75,12 +94,15 @@ def write_world(
     file.write(WORLD_MAGIC)
     file.write(
         struct.pack(
-            "<IIIII",
+            "<IIIIIIII",
             VERSION,
             EPSG,
             len(packed_buildings),
+            len(parts),
             len(meshes),
             len(city),
+            len(water),
+            len(parks),
         )
     )
     file.write(texture_sha256)
@@ -88,6 +110,8 @@ def write_world(
     for building in packed_buildings:
         file.write(struct.pack("<f", building.height))
         write_ring(file, building.ring)
+    for part in parts:
+        write_building_part(file, part)
     for mesh in meshes:
         file.write(struct.pack("<IfI", mesh.texture_id, mesh.height, len(mesh.faces)))
         write_ring(file, mesh.footprint)
@@ -95,19 +119,28 @@ def write_world(
             write_face(file, face)
     for outline in city:
         write_ring(file, outline)
+    for outline in water:
+        write_ring(file, outline)
+    for outline in parks:
+        write_ring(file, outline)
 
 
 def pack_world(
     path: Path,
     packed_buildings: list[Building],
+    parts: list[BuildingPart],
     meshes: list[BuildingMesh],
     city: list[Ring],
+    water: list[Ring],
+    parks: list[Ring],
     bounds: Bounds,
     texture_sha256: bytes,
 ) -> None:
     temporary = path.with_suffix(".bin.part")
     with temporary.open("wb") as file:
-        write_world(file, packed_buildings, meshes, city, bounds, texture_sha256)
+        write_world(
+            file, packed_buildings, parts, meshes, city, water, parks, bounds, texture_sha256
+        )
     temporary.replace(path)
 
 
@@ -125,8 +158,11 @@ def write_metadata(
     snapshots: dict[str, Snapshot],
     bounds: Bounds,
     packed_buildings: list[Building],
+    parts: list[BuildingPart],
     meshes: list[BuildingMesh],
     city: list[Ring],
+    water: list[Ring],
+    parks: list[Ring],
     texture_sha256: bytes,
     texture_bytes: int,
     texture_coverage: dict[str, object],
@@ -138,6 +174,8 @@ def write_metadata(
         snapshot = snapshots[source.filename]
         metadata = snapshot.metadata()
         metadata.update(source.provenance())
+        if source is SOURCES.building_parts:
+            metadata.update(source_metadata(snapshot))
         sources.append(metadata)
     metadata = {
         "schema_version": VERSION,
@@ -152,6 +190,7 @@ def write_metadata(
         },
         "counts": {
             "buildings": len(packed_buildings),
+            "building_parts": len(parts),
             "building_meshes": len(meshes),
             "center_city_building_meshes": sum(
                 mesh.texture_id < LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET for mesh in meshes
@@ -166,9 +205,15 @@ def write_metadata(
             "building_mesh_faces": sum(len(mesh.faces) for mesh in meshes),
             "building_texture_atlases": len({mesh.texture_id for mesh in meshes}),
             "city_rings": len(city),
+            "water": len(water),
+            "parks": len(parks),
         },
         "height_m": {
             "buildings": {"min": min(heights), "max": max(heights)},
+            "building_parts": {
+                "min": min(part.height for part in parts),
+                "max": max(part.height for part in parts),
+            },
             "building_meshes": {"min": min(mesh_heights), "max": max(mesh_heights)},
         },
         "texture_coverage": texture_coverage["citywide"],
@@ -226,7 +271,7 @@ def city_geometry(snapshot: Snapshot) -> tuple[BaseGeometry, list[Ring], Bounds]
     return city, rings, Bounds.from_rings(rings)
 
 
-async def main_async() -> None:
+async def main_async(*, refresh: bool = False) -> None:
     local_archives = {
         source.filename: (source, path)
         for source, path in (
@@ -237,61 +282,46 @@ async def main_async() -> None:
     }
     print("loading verified source snapshots", flush=True)
     snapshots = await download_all(
-        tuple(source for source in SOURCES.all() if source.filename not in local_archives)
+        tuple(source for source in SOURCES.all() if source.filename not in local_archives),
+        refresh=refresh,
     )
     for filename, (source, path) in local_archives.items():
         print(f"verifying {source.name}", flush=True)
-        snapshots[filename] = await asyncio.to_thread(
-            local_snapshot,
-            source,
-            path,
-        )
-    print("loaded 5 source snapshots", flush=True)
+        snapshots[filename] = local_snapshot(source, path)
+    print(f"loaded {len(snapshots)} source snapshots", flush=True)
     print("projecting and clipping citywide footprints", flush=True)
     city, packed_city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city)
+    parts = building_parts(snapshots[SOURCES.building_parts.filename])
+    water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
+    parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
     if len(packed_buildings) < MIN_BUILDING_COUNT:
         raise ValueError(
             f"building source produced only {len(packed_buildings):,} usable footprints; "
             f"expected at least {MIN_BUILDING_COUNT:,}"
         )
     print(f"packed {len(packed_buildings):,} building footprints", flush=True)
-    staging = await asyncio.to_thread(prepare_clean_staging)
+    print(f"packed {len(parts):,} height-backed building parts", flush=True)
+    staging = prepare_clean_staging()
     texture_dir = staging / MESH_TEXTURE_DIR.name
     print("importing textured mesh sources", flush=True)
-    async with asyncio.TaskGroup() as group:
-        center_city_task = group.create_task(
-            building_meshes(snapshots[SOURCES.downtown_meshes.filename], texture_dir)
-        )
-        stadium_task = group.create_task(
-            asyncio.to_thread(
-                stadium_meshes,
-                snapshots[SOURCES.stadium_meshes.filename],
-                texture_dir,
-            )
-        )
-        legacy_downtown_task = group.create_task(
-            asyncio.to_thread(
-                legacy_downtown_meshes,
-                snapshots[SOURCES.legacy_downtown_meshes.filename],
-                texture_dir,
-            )
-        )
+    center_city = await building_meshes(snapshots[SOURCES.downtown_meshes.filename], texture_dir)
+    legacy_downtown = legacy_downtown_meshes(
+        snapshots[SOURCES.legacy_downtown_meshes.filename], texture_dir
+    )
+    stadium = stadium_meshes(snapshots[SOURCES.stadium_meshes.filename], texture_dir)
     meshes = merge_mesh_sources(
-        center_city_task.result(),
-        legacy_downtown_task.result(),
-        stadium_task.result(),
+        center_city,
+        legacy_downtown,
+        stadium,
     )
     print(f"accepted {len(meshes):,} textured building meshes", flush=True)
-    await asyncio.to_thread(prune_mesh_textures, meshes, texture_dir)
-    texture_sha256, texture_bytes = await asyncio.to_thread(texture_digest, meshes, texture_dir)
+    prune_mesh_textures(meshes, texture_dir)
+    texture_sha256, texture_bytes = texture_digest(meshes, texture_dir)
     print(f"verified {texture_bytes / 1_000_000:.1f} MB of texture atlases", flush=True)
     print("measuring photographed building coverage", flush=True)
-    texture_coverage = await asyncio.to_thread(
-        texture_coverage_report,
-        packed_buildings,
-        meshes,
-        ROOT / "static" / "neighborhoods.json",
+    texture_coverage = texture_coverage_report(
+        packed_buildings, meshes, ROOT / "static" / "neighborhoods.json"
     )
     write_texture_coverage(staging / TEXTURE_COVERAGE_JSON.name, texture_coverage)
     citywide_coverage = texture_coverage["citywide"]
@@ -308,8 +338,11 @@ async def main_async() -> None:
     pack_world(
         staged_world,
         packed_buildings,
+        parts,
         meshes,
         packed_city,
+        water,
+        parks,
         bounds,
         texture_sha256,
     )
@@ -319,19 +352,29 @@ async def main_async() -> None:
         snapshots,
         bounds,
         packed_buildings,
+        parts,
         meshes,
         packed_city,
+        water,
+        parks,
         texture_sha256,
         texture_bytes,
         texture_coverage,
     )
     (staging / "streets.bin").unlink(missing_ok=True)
-    await asyncio.to_thread(publish_clean, staging)
+    publish_clean(staging)
     print(f"wrote {WORLD_BIN} ({WORLD_BIN.stat().st_size / 1_000_000:.1f} MB)")
 
 
 def main() -> None:
-    asyncio.run(main_async())
+    parser = argparse.ArgumentParser(description="Build IsoPhilly's compact world data")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="refresh mutable public sources instead of using verified cached snapshots",
+    )
+    arguments = parser.parse_args()
+    asyncio.run(main_async(refresh=arguments.refresh))
 
 
 if __name__ == "__main__":

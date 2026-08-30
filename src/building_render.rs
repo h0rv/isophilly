@@ -3,7 +3,7 @@ use tiny_skia::Pixmap;
 use crate::{
     projection::Projection,
     texture::AerialTile,
-    world::{Building, inverse_isometric, view_depth},
+    world::{Building, BuildingPart, Ring, RoofShape, inverse_isometric, view_depth},
 };
 
 const TILE_SIZE: usize = 256;
@@ -29,6 +29,26 @@ pub fn draw_city_buildings<'a>(
     }
 }
 
+pub fn draw_city_building_parts<'a>(
+    pixmap: &mut Pixmap,
+    parts: impl IntoIterator<Item = &'a BuildingPart>,
+    projection: &Projection,
+    aerial: &AerialTile,
+    block_size: f32,
+    depth: &mut [f32],
+) {
+    let mut rasterizer = Rasterizer {
+        pixmap,
+        projection,
+        aerial,
+        block_size,
+        depth,
+    };
+    for part in parts {
+        rasterizer.draw_part(part);
+    }
+}
+
 struct Rasterizer<'a, 'b> {
     pixmap: &'a mut Pixmap,
     projection: &'b Projection,
@@ -42,22 +62,41 @@ impl Rasterizer<'_, '_> {
         if building.ring.points.len() < 3 {
             return;
         }
-        let facade = self.facade_palette(building);
+        let facade = self.facade_palette(&building.ring);
+        let seed = facade_seed(building.ring.center());
         for index in 0..building.ring.points.len() {
             let left = building.ring.points[index];
             let right = building.ring.points[(index + 1) % building.ring.points.len()];
-            self.draw_wall(left, right, building.height, facade);
+            self.draw_wall(left, right, 0.0, building.height, facade, seed);
         }
-        self.draw_roof(building, facade);
+        self.draw_flat_roof(&building.ring, building.height, facade);
     }
 
-    fn facade_palette(&self, building: &Building) -> [u8; 3] {
-        let center = building.ring.center();
-        let mut samples = Vec::with_capacity(building.ring.points.len() * 2 + 1);
+    fn draw_part(&mut self, part: &BuildingPart) {
+        if part.ring.points.len() < 3 {
+            return;
+        }
+        let facade = self.facade_palette(&part.ring);
+        let wall_top = (part.height - part.roof_height).max(part.min_height);
+        for index in 0..part.ring.points.len() {
+            let left = part.ring.points[index];
+            let right = part.ring.points[(index + 1) % part.ring.points.len()];
+            self.draw_wall(left, right, part.min_height, wall_top, facade, part.osm_id);
+        }
+        if part.roof_shape == RoofShape::Flat || part.roof_height <= f32::EPSILON {
+            self.draw_flat_roof(&part.ring, part.height, facade);
+        } else {
+            self.draw_pitched_roof(part, wall_top, facade);
+        }
+    }
+
+    fn facade_palette(&self, ring: &Ring) -> [u8; 3] {
+        let center = ring.center();
+        let mut samples = Vec::with_capacity(ring.points.len() * 2 + 1);
         if let Some(sample) = self.aerial.sample(center.0, center.1, self.block_size) {
             samples.push(sample);
         }
-        for &point in &building.ring.points {
+        for &point in &ring.points {
             for amount in [0.35, 0.7] {
                 let inside = (
                     point.0 + (center.0 - point.0) * amount,
@@ -83,28 +122,39 @@ impl Rasterizer<'_, '_> {
         }
     }
 
-    fn draw_wall(&mut self, left: (f32, f32), right: (f32, f32), height: f32, facade: [u8; 3]) {
-        let ground_left = Vertex::world(left, 0.0, self.projection);
-        let ground_right = Vertex::world(right, 0.0, self.projection);
-        let roof_left = Vertex::world(left, height, self.projection);
-        let roof_right = Vertex::world(right, height, self.projection);
+    fn draw_wall(
+        &mut self,
+        left: (f32, f32),
+        right: (f32, f32),
+        bottom: f32,
+        top: f32,
+        facade: [u8; 3],
+        seed: u64,
+    ) {
+        let ground_left = Vertex::world(left, bottom, self.projection);
+        let ground_right = Vertex::world(right, bottom, self.projection);
+        let roof_left = Vertex::world(left, top, self.projection);
+        let roof_right = Vertex::world(right, top, self.projection);
         let edge = (right.0 - left.0, right.1 - left.1);
         let light = if edge.0 + edge.1 >= 0.0 { 0.72 } else { 0.84 };
-        self.draw_wall_triangle(
-            [ground_left, ground_right, roof_right],
+        let style = WallStyle {
             facade,
             light,
-            height,
-        );
-        self.draw_wall_triangle([ground_left, roof_right, roof_left], facade, light, height);
+            bottom,
+            top,
+            left,
+            right,
+            seed,
+        };
+        self.draw_wall_triangle([ground_left, ground_right, roof_right], style);
+        self.draw_wall_triangle([ground_left, roof_right, roof_left], style);
     }
 
-    fn draw_roof(&mut self, building: &Building, fallback: [u8; 3]) {
-        let projected: Vec<_> = building
-            .ring
+    fn draw_flat_roof(&mut self, ring: &Ring, height: f32, fallback: [u8; 3]) {
+        let projected: Vec<_> = ring
             .points
             .iter()
-            .map(|&point| self.projection.point(point, building.height))
+            .map(|&point| self.projection.point(point, height))
             .collect();
         let min_x = projected
             .iter()
@@ -139,12 +189,12 @@ impl Rasterizer<'_, '_> {
                     .mul_add(1.0 / self.projection.scale, self.projection.bounds.min_x);
                 let iso_y = (py as f32 + 0.5)
                     .mul_add(1.0 / self.projection.scale, self.projection.bounds.min_y);
-                let source = inverse_isometric(iso_x, iso_y + building.height);
-                if !point_in_polygon(source, &building.ring.points) {
+                let source = inverse_isometric(iso_x, iso_y + height);
+                if !point_in_polygon(source, &ring.points) {
                     continue;
                 }
                 let offset = py * TILE_SIZE + px;
-                let depth = view_depth(source.0, source.1, building.height);
+                let depth = view_depth(source.0, source.1, height);
                 if depth <= self.depth[offset] {
                     continue;
                 }
@@ -159,13 +209,26 @@ impl Rasterizer<'_, '_> {
         }
     }
 
-    fn draw_wall_triangle(
-        &mut self,
-        triangle: [Vertex; 3],
-        facade: [u8; 3],
-        light: f32,
-        height: f32,
-    ) {
+    fn draw_pitched_roof(&mut self, part: &BuildingPart, wall_top: f32, facade: [u8; 3]) {
+        let center = part.ring.center();
+        let apex = Vertex::world(center, part.height, self.projection);
+        for index in 0..part.ring.points.len() {
+            let left = part.ring.points[index];
+            let right = part.ring.points[(index + 1) % part.ring.points.len()];
+            let light = if index % 2 == 0 { 0.92 } else { 0.8 };
+            self.draw_solid_triangle(
+                [
+                    Vertex::world(left, wall_top, self.projection),
+                    Vertex::world(right, wall_top, self.projection),
+                    apex,
+                ],
+                facade,
+                light,
+            );
+        }
+    }
+
+    fn draw_wall_triangle(&mut self, triangle: [Vertex; 3], style: WallStyle) {
         let area = edge(triangle[0], triangle[1], triangle[2]);
         if area.abs() < MIN_FACE_AREA {
             return;
@@ -218,12 +281,74 @@ impl Rasterizer<'_, '_> {
                     continue;
                 }
                 self.depth[offset] = depth;
-                let mut color = facade;
-                let base = if height > 5.0 && z < 1.2 { 0.82 } else { 1.0 };
+                let mut color = facade_detail((source_x, source_y), z, style);
+                let base = if style.top - style.bottom > 5.0 && z < style.bottom + 1.2 {
+                    0.82
+                } else {
+                    1.0
+                };
                 for channel in &mut color {
-                    *channel = shade(*channel, light * base);
+                    *channel = shade(*channel, style.light * base);
                 }
                 self.set_pixel(offset, color);
+            }
+        }
+    }
+
+    fn draw_solid_triangle(&mut self, triangle: [Vertex; 3], color: [u8; 3], light: f32) {
+        let area = edge(triangle[0], triangle[1], triangle[2]);
+        if area.abs() < MIN_FACE_AREA {
+            return;
+        }
+        let min_x = triangle
+            .iter()
+            .map(|vertex| vertex.screen_x)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let max_x = triangle
+            .iter()
+            .map(|vertex| vertex.screen_x)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .min((TILE_SIZE - 1) as f32) as usize;
+        let min_y = triangle
+            .iter()
+            .map(|vertex| vertex.screen_y)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let max_y = triangle
+            .iter()
+            .map(|vertex| vertex.screen_y)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .min((TILE_SIZE - 1) as f32) as usize;
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+        let inverse_area = 1.0 / area;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let sample = Vertex::screen(x as f32 + 0.5, y as f32 + 0.5);
+                let weights = [
+                    edge(triangle[1], triangle[2], sample) * inverse_area,
+                    edge(triangle[2], triangle[0], sample) * inverse_area,
+                    edge(triangle[0], triangle[1], sample) * inverse_area,
+                ];
+                if weights.iter().any(|weight| *weight < -f32::EPSILON) {
+                    continue;
+                }
+                let source_x = interpolate(&weights, &triangle, |vertex| vertex.source_x);
+                let source_y = interpolate(&weights, &triangle, |vertex| vertex.source_y);
+                let z = interpolate(&weights, &triangle, |vertex| vertex.z);
+                let offset = y * TILE_SIZE + x;
+                let depth = view_depth(source_x, source_y, z);
+                if depth <= self.depth[offset] {
+                    continue;
+                }
+                self.depth[offset] = depth;
+                self.set_pixel(offset, color.map(|channel| shade(channel, light)));
             }
         }
     }
@@ -242,6 +367,17 @@ struct Vertex {
     source_x: f32,
     source_y: f32,
     z: f32,
+}
+
+#[derive(Clone, Copy)]
+struct WallStyle {
+    facade: [u8; 3],
+    light: f32,
+    bottom: f32,
+    top: f32,
+    left: (f32, f32),
+    right: (f32, f32),
+    seed: u64,
 }
 
 impl Vertex {
@@ -318,9 +454,45 @@ fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
     })
 }
 
+fn facade_seed(center: (f32, f32)) -> u64 {
+    (center.0.round() as u64).wrapping_mul(0x9e37_79b9) ^ (center.1.round() as u64).rotate_left(23)
+}
+
+fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
+    if style.top - style.bottom < 8.0 {
+        return style.facade;
+    }
+    let edge = (style.right.0 - style.left.0, style.right.1 - style.left.1);
+    let length = edge.0.hypot(edge.1);
+    if length < 4.0 {
+        return style.facade;
+    }
+    let along = ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length;
+    let floor = (z - style.bottom).rem_euclid(METERS_PER_FLOOR);
+    let column = (along + (style.seed % 13) as f32 * 0.19).rem_euclid(2.8);
+    if !(0.18..=METERS_PER_FLOOR - 0.18).contains(&floor) {
+        return style.facade.map(|channel| shade(channel, 0.8));
+    }
+    if (0.72..=2.5).contains(&floor) && (0.42..=1.95).contains(&column) {
+        let glass = [72, 88, 96];
+        return mix_rgb(
+            style.facade,
+            glass,
+            if style.top - style.bottom >= 30.0 {
+                0.48
+            } else {
+                0.34
+            },
+        );
+    }
+    style.facade
+}
+
+const METERS_PER_FLOOR: f32 = 3.2;
+
 #[cfg(test)]
 mod tests {
-    use super::{point_in_polygon, shade, soften};
+    use super::{WallStyle, facade_detail, point_in_polygon, shade, soften};
 
     #[test]
     fn point_in_polygon_handles_concave_footprint() {
@@ -350,5 +522,25 @@ mod tests {
         assert_eq!(soften([255, 0, 0]), [183, 56, 56]);
         assert_eq!(soften([255, 255, 255]), [208, 208, 208]);
         assert_eq!(soften([0, 0, 0]), [56, 56, 56]);
+    }
+
+    #[test]
+    fn facade_detail_adds_floor_bands_and_windows_to_tall_walls() {
+        let base = [160, 144, 128];
+        let style = WallStyle {
+            facade: base,
+            light: 1.0,
+            bottom: 0.0,
+            top: 40.0,
+            left: (0.0, 0.0),
+            right: (20.0, 0.0),
+            seed: 0,
+        };
+        let band = facade_detail((3.0, 0.0), 3.2, style);
+        let window = facade_detail((1.0, 0.0), 1.5, style);
+
+        assert_ne!(band, base);
+        assert_ne!(window, base);
+        assert_ne!(window, band);
     }
 }

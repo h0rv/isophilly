@@ -1,10 +1,11 @@
 # Data pipeline
 
-`uv run --locked poe ingest` downloads five source datasets and writes two
+`uv run --locked poe ingest` loads eight source datasets and writes two
 clean artifacts:
 
-- `data/clean/philly.bin` contains fallback buildings, accepted textured
-  meshes, texture references, and the City boundary.
+- `data/clean/philly.bin` contains fallback buildings, building parts,
+  accepted textured meshes, surface masks, texture references, and the City
+  boundary.
 - `data/clean/meta.json` records source URLs, request times, HTTP validators,
   SHA-256 checksums, bounds, counts, and output checksums.
 
@@ -18,10 +19,13 @@ The active pipeline has one source for each job:
 
 1. City Limits defines the render boundary.
 2. Building Footprints supplies citywide outlines and heights.
-3. The 2015 I3S scene supplies the newest detailed Center City geometry and
+3. Hydrology and park polygons provide restrained color grading masks.
+4. OpenStreetMap building parts supply documented Center City setbacks and
+   roof forms where photographed meshes are unavailable.
+5. The 2015 I3S scene supplies the newest detailed Center City geometry and
    textures.
-4. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
-5. The 2008 stadium archive supplies detailed geometry and textures for the
+6. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
+7. The 2008 stadium archive supplies detailed geometry and textures for the
    sports complex.
 
 The importer resolves the mesh sources in this order: 2015 I3S, legacy
@@ -51,16 +55,19 @@ parser, validation rules, texture store, and output types.
 - Footprints retain 0.35 metre detail. City Limits uses 1 metre
   topology-preserving simplification.
 - Citywide roofs sample aligned aerial pixels at their real coordinates.
-  Fallback walls use a stable, muted color derived from the same local image.
-  They are not described as facade textures.
+  Fallback walls use a stable color derived from the same local image plus
+  deterministic pixel floor and window bands. They are illustrations, not
+  facade textures.
+- Height-backed building parts replace the coarse parent footprint only when
+  they cover at least 65 percent of it. Photographed meshes remain the highest
+  priority.
 - Accepted I3S and COLLADA faces keep their real UV coordinates and JPEG
   textures. Missing or invalid textures are errors, not a reason to draw a
   plain replacement polygon.
 
-Water, parks, street centerlines, and the former OpenStreetMap building-part
-query were removed from the clean format. They did not draw pixels. The aerial
-image already supplies those surface details, so retaining the extra downloads,
-parsers, indexes, and `streets.bin` file only created failure modes.
+Street centerlines and `streets.bin` remain removed. Roads come directly from
+the aerial image. Water and park polygons now grade only matching aerial pixels
+instead of drawing flat replacement polygons.
 
 ## World format
 
@@ -68,15 +75,25 @@ All values are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (6)
+u32      version (8)
 u32      EPSG (32129)
 u32      building count
+u32      building part count
 u32      building mesh count
 u32      city ring count
+u32      water ring count
+u32      park ring count
 u8 x 32  SHA-256 digest of all retained texture atlases
 f64 x 4  official city bounds: min_x, min_y, max_x, max_y
 repeat building count times:
   f32    height
+  ring
+repeat building part count times:
+  u64    OpenStreetMap ID
+  f32    height
+  f32    minimum height
+  f32    roof height
+  u8     roof shape
   ring
 repeat building mesh count times:
   u32    texture atlas ID
@@ -86,6 +103,10 @@ repeat building mesh count times:
   repeat face count times:
     repeat 3 times: f32 x, f32 y, f32 z, f32 u, f32 v
 repeat city ring count times:
+  ring
+repeat water ring count times:
+  ring
+repeat park ring count times:
   ring
 
 ring:

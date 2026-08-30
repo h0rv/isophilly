@@ -14,6 +14,7 @@ from .config import (
     CITY_SIMPLIFY_METERS,
     DEFAULT_HEIGHT_METERS,
     EPSG,
+    GROUND_SIMPLIFY_METERS,
     MAX_HEIGHT_METERS,
     MIN_BUILDING_AREA_METERS,
     MIN_HEIGHT_METERS,
@@ -51,6 +52,16 @@ def city_rings(frame: gpd.GeoDataFrame) -> list[Ring]:
         outline
         for geometry in projected(frame).geometry
         for polygon in polygons(geometry, CITY_SIMPLIFY_METERS)
+        if (outline := exterior(polygon))
+    ]
+
+
+def ground_rings(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[Ring]:
+    return [
+        outline
+        for geometry in projected(frame).geometry
+        for source_polygon in polygons(geometry, 0.0)
+        for polygon in polygons(source_polygon.intersection(city), GROUND_SIMPLIFY_METERS)
         if (outline := exterior(polygon))
     ]
 
