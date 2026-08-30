@@ -13,6 +13,7 @@
     [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
     canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
+    canvas.vivid { filter: saturate(1.14) contrast(1.04); }
     canvas.dragging { cursor: grabbing; }
     canvas:focus-visible { outline: 3px solid #b8754f; outline-offset: -3px; }
     header { position: fixed; z-index: 1; background: #191714eb; color: #f6f0e6; backdrop-filter: blur(6px); }
@@ -36,7 +37,7 @@
     @media (max-width: 620px) {
       header { gap: .4rem; padding: .35rem .45rem; }
       h1 { font-size: .95rem; }
-      #status { max-width: 7.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #status, #sun-state, #neighborhoods-toggle { display: none; }
       .orientation { display: none; }
       .controls { margin-left: auto; }
       button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; }
@@ -74,7 +75,7 @@
     </details>
   </header>
   <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press zero to return to City Hall.</p>
-  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
+  <canvas id="map" class="vivid" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>
   <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a> · <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></footer>

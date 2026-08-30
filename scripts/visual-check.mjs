@@ -484,7 +484,7 @@ async function interactions(browser, meta) {
   const prefetchedPanMs = performance.now() - panStarted;
   const controls = await page.locator(".controls button").evaluateAll((buttons) =>
     buttons
-      .filter((button) => !button.hidden)
+      .filter((button) => !button.hidden && button.getClientRects().length > 0)
       .map((button) => {
         const bounds = button.getBoundingClientRect();
         return { id: button.id, width: bounds.width, height: bounds.height };

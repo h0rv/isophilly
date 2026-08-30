@@ -55,7 +55,7 @@ pub fn render_tile(
         &mut pixmap,
         world
             .building_part_iso_tree
-            .locate_in_envelope_intersecting(&query)
+            .locate_in_envelope_intersecting(query)
             .filter_map(|item| {
                 (!world.building_part_covered_by_mesh[item.index])
                     .then_some(&world.building_parts[item.index])
@@ -104,12 +104,12 @@ fn draw_ground(
     );
     let water: Vec<_> = world
         .water_tree
-        .locate_in_envelope_intersecting(&source_query)
+        .locate_in_envelope_intersecting(source_query)
         .map(|item| &world.water[item.index])
         .collect();
     let parks: Vec<_> = world
         .park_tree
-        .locate_in_envelope_intersecting(&source_query)
+        .locate_in_envelope_intersecting(source_query)
         .map(|item| &world.parks[item.index])
         .collect();
     let mut colors = HashMap::new();

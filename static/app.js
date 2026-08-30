@@ -1,6 +1,6 @@
 // @ts-check
 
-import { isometricLonLat, lightingState, mapColorFilter, solarPosition } from "./city-overlay.js";
+import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js";
 
 /**
  * @typedef {{
@@ -310,7 +310,6 @@ function drawNow() {
   let loaded = 0;
   let uncovered = 0;
   let failed = 0;
-  ctx.filter = mapColorFilter(vividColors);
   for (const { x, y } of coordinates) {
     const present = hasTile(z, x, y);
     if (present) requested += 1;
@@ -334,7 +333,6 @@ function drawNow() {
       }
     }
   }
-  ctx.filter = "none";
   drawLighting();
   if (showNeighborhoods) drawNeighborhoods(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
@@ -619,6 +617,7 @@ neighborhoodsToggle.addEventListener("click", () => {
 });
 colorToggle.addEventListener("click", () => {
   vividColors = !vividColors;
+  canvas.classList.toggle("vivid", vividColors);
   colorToggle.setAttribute("aria-pressed", String(vividColors));
   draw();
 });

@@ -387,7 +387,7 @@ impl World {
         }
         for item in self
             .building_part_iso_tree
-            .locate_in_envelope_intersecting(&query)
+            .locate_in_envelope_intersecting(query)
         {
             source.include(self.building_parts[item.index].ring.bounds);
         }
@@ -585,7 +585,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
             let query =
                 AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
             building_mesh_tree
-                .locate_in_envelope_intersecting(&query)
+                .locate_in_envelope_intersecting(query)
                 .any(|item| mesh_covers_part(part, &building_meshes[item.index]))
         })
         .collect();
@@ -709,7 +709,7 @@ fn detailed_buildings(
         let center = part.ring.center();
         let point = AABB::from_point([center.0, center.1]);
         let parent = building_tree
-            .locate_in_envelope_intersecting(&point)
+            .locate_in_envelope_intersecting(point)
             .filter(|item| buildings[item.index].ring.contains(center))
             .min_by(|left, right| {
                 building_areas[left.index].total_cmp(&building_areas[right.index])

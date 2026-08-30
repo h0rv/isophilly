@@ -3,12 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  lightingState,
-  mapColorFilter,
-  projectLonLat,
-  solarPosition,
-} from "../static/city-overlay.js";
+import { lightingState, projectLonLat, solarPosition } from "../static/city-overlay.js";
 
 test("projects City Hall to EPSG:32129 within half a metre", () => {
   const [x, y] = projectLonLat(-75.1652, 39.9526);
@@ -30,9 +25,4 @@ test("lighting states meet at explicit horizon thresholds", () => {
   assert.equal(lightingState(0).phase, "golden");
   assert.equal(lightingState(-6).phase, "twilight");
   assert.equal(lightingState(-6.01).phase, "night");
-});
-
-test("vivid mode applies one restrained map-only color grade", () => {
-  assert.equal(mapColorFilter(true), "saturate(1.14) contrast(1.04)");
-  assert.equal(mapColorFilter(false), "none");
 });

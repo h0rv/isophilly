@@ -116,9 +116,3 @@ export function lightingState(altitude) {
     return { phase: "twilight", color: "#34446b", alpha: 0.12 + (-altitude / 6) * 0.16 };
   return { phase: "night", color: "#10172e", alpha: 0.42 };
 }
-
-/** A restrained color grade for the map tiles. UI and labels are drawn unfiltered. */
-/** @param {boolean} vivid */
-export function mapColorFilter(vivid) {
-  return vivid ? "saturate(1.14) contrast(1.04)" : "none";
-}

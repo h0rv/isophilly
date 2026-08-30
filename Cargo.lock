@@ -780,7 +780,7 @@ dependencies = [
  "sha2",
  "tiny-skia",
  "tokio",
- "tower-http",
+ "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
 ]
