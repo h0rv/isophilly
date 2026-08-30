@@ -20,7 +20,7 @@ import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js
 
 /** @typedef {{ schema_version: 1, tile_version: string, tiles: string[] }} TileCoverage */
 
-/** @typedef {{ name: string, kind: "planning_neighborhood" | "local_area", label: [number, number], rings: [number, number][][], note?: string }} Neighborhood */
+/** @typedef {{ name: string, kind: "planning_neighborhood" | "local_area", label: [number, number], rings: [number, number][][], source?: string, note?: string, priority?: number }} Neighborhood */
 /** @typedef {{ source: string, disclaimer: string, features: Neighborhood[] }} Neighborhoods */
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
@@ -388,6 +388,7 @@ function drawNow() {
     }
   }
   drawLighting();
+  canvas.dataset.areaLabels = "[]";
   if (showNeighborhoods && !richMode) drawNeighborhoods(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   drawLandmarks(viewZoom, panX, panY, scale);
@@ -427,11 +428,21 @@ function drawLighting() {
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
 function drawNeighborhoods(z, panX, panY, scale) {
   if (neighborhoodData === undefined || z < 3) return;
-  for (const area of neighborhoodData.features) {
+  /** @type {{ left: number, right: number, top: number, bottom: number }[]} */
+  const occupiedLabels = [];
+  /** @type {string[]} */
+  const paintedLabels = [];
+  const areas = neighborhoodData.features.toSorted((left, right) => {
+    const priority = (right.priority ?? 0) - (left.priority ?? 0);
+    if (priority !== 0) return priority;
+    if (left.kind !== right.kind) return left.kind === "local_area" ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
+  for (const area of areas) {
     ctx.save();
-    ctx.strokeStyle = area.kind === "local_area" ? "#f2ad66" : "#2d2924aa";
-    ctx.lineWidth = area.kind === "local_area" ? 2 : 1;
-    if (area.kind === "local_area") ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = area.kind === "local_area" ? "#d77a3eee" : "#2d292488";
+    ctx.lineWidth = area.kind === "local_area" ? 1.6 : 1;
+    if (area.kind === "local_area") ctx.setLineDash([4, 3]);
     for (const ring of area.rings) {
       ctx.beginPath();
       for (let index = 0; index < ring.length; index += 1) {
@@ -446,7 +457,7 @@ function drawNeighborhoods(z, panX, panY, scale) {
       ctx.stroke();
     }
     ctx.restore();
-    if (z < 5) continue;
+    if (z < (area.kind === "local_area" ? 6 : 5)) continue;
     const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
     const x = panX + (isoX - city().iso_bounds[0]) * scale;
     const y = panY + (isoY - city().iso_bounds[1]) * scale;
@@ -456,12 +467,28 @@ function drawNeighborhoods(z, panX, panY, scale) {
       area.kind === "local_area"
         ? "600 11px ui-sans-serif, system-ui"
         : "500 10px ui-sans-serif, system-ui";
+    const width = ctx.measureText(label).width;
+    const labelBox = { left: x - 2, right: x + width + 2, top: y - 12, bottom: y + 3 };
+    if (
+      occupiedLabels.some(
+        (occupied) =>
+          labelBox.left < occupied.right &&
+          labelBox.right > occupied.left &&
+          labelBox.top < occupied.bottom &&
+          labelBox.bottom > occupied.top,
+      )
+    ) {
+      continue;
+    }
+    occupiedLabels.push(labelBox);
     ctx.lineWidth = 3;
     ctx.strokeStyle = "#f6f0e6dd";
     ctx.strokeText(label, x, y);
     ctx.fillStyle = area.kind === "local_area" ? "#7a3e25" : "#302d28";
     ctx.fillText(label, x, y);
+    paintedLabels.push(label);
   }
+  canvas.dataset.areaLabels = JSON.stringify(paintedLabels);
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
@@ -861,6 +888,7 @@ function isNeighborhoods(value) {
       return (
         typeof area.name === "string" &&
         (area.kind === "planning_neighborhood" || area.kind === "local_area") &&
+        (area.priority === undefined || Number.isFinite(area.priority)) &&
         Array.isArray(area.label) &&
         area.label.length === 2 &&
         area.label.every(Number.isFinite) &&

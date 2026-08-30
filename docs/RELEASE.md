@@ -12,6 +12,9 @@
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.
+- Confirm that all four Center City pyramids include z0 through z5. The full
+  current static export contains 18,009 files and uses 1,120.0 MiB. The
+  exporter must keep the actual count below 20,000.
 
 ## Visual smoke test
 
@@ -27,6 +30,10 @@
 - Run the visual check at City Hall and across the permanent neighborhood views
   so both official mesh and citywide footprint paths are tested. Confirm that
   the City and PASDA attribution remains present when the info panel is closed.
+- Rotate through all four Center City views and inspect the boundary of the
+  2015 mesh. Confirm that footprint and OpenStreetMap fallback buildings fill
+  surrounding gaps, share correct depth with textured buildings, and keep
+  their procedural walls visually distinct from photographed facades.
 
 ## Publication
 

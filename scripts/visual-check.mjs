@@ -3,7 +3,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
+import { isometricLonLat } from "../static/city-overlay.js";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
+const neighborhoodOverlay = JSON.parse(
+  await readFile(fileURLToPath(new URL("../static/neighborhoods.json", import.meta.url)), "utf8"),
+);
 const zooms = (process.env.ISOPHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,10")
   .split(",")
   .map((value) => Number.parseInt(value, 10));
@@ -15,6 +20,22 @@ const port = Number.parseInt(process.env.ISOPHILLY_VISUAL_PORT ?? "3107", 10);
 const tileTimeout = Number.parseInt(process.env.ISOPHILLY_VISUAL_TIMEOUT ?? "180000", 10);
 const settleBudget = Number.parseInt(process.env.ISOPHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
 const origin = `http://127.0.0.1:${port}`;
+
+/** @param {string} areaName @param {string} screenshotName */
+function localAreaCapture(areaName, screenshotName) {
+  const area = neighborhoodOverlay.features.find(
+    (candidate) => candidate.kind === "local_area" && candidate.name === areaName,
+  );
+  if (!Array.isArray(area?.label) || area.label.length !== 2) {
+    throw new Error(`local-area smoke target is missing: ${areaName}`);
+  }
+  return {
+    name: screenshotName,
+    center: isometricLonLat(area.label[0], area.label[1]),
+    localAreas: true,
+    expectedAreaLabel: areaName,
+  };
+}
 const server = spawn("target/release/isophilly", ["serve", "--port", String(port)], {
   cwd: root,
   env: { ...process.env, RUST_LOG: "isophilly=warn,tower_http=warn" },
@@ -311,7 +332,7 @@ async function waitForServer() {
 /**
  * @param {import("playwright-core").Page} page
  * @param {number} zoom
- * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne" }} view
+ * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", localAreas?: boolean, expectedAreaLabel?: string }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
   const started = performance.now();
@@ -382,6 +403,20 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   );
   const settledMs = performance.now() - started;
   const settledTileRequests = [...tileRequests];
+  if (view.localAreas === true) {
+    await page.locator("#neighborhoods-toggle").click();
+  }
+  if (view.expectedAreaLabel !== undefined) {
+    await page.waitForFunction(
+      (expected) => {
+        const raw = document.querySelector("#map")?.getAttribute("data-area-labels") ?? "[]";
+        const labels = JSON.parse(raw);
+        return Array.isArray(labels) && labels.includes(expected);
+      },
+      view.expectedAreaLabel,
+      { timeout: settleBudget },
+    );
+  }
   await page.waitForTimeout(100);
   const screenshot = view.name === "city-hall" ? `z${zoom}.png` : `${view.name}-z${zoom}.png`;
   await page.screenshot({ path: `${artifactDir}/${screenshot}` });
@@ -413,6 +448,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       failed: Number(element.dataset.failed),
       mode: element.dataset.mode,
       view: element.dataset.view,
+      areaLabels: JSON.parse(element.dataset.areaLabels ?? "[]"),
       nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
       sampledColors: colors.size,
     };
@@ -670,11 +706,12 @@ try {
     await rockyPage.close();
     const neighborhoods = [
       { name: "rittenhouse", center: [985167.68, 310418.65] },
-      { name: "passyunk", center: [984479.11, 311909.39] },
+      localAreaCapture("Italian Market", "local-south-italian-market"),
       { name: "stadiums", center: [981156.04, 313684.68] },
-      { name: "manayunk", center: [987130.87, 303737.71] },
-      { name: "northeast", center: [1006582.35, 307977.81] },
-      { name: "west-philly", center: [979452.36, 307652.14] },
+      localAreaCapture("Manayunk Main Street", "local-northwest-manayunk"),
+      localAreaCapture("Castor Avenue", "local-northeast-castor"),
+      localAreaCapture("Africatown", "local-west-africatown"),
+      localAreaCapture("Fishtown Frankford Avenue", "local-river-wards-fishtown"),
     ];
     for (const neighborhood of neighborhoods) {
       const neighborhoodPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });

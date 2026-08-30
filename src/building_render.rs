@@ -3,7 +3,7 @@ use tiny_skia::Pixmap;
 use crate::{
     projection::Projection,
     texture::AerialTile,
-    world::{Building, BuildingPart, Ring, RoofShape, inverse_isometric, view_depth},
+    world::{Building, BuildingPart, Ring, RoofShape},
 };
 
 const TILE_SIZE: usize = 256;
@@ -189,12 +189,12 @@ impl Rasterizer<'_, '_> {
                     .mul_add(1.0 / self.projection.scale, self.projection.bounds.min_x);
                 let iso_y = (py as f32 + 0.5)
                     .mul_add(1.0 / self.projection.scale, self.projection.bounds.min_y);
-                let source = inverse_isometric(iso_x, iso_y + height);
+                let source = self.projection.inverse((iso_x, iso_y + height));
                 if !point_in_polygon(source, &ring.points) {
                     continue;
                 }
                 let offset = py * TILE_SIZE + px;
-                let depth = view_depth(source.0, source.1, height);
+                let depth = self.projection.depth(source, height);
                 if depth <= self.depth[offset] {
                     continue;
                 }
@@ -275,7 +275,7 @@ impl Rasterizer<'_, '_> {
                 let source_x = interpolate(&weights, &triangle, |vertex| vertex.source_x);
                 let source_y = interpolate(&weights, &triangle, |vertex| vertex.source_y);
                 let z = interpolate(&weights, &triangle, |vertex| vertex.z);
-                let depth = view_depth(source_x, source_y, z);
+                let depth = self.projection.depth((source_x, source_y), z);
                 let offset = y * TILE_SIZE + x;
                 if depth <= self.depth[offset] {
                     continue;
@@ -343,7 +343,7 @@ impl Rasterizer<'_, '_> {
                 let source_y = interpolate(&weights, &triangle, |vertex| vertex.source_y);
                 let z = interpolate(&weights, &triangle, |vertex| vertex.z);
                 let offset = y * TILE_SIZE + x;
-                let depth = view_depth(source_x, source_y, z);
+                let depth = self.projection.depth((source_x, source_y), z);
                 if depth <= self.depth[offset] {
                     continue;
                 }

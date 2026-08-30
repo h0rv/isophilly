@@ -39,26 +39,32 @@ The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
 Existing checkouts must rerun `ingest` because world format version 8 adds
 surface masks and height-backed building parts to the single render input.
-`prebuild` renders the detailed z8 scene and creates z0 through z7 by resizing
-those tiles. This gives every overview the same textured scene instead of a
-different drawing style. The command uses the available logical CPU count,
-capped at 16 workers. PASDA downloads have a separate limit of eight. It
-resumes an interrupted staging build and publishes a compact inventory only
-after the whole pyramid is ready. A completed scene is immutable. If validation
-fails, including a content-hash mismatch, prebuild creates and publishes a
-replacement namespace instead of changing files beneath a running server. Old namespaces remain valid for
-servers that were already running when the new scene was published. Run
+`prebuild` renders the citywide z8 scene and creates z0 through z7 by resizing
+those tiles. It also renders four Center City views at z5 and derives z0
+through z4 for each view. The Center City work makes a new prebuild heavier,
+but it does not add work to the HTTP server. The command uses the available
+logical CPU count, capped at 16 workers. PASDA downloads have a separate limit
+of eight. It resumes an interrupted staging build and publishes a compact
+inventory only after the whole pyramid is ready. A completed scene is
+immutable. If validation fails, including a content-hash mismatch, prebuild
+creates and publishes a replacement namespace instead of changing files
+beneath a running server. Old
+namespaces remain valid for servers that were already running when the new
+scene was published. Run
 `uv run --locked poe prebuild --jobs N` to choose from 1 through 16 workers.
 
-The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
-the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
-It does not switch to another renderer or replace textures with plain geometry.
+The server reads the finished citywide and Center City pyramids from
+`data/tiles/`. It does not load geometry or render during a request. At closer
+view levels, the browser magnifies the canonical pixels with nearest-neighbor
+sampling.
 
-Center City has four separate z0 through z4 pyramids. Its geographic extent is
-small enough that z4 stays in the same resolution class as the citywide z8 artwork.
-The browser permits one additional nearest-neighbor zoom level and caps there,
-so the launch view stays crisp. Rotation switches immutable pyramids; it never
-reprojects raster tiles in the browser or claims continuous 360-degree motion.
+Center City has four separate z0 through z5 pyramids. At z5, one output pixel
+covers about 0.7 metre and uses one aerial sample. The 2015 textured meshes
+remain the first choice. City footprints and OpenStreetMap parts fill the space
+around them. Their roofs sample aerial imagery, and their walls are procedural.
+The browser permits one additional nearest-neighbor zoom level and caps there.
+Rotation switches immutable pyramids. It does not reproject raster tiles in the
+browser or claim continuous 360-degree motion.
 
 Aerial crops come from the native three-inch 2025 PASDA service. The renderer
 divides EPSG:32129 into fixed 1,536 metre cells, and each cell contains 2,048 by 2,048
@@ -94,11 +100,11 @@ uv run --locked poe static-dry-run
 uv run --locked poe static-preview
 ```
 
-The current export has 13,913 files and uses 885.5 MiB. Its largest file is
-about 126 KiB. The exporter rejects builds that exceed the Cloudflare Free plan
-limits of 20,000 files or 25 MiB per file. Static asset requests and storage do
-not incur a charge. See the official [Static Assets limits and
-billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
+The current z5 Center City build exports 18,009 files and uses 1,120.0 MiB.
+The exporter checks the completed inventories and rejects builds that exceed
+the Cloudflare Free plan limits of 20,000 files or 25 MiB per file. Static
+asset requests and storage do not incur a charge. See the official
+[Static Assets limits and billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
 documentation. Run `npx wrangler deploy` when the dry run and local preview
 pass and you are ready to publish.
 
@@ -137,10 +143,10 @@ ecosystems plus GitHub Actions.
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin
                                       |
                                       v
-Rust + rstar/tiny-skia      ->  one textured citywide z8 scene
+Rust + rstar/tiny-skia      ->  citywide z8 plus four Center City z5 scenes
                                       |
                                       v
-Rust + image               ->  z0 through z7 image pyramid
+Rust + image               ->  lower zoom levels for all five pyramids
                                       |
                                       v
                               canvas deep-zoom viewer
@@ -157,11 +163,11 @@ files from an edge cache.
 
 This is an early public prototype, not an authoritative map or surveying tool.
 The current City footprint layer contains 545,672 usable structure polygons.
-Outside the detailed mesh, roofs sample the matching aerial pixels and walls
-use a pixel palette derived from those pixels, with restrained floor and window
-rhythms. Height-backed OpenStreetMap parts replace a parent footprint when they
-cover most of it, preserving documented setbacks and towers without claiming
-to reconstruct unseen facades. The detailed Center City scene
+Outside the detailed mesh, including gaps inside the Center City view, roofs
+sample the matching aerial pixels. Walls use a procedural pixel pattern and a
+palette derived from nearby aerial pixels. Height-backed OpenStreetMap parts
+replace a parent footprint when they cover most of it, preserving documented
+setbacks and towers without claiming to reconstruct unseen facades. The detailed Center City scene
 contains 367 atlas chunks and 294,443 textured triangles. Those triangles
 preserve real facades, setbacks, roof equipment, sloped roofs, and landmark
 silhouettes. The stadium district adds 808 textured models and 126,181

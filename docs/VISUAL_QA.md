@@ -14,16 +14,19 @@ dirty. Release evidence must come from the exact clean commit being published.
 
 The default check covers z3, z4, z5, z7, z9, and z10. It fails on browser
 errors, failed tile requests, blank canvases, uncovered parent gaps, or tiles
-that do not settle. It also checks an alternate Center City view, Rocky,
+that do not settle. It also checks all four Center City orientations, Rocky,
 Rittenhouse, Passyunk, the stadium complex, Manayunk, Northeast Philadelphia,
-West Philadelphia, basic controls, and repeated z8 requests. Set
-`ISOPHILLY_VISUAL_ZOOMS` to a
+West Philadelphia, basic controls, and repeated z8 requests. In each Center
+City orientation, inspect the edge of the 2015 mesh. City footprint and
+OpenStreetMap fallback buildings should continue around the photographed
+geometry without a flat ground island. Set `ISOPHILLY_VISUAL_ZOOMS` to a
 comma-separated list when a change needs other levels.
 
 The server namespaces tiles by the renderer revision and the clean world's
-SHA-256 digest. Z0 through z8 are one image pyramid made from the textured z8
-scene. Z9 and z10 are view magnification only and request z8 tiles. The
-shared aerial source cache has a separate 8 GiB limit used during prebuild.
+SHA-256 digest. The citywide view uses z0 through z8. Each Center City
+orientation uses z0 through z5, and z5 takes one aerial sample per output
+pixel. Higher viewer zooms magnify the canonical tiles. The shared aerial
+source cache has a separate 8 GiB limit used during prebuild.
 
 Use `?z=7` on the viewer URL to open a fixed QA zoom. The browser shows a lower
 resolution parent until a requested pyramid tile is ready. Beyond z8 it keeps

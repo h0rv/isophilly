@@ -58,6 +58,9 @@ parser, validation rules, texture store, and output types.
   Fallback walls use a stable color derived from the same local image plus
   deterministic pixel floor and window bands. They are illustrations, not
   facade textures.
+- The four Center City views use the same fallback rules outside the 2015 mesh
+  coverage. Only a 2015 mesh suppresses a fallback in these views. The older
+  downtown and stadium meshes remain outside the Center City render policy.
 - Height-backed building parts replace the coarse parent footprint only when
   they cover at least 65 percent of it. Photographed meshes remain the highest
   priority.
@@ -127,15 +130,26 @@ removes obsolete aerial cache namespaces, so the 8 GiB limit applies across
 runs instead of accumulating once per renderer revision. A corrupt cached JPEG
 is deleted and fetched again once.
 
-The prebuilder renders one detailed z8 scene as lossless WebP. It derives z0
-through z7 from those exact pixels. The browser magnifies z8 with nearest
-neighbor sampling for closer views. It does not switch to another geometry or
-style at a different zoom.
+The prebuilder renders the citywide z8 scene as lossless WebP and derives z0
+through z7 from those exact pixels. It also renders four Center City z5 scenes
+and derives z0 through z4 for each orientation. A Center City z5 output pixel
+covers about 0.7 metre, so its ground renderer takes one sample per output
+pixel from the 0.75 metre PASDA working grid. The browser uses nearest-neighbor
+sampling only when it magnifies past a pyramid's canonical level.
 
 Every render path shares one depth buffer. The draw order is aerial ground,
-fallback buildings, then accepted textured mesh faces. Texture sampling uses a
-stable world grid so adjacent output tiles do not request the same image on
-different pixel phases.
+fallback buildings, then accepted textured mesh faces. In a Center City view,
+the fallback pass uses City footprints and OpenStreetMap parts wherever the
+2015 mesh does not cover a building. Roofs use aerial samples. Walls use a
+procedural pattern with colors derived from nearby aerial pixels, so they are
+not photographed facades. Texture sampling uses a stable world grid so
+adjacent output tiles do not request the same image on different pixel phases.
+
+The four z5 Center City pyramids add 4,096 files compared with z4. The current
+static export contains 18,009 files and uses 1,120.0 MiB, which remains below
+the 20,000 file limit checked by the exporter. The extra leaf tiles and finer
+ground sampling make prebuild slower. The server still reads immutable files,
+so request handling does not become more expensive.
 
 After prebuild, `data/tiles/current.json` records the active tile namespace,
 scene bounds, counts, landmarks, and clean input digest. The HTTP server reads

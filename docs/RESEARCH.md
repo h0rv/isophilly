@@ -5,13 +5,23 @@ recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
 
-For the first public release, default to the fully photographed 2015 Center
-City extent and pre-render four 90-degree orientations. Keep the citywide scene
-behind an explicit toggle and describe it as illustrated outside photographed
-coverage. This is an honest, self-hosted approximation of orbiting that reuses
-the existing deterministic renderer and stays inside static-hosting limits.
+For the first public release, default to the Center City extent and pre-render
+four orientations separated by 90 degrees. The official 2015 mesh supplies
+photographed geometry and textures where it has coverage. City footprints and
+OpenStreetMap parts fill the surrounding gaps. Keep the citywide scene behind
+an explicit toggle and describe walls outside photographed coverage as
+procedural. The four view renderer stays inside static hosting limits.
 Continuous 360-degree orbit requires live 3-D geometry; nadir orthophotography
 has only a top view and cannot reveal missing facades.
+
+Render each Center City orientation through z5. At the current extent, one z5
+pixel covers about 0.7 metre and uses one sample from the 0.75 metre PASDA
+working grid. Draw City footprints and OpenStreetMap parts around the 2015
+mesh, and share the depth buffer with the textured triangles. Their roofs can
+use aerial pixels, but their procedural walls must not be described as
+photographed facades. Four full z5 pyramids add 4,096 files over z4, for a
+current export of 18,009 files and 1,120.0 MiB. The finer build costs more time,
+while the static server performs the same file reads.
 
 If continuous orbit becomes a product requirement, the lowest-risk hosted
 experiment is an opt-in, lazy-loaded
@@ -89,7 +99,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Water and parks | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) and City PPR properties | Small official masks that identify which aerial pixels represent water or vegetation. | Small vector layers. | Apply restrained color grading to the aerial image. Never replace it with flat polygons. |
 | Removed. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/) | Citywide reference linework, not exact road surfaces. | Manageable but visually noisy. | Do not ingest while the aerial image is the road surface. |
 | 1. Center City parts | [OpenStreetMap Simple 3D Buildings](https://wiki.openstreetmap.org/wiki/Simple_3D_Buildings) | The current snapshot provides 827 height-backed parts, including the Comcast Technology Center shaft and wings. | Small cached snapshot; live Overpass refresh is optional. | Use as fallback geometry only where no photographed mesh exists. Suppress the parent footprint when parts cover most of it. |
-| 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Render the textured triangles once into the canonical z8 artwork. Get written City permission before redistributing tiles that include the atlases. |
+| 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Render the textured triangles into four canonical z5 orientations. Fill gaps with City and OpenStreetMap geometry, but let only the 2015 mesh suppress those fallbacks. Get written City permission before redistributing tiles that include the atlases. |
 | 1. Legacy downtown scene | [PASDA 2008 and 2009 downtown KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip) | 2,689 highest-detail models with photographed roofs and facades. It extends farther east, west, and south than the 2015 scene. | The smaller download is about 886 MB. Existing checkouts can reuse the retained 2.4 GB outer archive. | Import only `r0`, suppress overlap under the 2015 scene, and record the real 2008 and 2009 date. |
 | 1. Stadium scene | [PASDA 2008 stadium-area KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/Stadium%20Area%20Processed%20w%20LiDAR-KML.zip) | 814 highest-detail KML/COLLADA components with measured geometry and JPEG material textures. The 2008 source includes the since-demolished Spectrum. | 647 MB nested archive; output keeps 808 current components, 126,181 textured triangles, and about 84 MB of JPEGs. | Render through the same textured-mesh path as Center City; exclude the six Spectrum components and record the historical capture date. |
 | 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025 three-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |

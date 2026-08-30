@@ -10,7 +10,7 @@ use crate::{
     projection::Projection,
     texture::AerialTile,
     tile_codec::encode_rgba,
-    world::{Bounds, Ring, View, World},
+    world::{Bounds, PRIMARY_MESH_TEXTURE_LIMIT, Ring, View, World},
 };
 
 const TILE_SIZE: u32 = 256;
@@ -26,7 +26,16 @@ pub fn render_tile(
     let bounds = world.iso_bounds.tile(z, x, y);
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
-    draw_ground(&mut pixmap, world, bounds, scale, aerial, View::SouthEast);
+    let sampling_block = block_size(bounds);
+    draw_ground(
+        &mut pixmap,
+        world,
+        bounds,
+        scale,
+        sampling_block,
+        aerial,
+        View::SouthEast,
+    );
 
     let projection = Projection {
         bounds,
@@ -52,7 +61,7 @@ pub fn render_tile(
             }),
         &projection,
         aerial,
-        block_size(bounds),
+        sampling_block,
         &mut depth,
     );
     draw_city_building_parts(
@@ -66,7 +75,7 @@ pub fn render_tile(
             }),
         &projection,
         aerial,
-        block_size(bounds),
+        sampling_block,
         &mut depth,
     );
     draw_textured_faces(
@@ -91,7 +100,16 @@ pub fn render_rich_tile(
 ) -> io::Result<Vec<u8>> {
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
-    draw_ground(&mut pixmap, world, bounds, scale, aerial, view);
+    let sampling_block = rich_block_size(bounds);
+    draw_ground(
+        &mut pixmap,
+        world,
+        bounds,
+        scale,
+        sampling_block,
+        aerial,
+        view,
+    );
     let projection = Projection {
         bounds,
         scale,
@@ -99,13 +117,43 @@ pub fn render_rich_tile(
     };
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let query = bounds.source_envelope_for(world.max_height, view);
+    draw_city_buildings(
+        &mut pixmap,
+        world
+            .building_source_tree
+            .locate_in_envelope_intersecting(query)
+            .filter_map(|item| {
+                let building = &world.buildings[item.index];
+                (!world.building_covered_by_primary_mesh[item.index]
+                    && !world.building_detailed_by_parts[item.index])
+                    .then_some(building)
+            }),
+        &projection,
+        aerial,
+        sampling_block,
+        &mut depth,
+    );
+    draw_city_building_parts(
+        &mut pixmap,
+        world
+            .building_part_source_tree
+            .locate_in_envelope_intersecting(query)
+            .filter_map(|item| {
+                (!world.building_part_covered_by_primary_mesh[item.index])
+                    .then_some(&world.building_parts[item.index])
+            }),
+        &projection,
+        aerial,
+        sampling_block,
+        &mut depth,
+    );
     draw_textured_faces(
         &mut pixmap,
         world
             .mesh_face_source_tree
             .locate_in_envelope_intersecting(query)
             .map(|item| &world.mesh_faces[item.index])
-            .filter(|face| face.texture_id < 1_000_000),
+            .filter(|face| face.texture_id < PRIMARY_MESH_TEXTURE_LIMIT),
         &projection,
         mesh_textures,
         &mut depth,
@@ -128,11 +176,11 @@ fn draw_ground(
     world: &World,
     bounds: Bounds,
     scale: f32,
+    block_size: f32,
     aerial: &AerialTile,
     view: View,
 ) {
     let fallback = [217_u8, 209, 195];
-    let block_size = block_size(bounds);
     let source_bounds = bounds.ground_source_bounds_for(view);
     let source_query = AABB::from_corners(
         [source_bounds.min_x, source_bounds.min_y],
@@ -193,6 +241,10 @@ fn block_size(bounds: Bounds) -> f32 {
     bounds.width() / 128.0
 }
 
+fn rich_block_size(bounds: Bounds) -> f32 {
+    bounds.width() / TILE_SIZE as f32
+}
+
 fn missing_imagery(color: Option<[u8; 3]>) -> bool {
     color.is_none_or(|color| color.iter().all(|channel| *channel >= 246))
 }
@@ -205,7 +257,7 @@ fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_size, grade_ground};
+    use super::{block_size, grade_ground, rich_block_size};
     use crate::world::{Bounds, Ring};
 
     fn square() -> Ring {
@@ -230,6 +282,7 @@ mod tests {
         };
 
         assert_eq!(block_size(bounds), 2.0);
+        assert_eq!(rich_block_size(bounds), 1.0);
     }
 
     #[test]

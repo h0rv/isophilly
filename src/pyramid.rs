@@ -19,9 +19,10 @@ use crate::{
 };
 
 pub const ART_ZOOM: u8 = 8;
-// The detailed extent is much tighter than the city bounds, so z4 stays in the
-// same resolution class as citywide z8 while keeping four views hostable.
-pub const RICH_ART_ZOOM: u8 = 4;
+// The detailed extent is much tighter than the city bounds. z5 gives the
+// photographed core and its fallback buildings one aerial sample per output
+// pixel while keeping four complete square pyramids under the static file cap.
+pub const RICH_ART_ZOOM: u8 = 5;
 const TILE_SIZE: u32 = 256;
 const COMPLETE_FILE: &str = ".complete";
 const INVENTORY_FILE: &str = ".inventory";
@@ -388,7 +389,7 @@ impl RichLeafBuilder<'_> {
             return Ok(false);
         }
         let bounds = self.rich_bounds.tile(RICH_ART_ZOOM, x, y);
-        let source_bounds = bounds.ground_source_bounds_for(self.view);
+        let source_bounds = self.world.aerial_source_bounds_for(bounds, self.view);
         let aerial = AerialTile::for_source_bounds(self.aerial, source_bounds)?;
         let image = render_rich_tile(self.world, &aerial, self.mesh_textures, self.view, bounds)?;
         write_atomic(&path, &image)?;

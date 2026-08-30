@@ -7,6 +7,9 @@ const MAGIC: &[u8; 8] = b"GEOPHILY";
 const EPSG: u32 = 32129;
 const MESH_FACE_BYTES: usize = 3 * 5 * size_of::<f32>();
 const MESH_COVERAGE_BUFFER_METERS: f32 = 12.0;
+// The 2015 Center City source occupies the base texture namespace. Legacy
+// downtown and stadium meshes start at this boundary and stay out of rich mode.
+pub(crate) const PRIMARY_MESH_TEXTURE_LIMIT: u32 = 1_000_000;
 
 #[derive(Clone, Copy)]
 pub struct Bounds {
@@ -68,9 +71,6 @@ impl Bounds {
         self.min_y = self.min_y.min(other.min_y);
         self.max_x = self.max_x.max(other.max_x);
         self.max_y = self.max_y.max(other.max_y);
-    }
-    pub fn ground_source_bounds(self) -> Self {
-        self.ground_source_bounds_for(View::SouthEast)
     }
     pub fn ground_source_bounds_for(self, view: View) -> Self {
         let corners = [
@@ -428,10 +428,14 @@ pub struct World {
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
     pub building_iso_tree: RTree<Indexed>,
+    pub building_source_tree: RTree<Indexed>,
     pub building_covered_by_mesh: Vec<bool>,
+    pub building_covered_by_primary_mesh: Vec<bool>,
     pub building_detailed_by_parts: Vec<bool>,
     pub building_part_iso_tree: RTree<Indexed>,
+    pub building_part_source_tree: RTree<Indexed>,
     pub building_part_covered_by_mesh: Vec<bool>,
+    pub building_part_covered_by_primary_mesh: Vec<bool>,
     pub mesh_face_tree: RTree<Indexed>,
     pub mesh_face_source_tree: RTree<Indexed>,
     pub city_tree: RTree<Indexed>,
@@ -449,7 +453,7 @@ impl World {
     }
 
     pub fn aerial_source_bounds(&self, bounds: Bounds) -> Bounds {
-        let mut source = bounds.ground_source_bounds();
+        let mut source = bounds.ground_source_bounds_for(View::SouthEast);
         let query = AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
         for item in self
             .building_iso_tree
@@ -459,6 +463,24 @@ impl World {
         }
         for item in self
             .building_part_iso_tree
+            .locate_in_envelope_intersecting(query)
+        {
+            source.include(self.building_parts[item.index].ring.bounds);
+        }
+        source
+    }
+
+    pub fn aerial_source_bounds_for(&self, bounds: Bounds, view: View) -> Bounds {
+        let mut source = bounds.ground_source_bounds_for(view);
+        let query = bounds.source_envelope_for(self.max_height, view);
+        for item in self
+            .building_source_tree
+            .locate_in_envelope_intersecting(query)
+        {
+            source.include(self.buildings[item.index].ring.bounds);
+        }
+        for item in self
+            .building_part_source_tree
             .locate_in_envelope_intersecting(query)
         {
             source.include(self.building_parts[item.index].ring.bounds);
@@ -647,36 +669,35 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let building_iso_tree = index_buildings(&buildings);
     let building_source_tree = index_source_buildings(&buildings);
     let building_part_iso_tree = index_building_parts(&building_parts);
+    let building_part_source_tree = index_source_building_parts(&building_parts);
     let building_mesh_tree = index_building_meshes(&building_meshes);
     let rich_source_bounds = building_meshes
         .iter()
-        .filter(|mesh| mesh.texture_id < 1_000_000)
+        .filter(|mesh| is_primary_mesh(mesh))
         .map(|mesh| mesh.footprint.bounds)
         .reduce(|mut bounds, next| {
             bounds.include(next);
             bounds
         });
-    let building_covered_by_mesh = buildings
+    let building_mesh_coverage =
+        building_mesh_coverage(&buildings, &building_meshes, &building_mesh_tree);
+    let building_covered_by_mesh = building_mesh_coverage
         .iter()
-        .map(|building| {
-            let bounds = building.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
-            let query =
-                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
-            building_mesh_tree
-                .locate_in_envelope_intersecting(query)
-                .any(|item| mesh_covers_building(building, &building_meshes[item.index]))
-        })
+        .map(|coverage| coverage.any)
         .collect();
-    let building_part_covered_by_mesh = building_parts
+    let building_covered_by_primary_mesh = building_mesh_coverage
         .iter()
-        .map(|part| {
-            let bounds = part.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
-            let query =
-                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
-            building_mesh_tree
-                .locate_in_envelope_intersecting(query)
-                .any(|item| mesh_covers_part(part, &building_meshes[item.index]))
-        })
+        .map(|coverage| coverage.primary)
+        .collect();
+    let part_mesh_coverage =
+        part_mesh_coverage(&building_parts, &building_meshes, &building_mesh_tree);
+    let building_part_covered_by_mesh = part_mesh_coverage
+        .iter()
+        .map(|coverage| coverage.any)
+        .collect();
+    let building_part_covered_by_primary_mesh = part_mesh_coverage
+        .iter()
+        .map(|coverage| coverage.primary)
         .collect();
     let building_detailed_by_parts =
         detailed_buildings(&buildings, &building_source_tree, &building_parts);
@@ -685,10 +706,14 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     texture_ids.dedup();
     Ok(World {
         building_iso_tree,
+        building_source_tree,
         building_covered_by_mesh,
+        building_covered_by_primary_mesh,
         building_detailed_by_parts,
         building_part_iso_tree,
+        building_part_source_tree,
         building_part_covered_by_mesh,
+        building_part_covered_by_primary_mesh,
         mesh_face_tree: index_mesh_faces(&mesh_faces),
         mesh_face_source_tree: index_mesh_faces_in_source(&mesh_faces),
         city_tree: index_rings(&city),
@@ -712,6 +737,74 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
 
 fn mesh_covers_building(building: &Building, mesh: &BuildingMesh) -> bool {
     mesh_covers_ring(&building.ring, building.height, mesh)
+}
+
+fn is_primary_mesh(mesh: &BuildingMesh) -> bool {
+    mesh.texture_id < PRIMARY_MESH_TEXTURE_LIMIT
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MeshCoverage {
+    any: bool,
+    primary: bool,
+}
+
+fn building_mesh_coverage(
+    buildings: &[Building],
+    meshes: &[BuildingMesh],
+    mesh_tree: &RTree<Indexed>,
+) -> Vec<MeshCoverage> {
+    buildings
+        .iter()
+        .map(|building| {
+            let bounds = building.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
+            let query =
+                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+            mesh_tree
+                .locate_in_envelope_intersecting(query)
+                .map(|item| &meshes[item.index])
+                .filter(|mesh| mesh_covers_building(building, mesh))
+                .fold(
+                    MeshCoverage {
+                        any: false,
+                        primary: false,
+                    },
+                    |coverage, mesh| MeshCoverage {
+                        any: true,
+                        primary: coverage.primary || is_primary_mesh(mesh),
+                    },
+                )
+        })
+        .collect()
+}
+
+fn part_mesh_coverage(
+    parts: &[BuildingPart],
+    meshes: &[BuildingMesh],
+    mesh_tree: &RTree<Indexed>,
+) -> Vec<MeshCoverage> {
+    parts
+        .iter()
+        .map(|part| {
+            let bounds = part.ring.bounds.pad(MESH_COVERAGE_BUFFER_METERS);
+            let query =
+                AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+            mesh_tree
+                .locate_in_envelope_intersecting(query)
+                .map(|item| &meshes[item.index])
+                .filter(|mesh| mesh_covers_part(part, mesh))
+                .fold(
+                    MeshCoverage {
+                        any: false,
+                        primary: false,
+                    },
+                    |coverage, mesh| MeshCoverage {
+                        any: true,
+                        primary: coverage.primary || is_primary_mesh(mesh),
+                    },
+                )
+        })
+        .collect()
 }
 
 fn mesh_covers_part(part: &BuildingPart, mesh: &BuildingMesh) -> bool {
@@ -755,6 +848,16 @@ fn index_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
             .iter()
             .enumerate()
             .map(|(index, part)| indexed(index, building_part_iso_bounds(part)))
+            .collect(),
+    )
+}
+
+fn index_source_building_parts(parts: &[BuildingPart]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| indexed(index, part.ring.bounds))
             .collect(),
     )
 }
@@ -1015,22 +1118,15 @@ pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
     View::SouthEast.project(x, y, height)
 }
 
-pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
-    View::SouthEast.inverse(x, y)
-}
-
-pub fn view_depth(x: f32, y: f32, height: f32) -> f32 {
-    View::SouthEast.depth(x, y, height)
-}
-
 #[cfg(test)]
 mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
         BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, BuildingPart, Cursor,
-        MESH_FACE_BYTES, Ring, RoofShape, View, detailed_buildings, index_source_buildings,
-        inverse_isometric, isometric, mesh_covers_building, mesh_covers_part, parse_world,
+        MESH_FACE_BYTES, MeshCoverage, PRIMARY_MESH_TEXTURE_LIMIT, Ring, RoofShape, View,
+        building_mesh_coverage, detailed_buildings, index_building_meshes, index_source_buildings,
+        isometric, mesh_covers_building, mesh_covers_part, parse_world, part_mesh_coverage,
     };
 
     fn square(size: f32) -> Ring {
@@ -1110,7 +1206,7 @@ mod tests {
     fn isometric_projection_round_trips_on_the_ground() {
         let projected = isometric(820_983.0, 71_996.0, 0.0);
 
-        let source = inverse_isometric(projected.0, projected.1);
+        let source = View::SouthEast.inverse(projected.0, projected.1);
         assert!((source.0 - 820_983.0).abs() < 0.1);
         assert!((source.1 - 71_996.0).abs() < 0.1);
     }
@@ -1216,6 +1312,57 @@ mod tests {
         };
 
         assert!(!mesh_covers_part(&part, &old_mesh));
+    }
+
+    #[test]
+    fn rich_fallback_is_suppressed_only_by_primary_meshes() {
+        let buildings = vec![Building {
+            height: 20.0,
+            ring: square(10.0),
+        }];
+        let parts = vec![BuildingPart {
+            osm_id: 1,
+            height: 20.0,
+            min_height: 0.0,
+            roof_height: 0.0,
+            roof_shape: RoofShape::Flat,
+            ring: square(10.0),
+        }];
+        let legacy_mesh = BuildingMesh {
+            texture_id: PRIMARY_MESH_TEXTURE_LIMIT,
+            height: 20.0,
+            footprint: square(10.0),
+            center: (5.0, 5.0),
+            highest_point: (5.0, 5.0, 20.0),
+        };
+        let mut meshes = vec![legacy_mesh];
+        let tree = index_building_meshes(&meshes);
+
+        let legacy_only = MeshCoverage {
+            any: true,
+            primary: false,
+        };
+        assert_eq!(
+            building_mesh_coverage(&buildings, &meshes, &tree),
+            [legacy_only]
+        );
+        assert_eq!(part_mesh_coverage(&parts, &meshes, &tree), [legacy_only]);
+
+        meshes.push(BuildingMesh {
+            texture_id: PRIMARY_MESH_TEXTURE_LIMIT - 1,
+            height: 20.0,
+            footprint: square(10.0),
+            center: (5.0, 5.0),
+            highest_point: (5.0, 5.0, 20.0),
+        });
+        let tree = index_building_meshes(&meshes);
+        assert_eq!(
+            building_mesh_coverage(&buildings, &meshes, &tree),
+            [MeshCoverage {
+                any: true,
+                primary: true,
+            }]
+        );
     }
 
     #[test]

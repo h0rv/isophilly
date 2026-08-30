@@ -439,7 +439,7 @@ mod tests {
     fn rich_tile_versions_include_view_resolution_and_full_ground() {
         assert_eq!(
             rich_tile_version("v1-abc", View::NorthWest),
-            "v1-abc-rich-nw-z4-full"
+            "v1-abc-rich-nw-z5-full"
         );
     }
 }
