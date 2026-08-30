@@ -8,7 +8,7 @@
   <title>IsoPhilly</title>
   <link rel="icon" href="data:,">
   <style>
-    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
@@ -16,32 +16,32 @@
     canvas.vivid { filter: saturate(1.14) contrast(1.04); }
     canvas.dragging { cursor: grabbing; }
     canvas:focus-visible { outline: 3px solid #b8754f; outline-offset: -3px; }
-    header { position: fixed; z-index: 1; background: #191714eb; color: #f6f0e6; backdrop-filter: blur(6px); }
-    header { top: 0; left: 0; right: 0; display: flex; gap: .75rem; align-items: center; min-height: 2.75rem; padding: .5rem .85rem; }
-    h1 { margin: 0; font-size: 1.05rem; letter-spacing: -.025em; }
+    header { position: fixed; z-index: 1; background: #191714ed; color: #f6f0e6; backdrop-filter: blur(12px); }
+    header { top: .7rem; left: .7rem; right: .7rem; display: flex; gap: .75rem; align-items: center; min-height: 3.1rem; padding: .55rem .7rem .55rem .9rem; border: 1px solid #ffffff17; border-radius: .8rem; box-shadow: 0 .5rem 2rem #241d1645; }
+    h1 { margin: 0; font-size: 1.08rem; letter-spacing: -.035em; }
     #status { color: #c7bfb2; font-size: .8rem; }
     .orientation { color: #9f978c; font-size: .72rem; white-space: nowrap; }
     #sun-state { color: #9f978c; font-size: .7rem; white-space: nowrap; }
     .controls { display: flex; gap: .3rem; margin-left: auto; }
-    button { min-width: 1.8rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: .2rem; padding: .25rem .5rem; cursor: pointer; font: inherit; }
-    button:hover { background: #464039; }
-    button[aria-pressed="true"] { border-color: #d39a62; background: #594333; }
+    button { min-width: 2rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: 999px; padding: .34rem .65rem; cursor: pointer; font: inherit; font-size: .78rem; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
+    button:hover { background: #464039; transform: translateY(-1px); }
+    button[aria-pressed="true"] { border-color: #dc9e67; background: #68462f; }
     button:focus-visible, summary:focus-visible { outline: 2px solid #c88a6b; outline-offset: 2px; }
     details { position: relative; font-size: .75rem; }
-    summary { cursor: pointer; color: #c7bfb2; }
-    .legend { position: absolute; right: 0; top: 1.75rem; width: max-content; padding: .65rem .8rem; background: #191714f5; border: 1px solid #484239; border-radius: .2rem; line-height: 1.55; box-shadow: 0 .5rem 1.5rem #0005; }
+    summary { cursor: pointer; color: #c7bfb2; padding: .3rem; }
+    .legend { position: absolute; right: 0; top: 2rem; width: min(31rem, calc(100vw - 1.4rem)); padding: .8rem .9rem; background: #191714f7; border: 1px solid #484239; border-radius: .65rem; line-height: 1.55; box-shadow: 0 .5rem 1.5rem #0005; }
     .legend a { color: #c7bfb2; }
-    footer { position: fixed; right: .45rem; bottom: .35rem; z-index: 1; padding: .2rem .35rem; background: #191714d9; border-radius: .15rem; font-size: .65rem; }
+    footer { position: fixed; right: .55rem; bottom: .45rem; z-index: 1; padding: .28rem .45rem; background: #191714dc; border: 1px solid #ffffff14; border-radius: 999px; font-size: .65rem; backdrop-filter: blur(8px); }
     footer a { color: #ded6ca; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     @media (max-width: 620px) {
-      header { gap: .4rem; padding: .35rem .45rem; }
+      header { top: .4rem; left: .4rem; right: .4rem; gap: .35rem; padding: .35rem .4rem .35rem .65rem; }
       h1 { font-size: .95rem; }
-      #status, #sun-state, #neighborhoods-toggle { display: none; }
+      #status, #sun-state, #neighborhoods-toggle, #color-toggle, #zoom-out, #zoom-in, #home, #rocky { display: none; }
       .orientation { display: none; }
       .controls { margin-left: auto; }
-      button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; }
-      .legend { max-width: calc(100vw - 1rem); white-space: normal; }
+      button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; padding: .25rem .55rem; }
+      .legend { position: fixed; left: .5rem; right: .5rem; top: 3.8rem; width: auto; max-height: calc(100vh - 4.3rem); overflow: auto; white-space: normal; }
     }
   </style>
   <script src="/app.js" type="module"></script>
@@ -50,14 +50,18 @@
   <header>
     <h1>IsoPhilly</h1>
     <span id="status" aria-live="polite">loading city geometry…</span>
-    <span class="orientation" title="North points up and right">↗ N</span>
+    <span id="orientation" class="orientation" title="North points up and right">↗ N</span>
     <span id="sun-state" aria-live="off"></span>
     <nav class="controls" aria-label="Map controls">
       <button id="neighborhoods-toggle" aria-pressed="false" title="Toggle neighborhood boundaries">Neighborhoods</button>
       <button id="color-toggle" aria-pressed="true" title="Toggle richer map colors">Vivid</button>
+      <button id="rich-toggle" aria-pressed="true" title="Toggle the fully textured Center City scene">Center City</button>
+      <button id="rotate-left" aria-label="Rotate view 90 degrees left" title="Rotate 90° left">↶</button>
+      <button id="rotate-right" aria-label="Rotate view 90 degrees right" title="Rotate 90° right">↷</button>
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
       <button id="home">City Hall</button>
+      <button id="rocky" title="Visit Rocky on the Philadelphia Museum of Art steps">Rocky</button>
       <button id="retry" hidden>Retry</button>
     </nav>
     <details>
@@ -66,6 +70,9 @@
         <div>Drag or use arrow keys to explore.</div>
         <div>Wheel, pinch, or use + and − to zoom.</div>
         <div>Press 0 to return to City Hall.</div>
+        <div>Press R or choose Rocky to visit the Philadelphia Museum of Art steps.</div>
+        <div>Center City opens by default with four prebuilt 90° views. Toggle it off for the citywide illustrated overview.</div>
+        <div>Rocky is marked on the Philadelphia Museum of Art steps in every Center City view.</div>
         <div>Neighborhood boundaries are approximate. Dashed outlines mark locally named areas separately from planning boundaries.</div>
         <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">planning neighborhoods: Philadelphia City Planning Commission</a></div>
         <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">2025 aerial: City of Philadelphia / PASDA</a></div>
@@ -74,7 +81,7 @@
       </div>
     </details>
   </header>
-  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press zero to return to City Hall.</p>
+  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Use the rotate controls for four Center City views. Press zero for City Hall or R for Rocky at the Philadelphia Museum of Art.</p>
   <canvas id="map" class="vivid" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>

@@ -3,11 +3,11 @@ use std::{fs, io, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    pyramid::ART_ZOOM,
-    world::{World, isometric},
+    pyramid::{ART_ZOOM, RICH_ART_ZOOM},
+    world::{View, World, isometric},
 };
 
-const SCHEMA_VERSION: u8 = 1;
+const SCHEMA_VERSION: u8 = 2;
 const CURRENT_SCENE: &str = "data/tiles/current.json";
 const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
@@ -25,6 +25,24 @@ pub(crate) struct Scene {
     max_tile_zoom: u8,
     max_zoom: u8,
     home_zoom: u8,
+    rich: RichScene,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RichScene {
+    views: Vec<RichView>,
+    home_zoom: u8,
+    max_tile_zoom: u8,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct RichView {
+    id: String,
+    label: String,
+    iso_bounds: [f32; 4],
+    city_hall: Option<[f32; 2]>,
+    landmarks: Vec<Landmark>,
+    tile_version: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -42,7 +60,14 @@ struct Counts {
 }
 
 impl Scene {
-    pub(crate) fn from_world(world: &World, tile_version: String) -> io::Result<Self> {
+    pub(crate) fn rich_views(&self) -> &[RichView] {
+        &self.rich.views
+    }
+    pub(crate) fn from_world(
+        world: &World,
+        tile_version: String,
+        rich_versions: &[(View, String)],
+    ) -> io::Result<Self> {
         let bounds = world.iso_bounds;
         let rocky = isometric(ROCKY_SOURCE.0, ROCKY_SOURCE.1, ROCKY_SOURCE.2);
         let world_sha256 = digest_hex(&world.world_sha256);
@@ -65,6 +90,38 @@ impl Scene {
             max_tile_zoom: ART_ZOOM,
             max_zoom: MAX_VIEW_ZOOM,
             home_zoom: HOME_ZOOM,
+            rich: RichScene {
+                views: rich_versions
+                    .iter()
+                    .map(|(view, version)| {
+                        let bounds = world.rich_bounds(*view).ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "world has no rich mesh")
+                        })?;
+                        Ok(RichView {
+                            id: view.id().to_owned(),
+                            label: view_label(*view).to_owned(),
+                            iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
+                            city_hall: world.city_hall_focus_for(*view),
+                            landmarks: vec![Landmark {
+                                name: "Rocky".to_owned(),
+                                point: {
+                                    let point = view.project(
+                                        ROCKY_SOURCE.0,
+                                        ROCKY_SOURCE.1,
+                                        ROCKY_SOURCE.2,
+                                    );
+                                    [point.0, point.1]
+                                },
+                                min_zoom: 4,
+                                color: "#8f5f3b".to_owned(),
+                            }],
+                            tile_version: version.clone(),
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()?,
+                home_zoom: 4,
+                max_tile_zoom: RICH_ART_ZOOM,
+            },
         };
         scene.validate()?;
         Ok(scene)
@@ -127,7 +184,51 @@ impl Scene {
         {
             return Err(invalid("invalid bounds in tile manifest"));
         }
+        if self.rich.views.len() != View::ALL.len()
+            || self
+                .rich
+                .views
+                .iter()
+                .zip(View::ALL)
+                .any(|(candidate, expected)| candidate.id != expected.id())
+        {
+            return Err(invalid(
+                "rich views must contain all four orientations in order",
+            ));
+        }
+        for view in &self.rich.views {
+            let [min_x, min_y, max_x, max_y] = view.iso_bounds;
+            if !view.iso_bounds.iter().all(|value| value.is_finite())
+                || min_x >= max_x
+                || min_y >= max_y
+                || view.tile_version.is_empty()
+            {
+                return Err(invalid("invalid rich view"));
+            }
+        }
+        if self.rich.max_tile_zoom != RICH_ART_ZOOM || self.rich.home_zoom > self.max_zoom {
+            return Err(invalid("invalid rich zoom levels"));
+        }
         Ok(())
+    }
+}
+
+impl RichView {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn tile_version(&self) -> &str {
+        &self.tile_version
+    }
+}
+
+fn view_label(view: View) -> &'static str {
+    match view {
+        View::SouthEast => "Southeast",
+        View::SouthWest => "Southwest",
+        View::NorthWest => "Northwest",
+        View::NorthEast => "Northeast",
     }
 }
 
@@ -152,7 +253,10 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ART_ZOOM, Counts, Landmark, SCHEMA_VERSION, Scene, digest_hex, validate_sha256};
+    use super::{
+        ART_ZOOM, Counts, Landmark, RICH_ART_ZOOM, RichScene, RichView, SCHEMA_VERSION, Scene,
+        digest_hex, validate_sha256,
+    };
 
     fn scene() -> Scene {
         Scene {
@@ -174,6 +278,31 @@ mod tests {
             max_tile_zoom: ART_ZOOM,
             max_zoom: 10,
             home_zoom: 3,
+            rich: RichScene {
+                views: [
+                    ("se", "Southeast"),
+                    ("sw", "Southwest"),
+                    ("nw", "Northwest"),
+                    ("ne", "Northeast"),
+                ]
+                .into_iter()
+                .map(|(id, label)| RichView {
+                    id: id.to_owned(),
+                    label: label.to_owned(),
+                    iso_bounds: [1.0, 2.0, 3.0, 4.0],
+                    city_hall: Some([2.0, 3.0]),
+                    landmarks: vec![Landmark {
+                        name: "Rocky".to_owned(),
+                        point: [2.0, 3.0],
+                        min_zoom: 4,
+                        color: "#8f5f3b".to_owned(),
+                    }],
+                    tile_version: format!("v1-rich-{id}"),
+                })
+                .collect(),
+                home_zoom: 4,
+                max_tile_zoom: RICH_ART_ZOOM,
+            },
         }
     }
 

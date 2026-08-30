@@ -12,8 +12,11 @@ import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js
  *   max_tile_zoom: number,
  *   max_zoom: number,
  *   home_zoom: number,
+ *   rich: { home_zoom: number, max_tile_zoom: number, views: RichView[] },
  * }} Meta
  */
+
+/** @typedef {{ id: "se" | "sw" | "nw" | "ne", label: string, iso_bounds: [number, number, number, number], city_hall: [number, number] | null, landmarks: { name: string, point: [number, number], min_zoom: number, color: string }[], tile_version: string }} RichView */
 
 /** @typedef {{ schema_version: 1, tile_version: string, tiles: string[] }} TileCoverage */
 
@@ -22,21 +25,31 @@ import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
 const homeElement = document.querySelector("#home");
+const rockyElement = document.querySelector("#rocky");
 const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
 const colorElement = document.querySelector("#color-toggle");
+const richElement = document.querySelector("#rich-toggle");
+const rotateLeftElement = document.querySelector("#rotate-left");
+const rotateRightElement = document.querySelector("#rotate-right");
+const orientationElement = document.querySelector("#orientation");
 const sunElement = document.querySelector("#sun-state");
 if (
   !(canvasElement instanceof HTMLCanvasElement) ||
   !(statusElement instanceof HTMLSpanElement) ||
   !(homeElement instanceof HTMLButtonElement) ||
+  !(rockyElement instanceof HTMLButtonElement) ||
   !(zoomInElement instanceof HTMLButtonElement) ||
   !(zoomOutElement instanceof HTMLButtonElement) ||
   !(retryElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
   !(colorElement instanceof HTMLButtonElement) ||
+  !(richElement instanceof HTMLButtonElement) ||
+  !(rotateLeftElement instanceof HTMLButtonElement) ||
+  !(rotateRightElement instanceof HTMLButtonElement) ||
+  !(orientationElement instanceof HTMLSpanElement) ||
   !(sunElement instanceof HTMLSpanElement)
 ) {
   throw new Error("map controls are missing");
@@ -44,11 +57,16 @@ if (
 const canvas = canvasElement;
 const statusText = statusElement;
 const home = homeElement;
+const rocky = rockyElement;
 const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
 const neighborhoodsToggle = neighborhoodsElement;
 const colorToggle = colorElement;
+const richToggle = richElement;
+const rotateLeft = rotateLeftElement;
+const rotateRight = rotateRightElement;
+const orientation = orientationElement;
 const sunState = sunElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
@@ -74,6 +92,8 @@ let drawing = false;
 let neighborhoodData;
 let showNeighborhoods = false;
 let vividColors = true;
+let richMode = true;
+let richViewIndex = 0;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
 /** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
@@ -95,6 +115,41 @@ function city() {
   return meta;
 }
 
+/** @returns {RichView | undefined} */
+function richView() {
+  return richMode ? city().rich.views[richViewIndex] : undefined;
+}
+
+/** @returns {[number, number, number, number]} */
+function sceneBounds() {
+  return richView()?.iso_bounds ?? city().iso_bounds;
+}
+
+/** @returns {[number, number] | null} */
+function sceneCityHall() {
+  return richView()?.city_hall ?? city().city_hall;
+}
+
+function sceneTileVersion() {
+  return richView()?.tile_version ?? city().tile_version;
+}
+
+function sceneHomeZoom() {
+  return richMode ? city().rich.home_zoom : city().home_zoom;
+}
+
+function sceneMaxTileZoom() {
+  return richMode ? city().rich.max_tile_zoom : city().max_tile_zoom;
+}
+
+function sceneMaxZoom() {
+  return richMode ? city().rich.max_tile_zoom + 1 : city().max_zoom;
+}
+
+function sceneKey() {
+  return richView()?.id ?? "city";
+}
+
 function resize() {
   viewportWidth = innerWidth;
   viewportHeight = innerHeight;
@@ -110,12 +165,12 @@ function resize() {
 
 /** @param {number} z @param {number} x @param {number} y */
 function key(z, x, y) {
-  return `${z}/${x}/${y}`;
+  return `${sceneKey()}/${z}/${x}/${y}`;
 }
 
 /** @param {number} z @param {number} x @param {number} y */
 function hasTile(z, x, y) {
-  return availableTiles?.has(key(z, x, y)) ?? false;
+  return availableTiles?.has(`${z}/${x}/${y}`) ?? false;
 }
 
 function pruneTiles() {
@@ -217,7 +272,8 @@ function requestTile(z, x, y) {
     if (terminal) retry.hidden = false;
     setTimeout(draw, terminal ? 0 : delay);
   };
-  image.src = `/tiles/${z}/${x}/${y}.webp?v=${encodeURIComponent(city().tile_version)}`;
+  const prefix = richView() === undefined ? "" : `/rich/${richView()?.id}`;
+  image.src = `${prefix}/tiles/${z}/${x}/${y}.webp?v=${encodeURIComponent(sceneTileVersion())}`;
   tiles.set(id, image);
   return image;
 }
@@ -265,13 +321,11 @@ function draw() {
 
 function drawNow() {
   if (meta === undefined) return;
-  const {
-    iso_bounds: bounds,
-    city_hall: cityHall,
-    counts,
-    max_tile_zoom: maxTileZoom,
-    max_zoom: maxZoom,
-  } = city();
+  const { counts } = city();
+  const maxZoom = sceneMaxZoom();
+  const maxTileZoom = sceneMaxTileZoom();
+  const bounds = sceneBounds();
+  const cityHall = sceneCityHall();
   ctx.fillStyle = "#d9d1c3";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
   const viewZoom = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
@@ -334,11 +388,15 @@ function drawNow() {
     }
   }
   drawLighting();
-  if (showNeighborhoods) drawNeighborhoods(viewZoom, panX, panY, scale);
+  if (showNeighborhoods && !richMode) drawNeighborhoods(viewZoom, panX, panY, scale);
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   drawLandmarks(viewZoom, panX, panY, scale);
   const pending = requested - loaded - failed;
-  statusText.textContent = `${counts.buildings.toLocaleString()} buildings · z${viewZoom}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
+  const scope =
+    richView() === undefined
+      ? `${counts.buildings.toLocaleString()} citywide buildings`
+      : `Center City · ${richView()?.label}`;
+  statusText.textContent = `${scope} · z${viewZoom}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
   canvas.dataset.zoom = String(viewZoom);
   canvas.dataset.tileZoom = String(z);
   canvas.dataset.requested = String(requested);
@@ -408,27 +466,44 @@ function drawNeighborhoods(z, panX, panY, scale) {
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
 function drawLandmarks(z, panX, panY, scale) {
-  for (const landmark of city().landmarks) {
+  const landmarks = richView()?.landmarks ?? city().landmarks;
+  for (const landmark of landmarks) {
     if (z < landmark.min_zoom) continue;
-    const x = panX + (landmark.point[0] - city().iso_bounds[0]) * scale;
-    const y = panY + (landmark.point[1] - city().iso_bounds[1]) * scale;
+    const x = panX + (landmark.point[0] - sceneBounds()[0]) * scale;
+    const y = panY + (landmark.point[1] - sceneBounds()[1]) * scale;
     if (x < -100 || y < -30 || x > viewportWidth + 30 || y > viewportHeight + 30) continue;
+    const pixelX = Math.round(x);
+    const pixelY = Math.round(y);
     ctx.fillStyle = landmark.color;
-    ctx.fillRect(Math.round(x) - 3, Math.round(y) - 7, 7, 7);
+    drawRaisedFigure(pixelX, pixelY);
     ctx.font = "600 12px ui-sans-serif, system-ui";
     ctx.lineJoin = "round";
     ctx.lineWidth = 3;
     ctx.strokeStyle = "#f6f0e6";
-    ctx.strokeText(landmark.name, x + 8, y - 8);
+    ctx.strokeText(landmark.name, pixelX + 10, pixelY - 11);
     ctx.fillStyle = "#191714";
-    ctx.fillText(landmark.name, x + 8, y - 8);
+    ctx.fillText(landmark.name, pixelX + 10, pixelY - 11);
   }
+}
+
+/** Draw Rocky as a tiny raised-arms figure instead of an ambiguous map pin. */
+/** @param {number} x @param {number} y */
+function drawRaisedFigure(x, y) {
+  ctx.fillRect(x - 1, y - 16, 3, 3);
+  ctx.fillRect(x - 2, y - 12, 5, 7);
+  ctx.fillRect(x - 5, y - 14, 3, 2);
+  ctx.fillRect(x - 7, y - 16, 3, 2);
+  ctx.fillRect(x + 3, y - 14, 3, 2);
+  ctx.fillRect(x + 5, y - 16, 3, 2);
+  ctx.fillRect(x - 2, y - 5, 2, 5);
+  ctx.fillRect(x + 1, y - 5, 2, 5);
+  ctx.fillRect(x - 4, y, 9, 2);
 }
 
 /** @param {[number, number]} cityHall @param {number} panX @param {number} panY @param {number} scale */
 function drawCityHall(cityHall, panX, panY, scale) {
-  const cityX = panX + (cityHall[0] - city().iso_bounds[0]) * scale;
-  const cityY = panY + (cityHall[1] - city().iso_bounds[1]) * scale;
+  const cityX = panX + (cityHall[0] - sceneBounds()[0]) * scale;
+  const cityY = panY + (cityHall[1] - sceneBounds()[1]) * scale;
   if (cityX < -80 || cityY < -20 || cityX > viewportWidth + 20 || cityY > viewportHeight + 20) {
     return;
   }
@@ -446,13 +521,13 @@ function drawCityHall(cityHall, panX, panY, scale) {
 }
 
 function worldScale() {
-  const bounds = city().iso_bounds;
+  const bounds = sceneBounds();
   const side = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
   return (Math.min(viewportWidth, viewportHeight) * zoom) / side;
 }
 
 function clampCamera() {
-  const [minX, minY, maxX, maxY] = city().iso_bounds;
+  const [minX, minY, maxX, maxY] = sceneBounds();
   const scale = worldScale();
   /** @param {number} value @param {number} min @param {number} max @param {number} half */
   const clampAxis = (value, min, max, half) =>
@@ -463,19 +538,26 @@ function clampCamera() {
 
 /** @param {number} nextZoom */
 function setZoom(nextZoom) {
-  const maxZoom = 2 ** (city().max_zoom - BASE_TILE_ZOOM);
+  const maxZoom = 2 ** (sceneMaxZoom() - BASE_TILE_ZOOM);
   zoom = Math.max(MIN_ZOOM, Math.min(maxZoom, nextZoom));
   draw();
 }
 
 /** @param {number} tileZoom */
-function centerCityHall(tileZoom = city().home_zoom) {
-  centerAt(city().city_hall ?? boundsCenter(), tileZoom);
+function centerCityHall(tileZoom = sceneHomeZoom()) {
+  centerAt(sceneCityHall() ?? boundsCenter(), tileZoom);
+}
+
+function centerRocky() {
+  const landmark = (richView()?.landmarks ?? city().landmarks).find(
+    (candidate) => candidate.name === "Rocky",
+  );
+  if (landmark !== undefined) centerAt(landmark.point, sceneMaxZoom());
 }
 
 /** @returns {[number, number]} */
 function boundsCenter() {
-  const [minX, minY, maxX, maxY] = city().iso_bounds;
+  const [minX, minY, maxX, maxY] = sceneBounds();
   return [(minX + maxX) / 2, (minY + maxY) / 2];
 }
 
@@ -491,8 +573,8 @@ function centerAt(point, tileZoom) {
 function initialTileZoom() {
   const requested = Number.parseInt(new URLSearchParams(location.search).get("z") ?? "", 10);
   return Number.isInteger(requested)
-    ? Math.max(0, Math.min(city().max_zoom, requested))
-    : city().home_zoom;
+    ? Math.max(0, Math.min(sceneMaxZoom(), requested))
+    : sceneHomeZoom();
 }
 
 /** @returns {[number, number]} */
@@ -500,7 +582,7 @@ function initialCenter() {
   const parameters = new URLSearchParams(location.search);
   const x = Number.parseFloat(parameters.get("cx") ?? "");
   const y = Number.parseFloat(parameters.get("cy") ?? "");
-  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : (city().city_hall ?? boundsCenter());
+  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : (sceneCityHall() ?? boundsCenter());
 }
 
 function pointerDistance() {
@@ -591,6 +673,7 @@ addEventListener("keydown", (event) => {
   if (event.key === "+" || event.key === "=") setZoom(zoom * 2);
   else if (event.key === "-") setZoom(zoom / 2);
   else if (event.key === "0") centerCityHall();
+  else if (event.key.toLowerCase() === "r") centerRocky();
   else if (event.key.startsWith("Arrow")) {
     const distance = 64 / worldScale();
     if (event.key === "ArrowLeft") cameraX -= distance;
@@ -603,6 +686,7 @@ addEventListener("keydown", (event) => {
 });
 addEventListener("resize", resize);
 home.addEventListener("click", () => centerCityHall());
+rocky.addEventListener("click", centerRocky);
 zoomIn.addEventListener("click", () => setZoom(zoom * 2));
 zoomOut.addEventListener("click", () => setZoom(zoom / 2));
 retry.addEventListener("click", () => {
@@ -621,6 +705,81 @@ colorToggle.addEventListener("click", () => {
   colorToggle.setAttribute("aria-pressed", String(vividColors));
   draw();
 });
+richToggle.addEventListener("click", () => void setRichMode(!richMode));
+rotateLeft.addEventListener("click", () => void rotateRich(-1));
+rotateRight.addEventListener("click", () => void rotateRich(1));
+
+/** @param {boolean} enabled */
+async function setRichMode(enabled) {
+  if (meta === undefined || enabled === richMode) return;
+  richMode = enabled;
+  richToggle.setAttribute("aria-pressed", String(enabled));
+  rotateLeft.hidden = !enabled;
+  rotateRight.hidden = !enabled;
+  neighborhoodsToggle.disabled = enabled;
+  syncSceneUrl();
+  await activateScene();
+}
+
+/** @param {number} direction */
+async function rotateRich(direction) {
+  if (!richMode || meta === undefined) return;
+  richViewIndex = (richViewIndex + direction + city().rich.views.length) % city().rich.views.length;
+  syncSceneUrl();
+  await activateScene();
+}
+
+function syncSceneUrl() {
+  const url = new URL(location.href);
+  if (richMode) {
+    url.searchParams.delete("mode");
+    url.searchParams.set("view", richView()?.id ?? "se");
+  } else {
+    url.searchParams.set("mode", "city");
+    url.searchParams.delete("view");
+  }
+  history.replaceState(null, "", url);
+}
+
+/** @param {boolean} initial */
+async function activateScene(initial = false) {
+  const expectedScene = sceneKey();
+  availableTiles = undefined;
+  activeView = "";
+  scheduledPrefetch = undefined;
+  failures.clear();
+  const view = richView();
+  const arrows = ["↗", "↘", "↙", "↖"];
+  orientation.textContent =
+    view === undefined ? "↗ N" : `${arrows[richViewIndex]} N · ${view.label}`;
+  statusText.textContent =
+    view === undefined ? "loading city…" : `loading ${view.label.toLowerCase()} view…`;
+  const url = view === undefined ? "/coverage.json" : `/rich/${view.id}/coverage.json`;
+  canvas.dataset.mode = view === undefined ? "city" : "detailed";
+  canvas.dataset.view = view?.id ?? "city";
+  try {
+    const coverage = await loadCoverage(url, sceneTileVersion());
+    if (sceneKey() !== expectedScene) return;
+    availableTiles = new Set(coverage.tiles);
+    retry.hidden = true;
+    if (initial) centerAt(initialCenter(), initialTileZoom());
+    else centerCityHall();
+  } catch {
+    if (sceneKey() === expectedScene) statusText.textContent = "This detailed view is unavailable.";
+  }
+}
+
+/** @param {string} url @param {string} expectedVersion @returns {Promise<TileCoverage>} */
+async function loadCoverage(url, expectedVersion) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`coverage request failed: ${response.status}`);
+  /** @type {unknown} */
+  const loaded = await response.json();
+  if (!isTileCoverage(loaded) || loaded.tile_version !== expectedVersion) {
+    throw new Error("coverage and scene versions do not match");
+  }
+  return loaded;
+}
 
 async function loadNeighborhoods() {
   try {
@@ -640,30 +799,23 @@ async function loadNeighborhoods() {
 
 async function loadMeta() {
   try {
-    const [response, coverageResponse] = await Promise.all([
-      fetch("/meta"),
-      fetch("/coverage.json"),
-    ]);
+    const response = await fetch("/meta");
     if (!response.ok) throw new Error(`metadata request failed: ${response.status}`);
-    if (!coverageResponse.ok) {
-      throw new Error(`coverage request failed: ${coverageResponse.status}`);
-    }
     /** @type {unknown} */
     const loaded = await response.json();
-    /** @type {unknown} */
-    const loadedCoverage = await coverageResponse.json();
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
-    if (!isTileCoverage(loadedCoverage)) {
-      throw new Error("coverage response has the wrong shape");
-    }
-    if (loadedCoverage.tile_version !== loaded.tile_version) {
-      throw new Error("metadata and tile coverage versions do not match");
-    }
     meta = loaded;
-    availableTiles = new Set(loadedCoverage.tiles);
-    retry.hidden = true;
+    const parameters = new URLSearchParams(location.search);
+    richMode = parameters.get("mode") !== "city";
+    const requestedView = parameters.get("view");
+    const requestedIndex = loaded.rich.views.findIndex((view) => view.id === requestedView);
+    richViewIndex = requestedIndex < 0 ? 0 : requestedIndex;
+    richToggle.setAttribute("aria-pressed", String(richMode));
+    rotateLeft.hidden = !richMode;
+    rotateRight.hidden = !richMode;
+    neighborhoodsToggle.disabled = richMode;
     resize();
-    centerAt(initialCenter(), initialTileZoom());
+    await activateScene(true);
     void loadNeighborhoods();
   } catch {
     statusText.textContent = "Run the ingest command to load city geometry.";
@@ -739,7 +891,39 @@ function isMeta(value) {
     typeof candidate.tile_version === "string" &&
     Number.isInteger(candidate.max_tile_zoom) &&
     Number.isInteger(candidate.max_zoom) &&
-    Number.isInteger(candidate.home_zoom)
+    Number.isInteger(candidate.home_zoom) &&
+    Number.isInteger(candidate.max_tile_zoom) &&
+    isRichScene(candidate.rich)
+  );
+}
+
+/** @param {unknown} value */
+function isRichScene(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = /** @type {Record<string, unknown>} */ (value);
+  const ids = ["se", "sw", "nw", "ne"];
+  return (
+    Number.isInteger(candidate.home_zoom) &&
+    Array.isArray(candidate.views) &&
+    candidate.views.length === ids.length &&
+    candidate.views.every((view, index) => {
+      if (typeof view !== "object" || view === null) return false;
+      const item = /** @type {Record<string, unknown>} */ (view);
+      return (
+        item.id === ids[index] &&
+        typeof item.label === "string" &&
+        typeof item.tile_version === "string" &&
+        Array.isArray(item.iso_bounds) &&
+        item.iso_bounds.length === 4 &&
+        item.iso_bounds.every(Number.isFinite) &&
+        Array.isArray(item.landmarks) &&
+        item.landmarks.every(isLandmark) &&
+        (item.city_hall === null ||
+          (Array.isArray(item.city_hall) &&
+            item.city_hall.length === 2 &&
+            item.city_hall.every(Number.isFinite)))
+      );
+    })
   );
 }
 

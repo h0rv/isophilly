@@ -6,7 +6,7 @@ use tiny_skia::Pixmap;
 use crate::{
     mesh_texture::MeshTextureSource,
     projection::Projection,
-    world::{MeshFace, TexturedFace, view_depth},
+    world::{MeshFace, TexturedFace},
 };
 
 const TILE_SIZE: usize = 256;
@@ -74,7 +74,7 @@ impl Rasterizer<'_, '_> {
             Vertex {
                 x: screen.0,
                 y: screen.1,
-                depth: view_depth(x, y, z),
+                depth: self.projection.view.depth(x, y, z),
                 u: uvs[index].0,
                 v: uvs[index].1,
             }

@@ -1,9 +1,29 @@
 # Research: deterministic isometric Philadelphia
 
-Research updated: 2026-08-29. This is deliberately a **data-and-rendering**
+Research updated: 2026-08-30. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
+
+For the first public release, default to the fully photographed 2015 Center
+City extent and pre-render four 90-degree orientations. Keep the citywide scene
+behind an explicit toggle and describe it as illustrated outside photographed
+coverage. This is an honest, self-hosted approximation of orbiting that reuses
+the existing deterministic renderer and stays inside static-hosting limits.
+Continuous 360-degree orbit requires live 3-D geometry; nadir orthophotography
+has only a top view and cannot reveal missing facades.
+
+If continuous orbit becomes a product requirement, the lowest-risk hosted
+experiment is an opt-in, lazy-loaded
+[Google Maps JavaScript 3D map](https://developers.google.com/maps/documentation/javascript/3d-map-overview),
+not an offline export of Google tiles. It supports heading, tilt, camera motion,
+and independent glTF overlays. Google’s current
+[Map Tiles policies](https://developers.google.com/maps/documentation/tile/policies)
+prohibit the prefetching, persistent storage, offline use, extraction, and
+machine analysis that an Isometric NYC-style download-and-regenerate pipeline
+would require. Do not spend on or integrate that path until Philadelphia
+coverage, key restrictions, quotas, attribution, and a rights-cleared Rocky
+model have been validated in a small opt-in prototype.
 
 Use the official 2015 Center City I3S scene for detailed architecture and
 facade textures. Across the rest of Philadelphia, extrude official City

@@ -19,6 +19,7 @@ STATIC_FILES = ("index.html", "app.js", "city-overlay.js", "neighborhoods.json",
 @dataclass(frozen=True, slots=True)
 class Scene:
     tile_version: str
+    rich_versions: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,26 @@ def parse_scene(path: Path) -> Scene:
     tile_version = raw.get("tile_version")
     if not isinstance(tile_version, str) or TILE_VERSION.fullmatch(tile_version) is None:
         raise ValueError("scene manifest has an invalid tile version")
-    return Scene(tile_version)
+    rich = raw.get("rich")
+    if not isinstance(rich, dict) or not isinstance(rich.get("views"), list):
+        raise ValueError("scene manifest has no rich views")
+    rich_versions: list[tuple[str, str]] = []
+    expected_ids = ("se", "sw", "nw", "ne")
+    for expected_id, view in zip(expected_ids, rich["views"], strict=True):
+        if not isinstance(view, dict):
+            raise ValueError("scene manifest has an invalid rich view")
+        view_id = view.get("id")
+        version = view.get("tile_version")
+        if (
+            view_id != expected_id
+            or not isinstance(version, str)
+            or TILE_VERSION.fullmatch(version) is None
+        ):
+            raise ValueError("scene manifest has an invalid rich view")
+        rich_versions.append((expected_id, version))
+    if len(rich_versions) != len(expected_ids):
+        raise ValueError("scene manifest must have four rich views")
+    return Scene(tile_version, tuple(rich_versions))
 
 
 def parse_inventory(path: Path) -> tuple[Tile, ...]:
@@ -132,6 +152,25 @@ def export_site(project_root: Path, output: Path) -> tuple[int, int]:
             source = tile_root / tile.relative_path
             verify_tile(source, tile)
             link_or_copy(source, temporary / "tiles" / tile.relative_path)
+        for view, version in scene.rich_versions:
+            rich_root = project_root / "data/tiles" / version
+            if not (rich_root / ".complete").is_file():
+                raise ValueError(f"rich {view} tile pyramid is incomplete")
+            rich_tiles = parse_inventory(rich_root / ".inventory")
+            rich_output = temporary / "rich" / view
+            rich_output.mkdir(parents=True, exist_ok=True)
+            write_json(
+                rich_output / "coverage.json",
+                {
+                    "schema_version": 1,
+                    "tile_version": version,
+                    "tiles": [tile.key for tile in rich_tiles],
+                },
+            )
+            for tile in rich_tiles:
+                source = rich_root / tile.relative_path
+                verify_tile(source, tile)
+                link_or_copy(source, rich_output / "tiles" / tile.relative_path)
 
         assets = [path for path in temporary.rglob("*") if path.is_file()]
         largest = max(path.stat().st_size for path in assets)

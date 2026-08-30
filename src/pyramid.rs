@@ -12,13 +12,16 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     mesh_texture::MeshTextureSource,
-    render::render_tile,
+    render::{render_rich_tile, render_tile},
     texture::{AerialSource, AerialTile},
     tile_codec::{EXTENSION, encode_image},
-    world::World,
+    world::{View, World},
 };
 
 pub const ART_ZOOM: u8 = 8;
+// The detailed extent is much tighter than the city bounds, so z4 stays in the
+// same resolution class as citywide z8 while keeping four views hostable.
+pub const RICH_ART_ZOOM: u8 = 4;
 const TILE_SIZE: u32 = 256;
 const COMPLETE_FILE: &str = ".complete";
 const INVENTORY_FILE: &str = ".inventory";
@@ -46,6 +49,37 @@ pub fn build(
     write_inventory(root)?;
     fs::write(root.join(COMPLETE_FILE), b"complete\n")?;
     println!("tile pyramid complete");
+    Ok(())
+}
+
+pub fn build_rich(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    view: View,
+    root: &Path,
+) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    fs::remove_file(root.join(COMPLETE_FILE)).or_else(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })?;
+    let mut changed = render_rich_leaves(world, aerial, mesh_textures, view, root)?;
+    for z in (0..RICH_ART_ZOOM).rev() {
+        changed = derive_level(root, z, &changed)?;
+        println!(
+            "built rich {} z{z} from z{}: {} written",
+            view.id(),
+            z + 1,
+            changed.len()
+        );
+    }
+    write_inventory(root)?;
+    fs::write(root.join(COMPLETE_FILE), b"complete\n")?;
+    println!("rich {} tile pyramid complete", view.id());
     Ok(())
 }
 
@@ -230,6 +264,61 @@ fn render_leaves(
     Ok(changed)
 }
 
+fn render_rich_leaves(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    view: View,
+    root: &Path,
+) -> io::Result<Vec<u32>> {
+    let rich_bounds = world
+        .rich_bounds(view)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "world has no rich mesh"))?;
+    let count = 1_u32 << RICH_ART_ZOOM;
+    // Render every ground tile inside the compact detailed extent. Omitting
+    // mesh-free tiles creates hard beige quadrants while panning or rotating.
+    let mut tiles: Vec<u32> = (0..count * count).collect();
+    tiles.par_sort_unstable_by_key(|index| morton_code(index % count, index / count));
+    println!(
+        "rich {} z{RICH_ART_ZOOM} contains {} tiles",
+        view.id(),
+        tiles.len()
+    );
+    let started = Instant::now();
+    let rendered = AtomicUsize::new(0);
+    let skipped = AtomicUsize::new(0);
+    let builder = RichLeafBuilder {
+        world,
+        aerial,
+        mesh_textures,
+        view,
+        rich_bounds,
+        root,
+        count,
+        rendered: &rendered,
+        skipped: &skipped,
+        started,
+    };
+    let changed = tiles
+        .into_par_iter()
+        .map(|index| {
+            builder
+                .render(index)
+                .map(|written| written.then_some(index))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    println!(
+        "built rich {} z{RICH_ART_ZOOM}: {} rendered, {} reused",
+        view.id(),
+        rendered.load(Ordering::Relaxed),
+        skipped.load(Ordering::Relaxed)
+    );
+    Ok(changed)
+}
+
 fn morton_code(x: u32, y: u32) -> u32 {
     let mut code = 0;
     for bit in 0..16 {
@@ -269,6 +358,46 @@ impl LeafBuilder<'_> {
             let seconds = self.started.elapsed().as_secs_f64().max(0.001);
             println!(
                 "rendered {done} new z{ART_ZOOM} tiles ({:.1}/s)",
+                done as f64 / seconds
+            );
+        }
+        Ok(true)
+    }
+}
+
+struct RichLeafBuilder<'a> {
+    world: &'a World,
+    aerial: &'a AerialSource,
+    mesh_textures: &'a MeshTextureSource,
+    view: View,
+    rich_bounds: crate::world::Bounds,
+    root: &'a Path,
+    count: u32,
+    rendered: &'a AtomicUsize,
+    skipped: &'a AtomicUsize,
+    started: Instant,
+}
+
+impl RichLeafBuilder<'_> {
+    fn render(&self, index: u32) -> io::Result<bool> {
+        let x = index % self.count;
+        let y = index / self.count;
+        let path = tile_path(self.root, RICH_ART_ZOOM, x, y);
+        if valid_tile(&path)? {
+            self.skipped.fetch_add(1, Ordering::Relaxed);
+            return Ok(false);
+        }
+        let bounds = self.rich_bounds.tile(RICH_ART_ZOOM, x, y);
+        let source_bounds = bounds.ground_source_bounds_for(self.view);
+        let aerial = AerialTile::for_source_bounds(self.aerial, source_bounds)?;
+        let image = render_rich_tile(self.world, &aerial, self.mesh_textures, self.view, bounds)?;
+        write_atomic(&path, &image)?;
+        let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
+        if done.is_multiple_of(128) {
+            let seconds = self.started.elapsed().as_secs_f64().max(0.001);
+            println!(
+                "rendered {done} rich {} z{RICH_ART_ZOOM} tiles ({:.1}/s)",
+                self.view.id(),
                 done as f64 / seconds
             );
         }

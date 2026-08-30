@@ -5,8 +5,10 @@ See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data prove
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
 scene, the legacy 2008/09 downtown and stadium-area textured models, and 2025
-City aerial photography. Explore the whole city in a browser, from the regional
-silhouette to individual buildings.
+City aerial photography. The launch view stays inside the strongest Center City
+source and offers four prebuilt 90-degree orientations. A toggle opens the
+citywide illustrated overview without implying that its aerial-derived walls
+are photographed facades.
 
 The expensive geospatial import happens once in Python. A Rust prebuilder loads
 that result and renders lossless WebP tiles in parallel. The small HTTP service
@@ -52,6 +54,12 @@ The server only reads z0 through z8 from `data/tiles/`. At closer view levels,
 the browser magnifies the canonical z8 pixels with nearest-neighbor sampling.
 It does not switch to another renderer or replace textures with plain geometry.
 
+Center City has four separate z0 through z4 pyramids. Its geographic extent is
+small enough that z4 stays in the same resolution class as the citywide z8 artwork.
+The browser permits one additional nearest-neighbor zoom level and caps there,
+so the launch view stays crisp. Rotation switches immutable pyramids; it never
+reprojects raster tiles in the browser or claims continuous 360-degree motion.
+
 Aerial crops come from the native three-inch 2025 PASDA service. The renderer
 divides EPSG:32129 into fixed 1,536 metre cells, and each cell contains 2,048 by 2,048
 pixels. Every output tile samples the same source pixel grid, so tile borders
@@ -86,7 +94,7 @@ uv run --locked poe static-dry-run
 uv run --locked poe static-preview
 ```
 
-The current export has 12,344 files and uses 615.5 MiB. Its largest file is
+The current export has 13,913 files and uses 885.5 MiB. Its largest file is
 about 126 KiB. The exporter rejects builds that exceed the Cloudflare Free plan
 limits of 20,000 files or 25 MiB per file. Static asset requests and storage do
 not incur a charge. See the official [Static Assets limits and
@@ -104,6 +112,13 @@ npm ci
 uv run --locked poe check
 uv run --locked poe visual
 ```
+
+The visual task is the repeatable browser release gate. It starts the local
+server, captures the citywide audit views plus all four Center City
+orientations, verifies Rocky in every orientation, exercises rotation and
+keyboard navigation at a 390-pixel mobile viewport, checks tile settlement and
+response policy, and writes screenshots plus a JSON timing report under
+`artifacts/visual/`.
 
 Install a current Node.js LTS release and
 [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) (`cargo install

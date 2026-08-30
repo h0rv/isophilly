@@ -1,6 +1,12 @@
 /tiles/*
   Cache-Control: public, max-age=31536000, immutable
 
+/rich/*/tiles/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/rich/*/coverage.json
+  Cache-Control: no-store
+
 /meta
   Cache-Control: no-store
 

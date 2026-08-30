@@ -34,16 +34,27 @@ class StaticExportTests(unittest.TestCase):
             digest = hashlib.sha256(tile_bytes).hexdigest()
             (tile_root / ".inventory").write_text(f"0/0/0/{len(tile_bytes)}/{digest}\n")
             current = root / "data/tiles/current.json"
-            current.write_text(json.dumps({"tile_version": version}))
+            rich_views = []
+            for view in ("se", "sw", "nw", "ne"):
+                rich_version = f"{version}-rich-{view}"
+                rich_root = root / "data/tiles" / rich_version
+                rich_tile = rich_root / "0/0/0.webp"
+                rich_tile.parent.mkdir(parents=True)
+                rich_tile.write_bytes(tile_bytes)
+                (rich_root / ".complete").write_text("complete\n")
+                (rich_root / ".inventory").write_text(f"0/0/0/{len(tile_bytes)}/{digest}\n")
+                rich_views.append({"id": view, "tile_version": rich_version})
+            current.write_text(json.dumps({"tile_version": version, "rich": {"views": rich_views}}))
 
             output = root / "dist"
             files, _ = export_site(root, output)
 
-            self.assertEqual(files, 8)
+            self.assertEqual(files, 16)
             self.assertEqual((output / "tiles/0/0/0.webp").read_bytes(), tile_bytes)
             coverage = json.loads((output / "coverage.json").read_text())
             self.assertEqual(coverage["tile_version"], version)
             self.assertEqual(coverage["tiles"], ["0/0/0"])
+            self.assertEqual((output / "rich/se/tiles/0/0/0.webp").read_bytes(), tile_bytes)
 
     def test_rejects_inventory_coordinates_outside_zoom(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

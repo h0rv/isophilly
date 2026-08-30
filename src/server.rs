@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::HashMap, fs::OpenOptions, io, path::PathBuf, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -27,7 +27,14 @@ pub(crate) struct AppState {
     tile_dir: PathBuf,
     tile_inventory: Arc<TileInventory>,
     coverage_json: Arc<Vec<u8>>,
+    rich_tiles: Arc<HashMap<String, RichTiles>>,
     blank_tile: Arc<Vec<u8>>,
+}
+
+struct RichTiles {
+    tile_dir: PathBuf,
+    inventory: TileInventory,
+    coverage_json: Vec<u8>,
 }
 
 #[derive(Serialize)]
@@ -56,11 +63,34 @@ pub async fn serve(port: u16) -> io::Result<()> {
         tiles: tile_inventory.tile_keys(),
     })
     .map_err(io::Error::other)?;
+    let rich_tiles = scene
+        .rich_views()
+        .iter()
+        .map(|view| {
+            let tile_dir = tile_cache_dir(view.tile_version());
+            let inventory = pyramid::read_inventory(&tile_dir)?;
+            let coverage_json = serde_json::to_vec(&TileCoverage {
+                schema_version: 1,
+                tile_version: view.tile_version().to_owned(),
+                tiles: inventory.tile_keys(),
+            })
+            .map_err(io::Error::other)?;
+            Ok((
+                view.id().to_owned(),
+                RichTiles {
+                    tile_dir,
+                    inventory,
+                    coverage_json,
+                },
+            ))
+        })
+        .collect::<io::Result<HashMap<_, _>>>()?;
     let state = AppState {
         scene,
         tile_dir,
         tile_inventory,
         coverage_json: Arc::new(coverage_json),
+        rich_tiles: Arc::new(rich_tiles),
         blank_tile: Arc::new(render_blank_tile()?),
     };
     let app = Router::new()
@@ -70,7 +100,9 @@ pub async fn serve(port: u16) -> io::Result<()> {
         .route("/neighborhoods.json", get(neighborhoods))
         .route("/meta", get(meta))
         .route("/coverage.json", get(coverage))
+        .route("/rich/{view}/coverage.json", get(rich_coverage))
         .route("/tiles/{z}/{x}/{y}", get(tile))
+        .route("/rich/{view}/tiles/{z}/{x}/{y}", get(rich_tile))
         .with_state(state)
         .layer(
             TraceLayer::new_for_http()
@@ -98,23 +130,34 @@ pub fn prebuild(
     build_lock.try_lock().map_err(|error| {
         io::Error::other(format!("another prebuild is already running: {error}"))
     })?;
-    if prebuild_is_complete(&world.world_sha256) {
-        return Ok(());
-    }
-
     let base_dir = tile_cache_dir(&base_version);
-    if pyramid::validate_complete(&base_dir).is_ok() {
-        Scene::from_world(world, base_version)?.write_current()?;
-        println!("published existing tile pyramid");
-        return Ok(());
+    let tile_version = if pyramid::validate_complete(&base_dir).is_ok() {
+        base_version
+    } else {
+        let tile_version = available_tile_version(&base_version)?;
+        let tile_dir = tile_cache_dir(&tile_version);
+        let staging = tile_root.join(format!(".{tile_version}.building"));
+        pyramid::build(world, aerial, mesh_textures, &staging)?;
+        std::fs::rename(&staging, &tile_dir)?;
+        tile_version
+    };
+    let mut rich_versions = Vec::with_capacity(crate::world::View::ALL.len());
+    for view in crate::world::View::ALL {
+        let rich_base = rich_tile_version(&tile_version, view);
+        let rich_dir = tile_cache_dir(&rich_base);
+        let rich_version = if pyramid::validate_complete(&rich_dir).is_ok() {
+            rich_base
+        } else {
+            let rich_version = available_tile_version(&rich_base)?;
+            let rich_dir = tile_cache_dir(&rich_version);
+            let staging = tile_root.join(format!(".{rich_version}.building"));
+            pyramid::build_rich(world, aerial, mesh_textures, view, &staging)?;
+            std::fs::rename(&staging, &rich_dir)?;
+            rich_version
+        };
+        rich_versions.push((view, rich_version));
     }
-
-    let tile_version = available_tile_version(&base_version)?;
-    let tile_dir = tile_cache_dir(&tile_version);
-    let staging = tile_root.join(format!(".{tile_version}.building"));
-    pyramid::build(world, aerial, mesh_textures, &staging)?;
-    std::fs::rename(&staging, &tile_dir)?;
-    let scene = Scene::from_world(world, tile_version)?;
+    let scene = Scene::from_world(world, tile_version, &rich_versions)?;
     scene.write_current()
 }
 
@@ -126,6 +169,18 @@ pub fn prebuild_is_complete(world_sha256: &[u8; 32]) -> bool {
     if !current.matches_world(world_sha256)
         || !is_generation_of(&current.tile_version, &base_version)
         || pyramid::validate_complete(&tile_cache_dir(&current.tile_version)).is_err()
+        || current
+            .rich_views()
+            .iter()
+            .zip(crate::world::View::ALL)
+            .any(|(rich, view)| {
+                let expected = rich_tile_version(&current.tile_version, view);
+                !is_generation_of(rich.tile_version(), &expected)
+            })
+        || current
+            .rich_views()
+            .iter()
+            .any(|view| pyramid::validate_complete(&tile_cache_dir(view.tile_version())).is_err())
     {
         return false;
     }
@@ -185,11 +240,48 @@ async fn coverage(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
+async fn rich_coverage(
+    State(state): State<AppState>,
+    AxumPath(view): AxumPath<String>,
+) -> Response {
+    let Some(tiles) = state.rich_tiles.get(&view) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        tiles.coverage_json.clone(),
+    )
+        .into_response()
+}
+
 async fn tile(
     State(state): State<AppState>,
     AxumPath((z, x, y)): AxumPath<(u8, u32, String)>,
 ) -> Response {
-    let started = Instant::now();
+    serve_tile(
+        &state.tile_dir,
+        &state.tile_inventory,
+        &state.blank_tile,
+        z,
+        x,
+        &y,
+        Instant::now(),
+    )
+    .await
+}
+
+async fn serve_tile(
+    tile_dir: &std::path::Path,
+    tile_inventory: &TileInventory,
+    blank_tile: &[u8],
+    z: u8,
+    x: u32,
+    y: &str,
+    started: Instant,
+) -> Response {
     let Some(y) = y
         .strip_suffix(EXTENSION)
         .and_then(|value| value.strip_suffix('.'))
@@ -200,13 +292,13 @@ async fn tile(
     if z > ART_ZOOM || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = tile_path(&state.tile_dir, z, x, y);
-    let expected_bytes = state.tile_inventory.expected_bytes(z, x, y);
+    let path = tile_path(tile_dir, z, x, y);
+    let expected_bytes = tile_inventory.expected_bytes(z, x, y);
     if expected_bytes.is_none() {
-        return logged_image(state.blank_tile.as_ref().clone(), "empty", z, x, y, started);
+        return logged_image(blank_tile.to_vec(), "empty", z, x, y, started);
     }
     match tokio::fs::read(&path).await {
-        Ok(image) if state.tile_inventory.matches(z, x, y, &image) => {
+        Ok(image) if tile_inventory.matches(z, x, y, &image) => {
             logged_image(image, "disk", z, x, y, started)
         }
         Ok(image) => {
@@ -229,6 +321,26 @@ async fn tile(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+async fn rich_tile(
+    State(state): State<AppState>,
+    AxumPath((view, z, x, y)): AxumPath<(String, u8, u32, String)>,
+) -> Response {
+    let started = Instant::now();
+    let Some(tiles) = state.rich_tiles.get(&view) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    serve_tile(
+        &tiles.tile_dir,
+        &tiles.inventory,
+        &state.blank_tile,
+        z,
+        x,
+        &y,
+        started,
+    )
+    .await
 }
 
 fn logged_image(
@@ -270,6 +382,14 @@ fn tile_version_for_digest(world_sha256: &[u8; 32]) -> String {
     format!("{PYRAMID_VERSION}-{suffix}")
 }
 
+fn rich_tile_version(tile_version: &str, view: crate::world::View) -> String {
+    format!(
+        "{tile_version}-rich-{}-z{}-full",
+        view.id(),
+        pyramid::RICH_ART_ZOOM
+    )
+}
+
 fn is_generation_of(candidate: &str, base: &str) -> bool {
     candidate == base
         || candidate
@@ -304,7 +424,8 @@ fn tile_cache_dir(tile_version: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::is_generation_of;
+    use super::{is_generation_of, rich_tile_version};
+    use crate::world::View;
 
     #[test]
     fn tile_generations_are_exact() {
@@ -312,5 +433,13 @@ mod tests {
         assert!(is_generation_of("v1-abc-r2", "v1-abc"));
         assert!(!is_generation_of("v1-abc-r", "v1-abc"));
         assert!(!is_generation_of("v1-abcd", "v1-abc"));
+    }
+
+    #[test]
+    fn rich_tile_versions_include_view_resolution_and_full_ground() {
+        assert_eq!(
+            rich_tile_version("v1-abc", View::NorthWest),
+            "v1-abc-rich-nw-z4-full"
+        );
     }
 }

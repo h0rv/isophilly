@@ -24,11 +24,14 @@ impl Bounds {
         self.max_y - self.min_y
     }
     pub fn isometric(self, max_height: f32) -> Self {
+        self.projected(max_height, View::SouthEast)
+    }
+    pub fn projected(self, max_height: f32, view: View) -> Self {
         let corners = [
-            isometric(self.min_x, self.min_y, 0.0),
-            isometric(self.min_x, self.max_y, 0.0),
-            isometric(self.max_x, self.min_y, 0.0),
-            isometric(self.max_x, self.max_y, 0.0),
+            view.project(self.min_x, self.min_y, 0.0),
+            view.project(self.min_x, self.max_y, 0.0),
+            view.project(self.max_x, self.min_y, 0.0),
+            view.project(self.max_x, self.max_y, 0.0),
         ];
         Self {
             min_x: corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
@@ -67,11 +70,14 @@ impl Bounds {
         self.max_y = self.max_y.max(other.max_y);
     }
     pub fn ground_source_bounds(self) -> Self {
+        self.ground_source_bounds_for(View::SouthEast)
+    }
+    pub fn ground_source_bounds_for(self, view: View) -> Self {
         let corners = [
-            inverse_isometric(self.min_x, self.min_y),
-            inverse_isometric(self.max_x, self.min_y),
-            inverse_isometric(self.max_x, self.max_y),
-            inverse_isometric(self.min_x, self.max_y),
+            view.inverse(self.min_x, self.min_y),
+            view.inverse(self.max_x, self.min_y),
+            view.inverse(self.max_x, self.max_y),
+            view.inverse(self.min_x, self.max_y),
         ];
         Self {
             min_x: corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
@@ -87,12 +93,76 @@ impl Bounds {
         }
     }
     pub fn source_envelope(self, max_height: f32) -> AABB<[f32; 2]> {
-        let ground = self.ground_source_bounds();
+        self.source_envelope_for(max_height, View::SouthEast)
+    }
+    pub fn source_envelope_for(self, max_height: f32, view: View) -> AABB<[f32; 2]> {
+        let ground = self.ground_source_bounds_for(view);
         let height_margin = max_height * 1.2;
         AABB::from_corners(
             [ground.min_x - height_margin, ground.min_y - height_margin],
             [ground.max_x + height_margin, ground.max_y + height_margin],
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum View {
+    SouthEast,
+    SouthWest,
+    NorthWest,
+    NorthEast,
+}
+
+impl View {
+    pub const ALL: [Self; 4] = [
+        Self::SouthEast,
+        Self::SouthWest,
+        Self::NorthWest,
+        Self::NorthEast,
+    ];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::SouthEast => "se",
+            Self::SouthWest => "sw",
+            Self::NorthWest => "nw",
+            Self::NorthEast => "ne",
+        }
+    }
+
+    pub fn project(self, x: f32, y: f32, height: f32) -> (f32, f32) {
+        let broad_east = BROAD_NORTH_NORTH.mul_add(x, -(BROAD_NORTH_EAST * y));
+        let broad_north = BROAD_NORTH_EAST.mul_add(x, BROAD_NORTH_NORTH * y);
+        let (view_east, view_north) = match self {
+            Self::SouthEast => (broad_east, broad_north),
+            Self::SouthWest => (broad_north, -broad_east),
+            Self::NorthWest => (-broad_east, -broad_north),
+            Self::NorthEast => (-broad_north, broad_east),
+        };
+        (
+            view_east + view_north,
+            (view_east - view_north).mul_add(0.5, -height),
+        )
+    }
+
+    pub fn inverse(self, x: f32, y: f32) -> (f32, f32) {
+        let view_east = (x + 2.0 * y) * 0.5;
+        let view_north = (x - 2.0 * y) * 0.5;
+        let (broad_east, broad_north) = match self {
+            Self::SouthEast => (view_east, view_north),
+            Self::SouthWest => (-view_north, view_east),
+            Self::NorthWest => (-view_east, -view_north),
+            Self::NorthEast => (view_north, -view_east),
+        };
+        (
+            BROAD_NORTH_NORTH.mul_add(broad_east, BROAD_NORTH_EAST * broad_north),
+            (-BROAD_NORTH_EAST).mul_add(broad_east, BROAD_NORTH_NORTH * broad_north),
+        )
+    }
+
+    pub fn depth(self, x: f32, y: f32, height: f32) -> f32 {
+        let projected = self.project(x, y, 0.0);
+        projected.1 + height
     }
 }
 
@@ -363,10 +433,12 @@ pub struct World {
     pub building_part_iso_tree: RTree<Indexed>,
     pub building_part_covered_by_mesh: Vec<bool>,
     pub mesh_face_tree: RTree<Indexed>,
+    pub mesh_face_source_tree: RTree<Indexed>,
     pub city_tree: RTree<Indexed>,
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
+    pub rich_source_bounds: Option<Bounds>,
     pub max_height: f32,
     pub world_sha256: [u8; 32],
 }
@@ -401,6 +473,10 @@ impl World {
     }
 
     pub fn city_hall_focus(&self) -> Option<[f32; 2]> {
+        self.city_hall_focus_for(View::SouthEast)
+    }
+
+    pub fn city_hall_focus_for(&self, view: View) -> Option<[f32; 2]> {
         const CITY_HALL: (f32, f32) = (820_994.25, 71_994.46);
         self.building_meshes
             .iter()
@@ -410,9 +486,14 @@ impl World {
             })
             .map(|mesh| mesh.highest_point)
             .map(|(x, y, z)| {
-                let point = isometric(x, y, z);
+                let point = view.project(x, y, z);
                 [point.0, point.1]
             })
+    }
+
+    pub fn rich_bounds(&self, view: View) -> Option<Bounds> {
+        self.rich_source_bounds
+            .map(|bounds| bounds.projected(self.max_height, view))
     }
 }
 
@@ -567,6 +648,14 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let building_source_tree = index_source_buildings(&buildings);
     let building_part_iso_tree = index_building_parts(&building_parts);
     let building_mesh_tree = index_building_meshes(&building_meshes);
+    let rich_source_bounds = building_meshes
+        .iter()
+        .filter(|mesh| mesh.texture_id < 1_000_000)
+        .map(|mesh| mesh.footprint.bounds)
+        .reduce(|mut bounds, next| {
+            bounds.include(next);
+            bounds
+        });
     let building_covered_by_mesh = buildings
         .iter()
         .map(|building| {
@@ -601,6 +690,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         building_part_iso_tree,
         building_part_covered_by_mesh,
         mesh_face_tree: index_mesh_faces(&mesh_faces),
+        mesh_face_source_tree: index_mesh_faces_in_source(&mesh_faces),
         city_tree: index_rings(&city),
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
@@ -614,6 +704,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         water,
         parks,
         iso_bounds: bounds.isometric(max_height),
+        rich_source_bounds,
         max_height,
         world_sha256,
     })
@@ -768,6 +859,29 @@ fn index_mesh_faces(faces: &[TexturedFace]) -> RTree<Indexed> {
             .collect(),
     )
 }
+fn index_mesh_faces_in_source(faces: &[TexturedFace]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        faces
+            .iter()
+            .enumerate()
+            .map(|(index, textured)| {
+                let mut bounds = Bounds {
+                    min_x: f32::INFINITY,
+                    min_y: f32::INFINITY,
+                    max_x: f32::NEG_INFINITY,
+                    max_y: f32::NEG_INFINITY,
+                };
+                for &(x, y, _) in &textured.face.points {
+                    bounds.min_x = bounds.min_x.min(x);
+                    bounds.min_y = bounds.min_y.min(y);
+                    bounds.max_x = bounds.max_x.max(x);
+                    bounds.max_y = bounds.max_y.max(y);
+                }
+                indexed(index, bounds)
+            })
+            .collect(),
+    )
+}
 fn index_rings(rings: &[Ring]) -> RTree<Indexed> {
     RTree::bulk_load(
         rings
@@ -898,26 +1012,15 @@ const BROAD_NORTH_EAST: f32 = 0.135_556_46;
 const BROAD_NORTH_NORTH: f32 = 0.990_769_6;
 
 pub fn isometric(x: f32, y: f32, height: f32) -> (f32, f32) {
-    let broad_east = BROAD_NORTH_NORTH.mul_add(x, -(BROAD_NORTH_EAST * y));
-    let broad_north = BROAD_NORTH_EAST.mul_add(x, BROAD_NORTH_NORTH * y);
-    (
-        broad_east + broad_north,
-        (broad_east - broad_north).mul_add(0.5, -height),
-    )
+    View::SouthEast.project(x, y, height)
 }
 
 pub fn inverse_isometric(x: f32, y: f32) -> (f32, f32) {
-    let broad_east = (x + 2.0 * y) * 0.5;
-    let broad_north = (x - 2.0 * y) * 0.5;
-    (
-        BROAD_NORTH_NORTH.mul_add(broad_east, BROAD_NORTH_EAST * broad_north),
-        (-BROAD_NORTH_EAST).mul_add(broad_east, BROAD_NORTH_NORTH * broad_north),
-    )
+    View::SouthEast.inverse(x, y)
 }
 
 pub fn view_depth(x: f32, y: f32, height: f32) -> f32 {
-    let projected = isometric(x, y, 0.0);
-    projected.1 + height
+    View::SouthEast.depth(x, y, height)
 }
 
 #[cfg(test)]
@@ -926,7 +1029,7 @@ mod tests {
 
     use super::{
         BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, BuildingPart, Cursor,
-        MESH_FACE_BYTES, Ring, RoofShape, detailed_buildings, index_source_buildings,
+        MESH_FACE_BYTES, Ring, RoofShape, View, detailed_buildings, index_source_buildings,
         inverse_isometric, isometric, mesh_covers_building, mesh_covers_part, parse_world,
     };
 
@@ -1010,6 +1113,16 @@ mod tests {
         let source = inverse_isometric(projected.0, projected.1);
         assert!((source.0 - 820_983.0).abs() < 0.1);
         assert!((source.1 - 71_996.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn every_rich_view_round_trips_on_the_ground() {
+        for view in View::ALL {
+            let projected = view.project(820_983.0, 71_996.0, 0.0);
+            let source = view.inverse(projected.0, projected.1);
+            assert!((source.0 - 820_983.0).abs() < 0.1, "{}", view.id());
+            assert!((source.1 - 71_996.0).abs() < 0.1, "{}", view.id());
+        }
     }
 
     #[test]
