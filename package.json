@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@biomejs/biome": "2.4.6",
+    "@biomejs/biome": "2.5.10",
     "playwright-core": "1.55.0",
     "typescript": "5.9.3",
     "wrangler": "4.127.1"
