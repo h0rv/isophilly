@@ -6,7 +6,7 @@ import unittest
 import httpx
 from pydantic import ValidationError
 
-from geo_philly_ingest.eagleview import (
+from isophilly_ingest.eagleview import (
     ORTHOMOSAIC_SEARCH_PATH,
     RANK_LOCATION_PATH,
     TOKEN_URL,
@@ -24,7 +24,7 @@ class EagleViewTests(unittest.TestCase):
             {
                 "EAGLE_VIEW_CLIENT_ID": "test-id",
                 "EAGLE_VIEW_CLIENT_SECRET": "test-secret",
-                "GEO_PHILLY_EAGLEVIEW_ENVIRONMENT": "production",
+                "ISOPHILLY_EAGLEVIEW_ENVIRONMENT": "production",
             }
         )
 

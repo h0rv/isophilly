@@ -7,8 +7,8 @@ from pathlib import Path
 
 from pyproj import Transformer
 
-from geo_philly_ingest.models import Building, BuildingMesh, MeshFace, Ring
-from geo_philly_ingest.quality import photographed_buildings, texture_coverage_report
+from isophilly_ingest.models import Building, BuildingMesh, MeshFace, Ring
+from isophilly_ingest.quality import photographed_buildings, texture_coverage_report
 
 
 def mesh(

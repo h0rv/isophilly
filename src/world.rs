@@ -379,7 +379,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     if cursor.take(8)? != MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "not geo-philly data",
+            "not isophilly data",
         ));
     }
     if cursor.u32()? != 6 {

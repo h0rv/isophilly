@@ -153,7 +153,7 @@ class EagleViewSettings(BaseSettings):
     client_secret: SecretStr = Field(validation_alias="EAGLE_VIEW_CLIENT_SECRET")
     environment: Environment = Field(
         default="sandbox",
-        validation_alias="GEO_PHILLY_EAGLEVIEW_ENVIRONMENT",
+        validation_alias="ISOPHILLY_EAGLEVIEW_ENVIRONMENT",
     )
 
     def access(self) -> EagleViewAccess:

@@ -4,20 +4,20 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const zooms = (process.env.GEO_PHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,10")
+const zooms = (process.env.ISOPHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,10")
   .split(",")
   .map((value) => Number.parseInt(value, 10));
 if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 10)) {
-  throw new Error(`invalid GEO_PHILLY_VISUAL_ZOOMS: ${process.env.GEO_PHILLY_VISUAL_ZOOMS}`);
+  throw new Error(`invalid ISOPHILLY_VISUAL_ZOOMS: ${process.env.ISOPHILLY_VISUAL_ZOOMS}`);
 }
 const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
-const port = Number.parseInt(process.env.GEO_PHILLY_VISUAL_PORT ?? "3107", 10);
-const tileTimeout = Number.parseInt(process.env.GEO_PHILLY_VISUAL_TIMEOUT ?? "180000", 10);
-const settleBudget = Number.parseInt(process.env.GEO_PHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
+const port = Number.parseInt(process.env.ISOPHILLY_VISUAL_PORT ?? "3107", 10);
+const tileTimeout = Number.parseInt(process.env.ISOPHILLY_VISUAL_TIMEOUT ?? "180000", 10);
+const settleBudget = Number.parseInt(process.env.ISOPHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
 const origin = `http://127.0.0.1:${port}`;
-const server = spawn("target/release/geo-philly", ["serve", "--port", String(port)], {
+const server = spawn("target/release/isophilly", ["serve", "--port", String(port)], {
   cwd: root,
-  env: { ...process.env, RUST_LOG: "geo_philly=warn,tower_http=warn" },
+  env: { ...process.env, RUST_LOG: "isophilly=warn,tower_http=warn" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOutput = "";
@@ -595,7 +595,7 @@ try {
     results.push(await capture(page, zoom));
     await page.close();
   }
-  if (process.env.GEO_PHILLY_VISUAL_SECONDARY !== "0") {
+  if (process.env.ISOPHILLY_VISUAL_SECONDARY !== "0") {
     const hall = /** @type {number[]} */ (meta.city_hall);
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     results.push(

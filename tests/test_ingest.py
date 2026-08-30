@@ -4,10 +4,10 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 
-from geo_philly_ingest.config import DEFAULT_HEIGHT_METERS
-from geo_philly_ingest.geometry import height_from_values
-from geo_philly_ingest.ingest import write_world
-from geo_philly_ingest.models import Bounds, Building, BuildingMesh, MeshFace
+from isophilly_ingest.config import DEFAULT_HEIGHT_METERS
+from isophilly_ingest.geometry import height_from_values
+from isophilly_ingest.ingest import write_world
+from isophilly_ingest.models import Bounds, Building, BuildingMesh, MeshFace
 
 
 class BoundsTests(unittest.TestCase):

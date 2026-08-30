@@ -1,4 +1,4 @@
-# geo-philly
+# IsoPhilly
 
 Build one detailed isometric scene of Philadelphia from public data. Present it
 as deterministic pixel art without generated imagery.

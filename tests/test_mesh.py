@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from geo_philly_ingest.mesh import (
+from isophilly_ingest.mesh import (
     MeshParseError,
     merge_mesh_sources,
     parse_geometry,
     texture_digest,
 )
-from geo_philly_ingest.models import BuildingMesh, MeshFace
+from isophilly_ingest.models import BuildingMesh, MeshFace
 
 
 def node(vertex_count: int = 3) -> dict[str, object]:
@@ -103,7 +103,7 @@ class I3SMeshTests(unittest.TestCase):
             (texture_dir / "1.jpg").write_bytes(b"first")
             (texture_dir / "2.jpg").write_bytes(b"second")
 
-            with patch("geo_philly_ingest.mesh.MESH_TEXTURE_DIR", texture_dir):
+            with patch("isophilly_ingest.mesh.MESH_TEXTURE_DIR", texture_dir):
                 forward = texture_digest([first, second])
                 reverse = texture_digest([second, first])
 

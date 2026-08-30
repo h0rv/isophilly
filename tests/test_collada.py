@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from geo_philly_ingest.collada import (
+from isophilly_ingest.collada import (
     LEGACY_DOWNTOWN,
     STADIUM,
     ColladaParseError,

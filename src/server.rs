@@ -78,7 +78,7 @@ pub async fn serve(port: u16) -> io::Result<()> {
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         );
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
-    println!("geo-philly http://127.0.0.1:{port}");
+    println!("IsoPhilly http://127.0.0.1:{port}");
     axum::serve(listener, app).await.map_err(io::Error::other)
 }
 

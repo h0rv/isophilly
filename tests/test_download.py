@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import httpx
 
-from geo_philly_ingest.config import Source
-from geo_philly_ingest.download import (
+from isophilly_ingest.config import Source
+from isophilly_ingest.download import (
     _cached_local_digest,
     _download,
     _download_with_client,
@@ -32,8 +32,8 @@ class DownloadTests(unittest.TestCase):
 
         with (
             TemporaryDirectory() as directory,
-            patch("geo_philly_ingest.download.RAW_DIR", Path(directory)),
-            patch("geo_philly_ingest.download.time.sleep") as sleep,
+            patch("isophilly_ingest.download.RAW_DIR", Path(directory)),
+            patch("isophilly_ingest.download.time.sleep") as sleep,
             httpx.Client(transport=httpx.MockTransport(handler)) as client,
         ):
             snapshot = _download_with_client(self.source, client)
@@ -55,8 +55,8 @@ class DownloadTests(unittest.TestCase):
         cached = root / f"test-data-{sha256[:12]}.bin"
         cached.write_bytes(payload)
         with (
-            patch("geo_philly_ingest.download.RAW_DIR", root),
-            patch("geo_philly_ingest.download.time.sleep"),
+            patch("isophilly_ingest.download.RAW_DIR", root),
+            patch("isophilly_ingest.download.time.sleep"),
             httpx.Client(transport=httpx.MockTransport(handler)) as client,
         ):
             snapshot = _download_with_client(self.source, client)
@@ -84,7 +84,7 @@ class DownloadTests(unittest.TestCase):
         cached = root / f"test-data-{sha256[:12]}.bin"
         cached.write_bytes(payload)
         with (
-            patch("geo_philly_ingest.download.RAW_DIR", root),
+            patch("isophilly_ingest.download.RAW_DIR", root),
             httpx.Client(transport=httpx.MockTransport(handler)) as client,
         ):
             snapshot = _download_with_client(source, client)
@@ -103,7 +103,7 @@ class DownloadTests(unittest.TestCase):
         request = httpx.Request("GET", self.source.url)
         response = httpx.Response(200, content=payload, request=request)
 
-        with patch("geo_philly_ingest.download.RAW_DIR", root):
+        with patch("isophilly_ingest.download.RAW_DIR", root):
             snapshot = _save_response(self.source, response)
 
         self.assertEqual(snapshot.path, destination)
@@ -127,8 +127,8 @@ class DownloadTests(unittest.TestCase):
         cached.write_bytes(payload)
 
         with (
-            patch("geo_philly_ingest.download.RAW_DIR", root),
-            patch("geo_philly_ingest.download.httpx.Client") as client,
+            patch("isophilly_ingest.download.RAW_DIR", root),
+            patch("isophilly_ingest.download.httpx.Client") as client,
         ):
             snapshot = _download(source)
 
@@ -142,7 +142,7 @@ class DownloadTests(unittest.TestCase):
         archive.write_bytes(b"verified archive")
 
         first = _cached_local_digest(archive)
-        with patch("geo_philly_ingest.download._digest") as digest:
+        with patch("isophilly_ingest.download._digest") as digest:
             second = _cached_local_digest(archive)
 
         self.assertEqual(first, second)

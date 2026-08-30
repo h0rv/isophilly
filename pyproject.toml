@@ -1,7 +1,7 @@
 [project]
-name = "geo-philly"
+name = "isophilly"
 version = "0.1.0"
-description = "geo-philly data ingest for the native tile server"
+description = "IsoPhilly data ingest for the native tile server"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -28,7 +28,7 @@ requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "geo_philly_ingest"
+module-name = "isophilly_ingest"
 
 [tool.ruff]
 line-length = 100
@@ -49,10 +49,10 @@ check-rust = { cmd = "bash -lc 'cargo fmt --check && cargo clippy --all-targets 
 check-web = { cmd = "npm run check", use_exec = true }
 audit = { cmd = "bash -lc 'uv audit --locked --preview-features audit-command && npm audit --audit-level=high && cargo deny check'", use_exec = true }
 check = { cmd = "bash -lc 'poe check-python && poe check-web && poe check-rust && poe audit'", use_exec = true }
-ingest = { cmd = "python -m geo_philly_ingest.ingest", use_exec = true }
+ingest = { cmd = "python -m isophilly_ingest.ingest", use_exec = true }
 neighborhoods = { cmd = "python scripts/build_neighborhoods.py", use_exec = true }
-eagleview-plan = { cmd = "python -m geo_philly_ingest.eagleview", use_exec = true }
-eagleview-smoke = { cmd = "python -m geo_philly_ingest.eagleview --smoke", use_exec = true }
+eagleview-plan = { cmd = "python -m isophilly_ingest.eagleview", use_exec = true }
+eagleview-smoke = { cmd = "python -m isophilly_ingest.eagleview --smoke", use_exec = true }
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
 static-export = { cmd = "python scripts/export_static.py", use_exec = true }

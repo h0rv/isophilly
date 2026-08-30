@@ -60,7 +60,7 @@ impl AerialSource {
         let dataset = AERIAL_DATASET;
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .user_agent("geo-philly/0.1 (public-data texture cache)")
+            .user_agent("isophilly/0.1 (public-data texture cache)")
             .build()
             .map_err(io::Error::other)?;
         let root = root.into();
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn cache_pruning_keeps_only_the_active_namespace() -> std::io::Result<()> {
         let root = std::env::temp_dir().join(format!(
-            "geo-philly-aerial-cache-test-{}",
+            "isophilly-aerial-cache-test-{}",
             std::process::id()
         ));
         let old = root.join("old-grid");
@@ -466,10 +466,8 @@ mod tests {
 
     #[test]
     fn active_cache_pruning_removes_orphan_parts() -> std::io::Result<()> {
-        let root = std::env::temp_dir().join(format!(
-            "geo-philly-aerial-part-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("isophilly-aerial-part-test-{}", std::process::id()));
         std::fs::create_dir_all(&root)?;
         let valid = root.join("tile.jpg");
         let orphan = root.join("tile.jpg.part-1-1");

@@ -49,7 +49,7 @@ async fn main() -> io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("geo_philly=info,tower_http=info")),
+                .unwrap_or_else(|_| EnvFilter::new("isophilly=info,tower_http=info")),
         )
         .compact()
         .init();

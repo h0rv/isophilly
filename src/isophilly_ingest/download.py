@@ -15,7 +15,7 @@ import httpx
 from .config import RAW_DIR, Source
 from .models import Snapshot
 
-USER_AGENT = "geo-philly/0.1 (public-data ingest)"
+USER_AGENT = "isophilly/0.1 (public-data ingest)"
 RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0)
 RETRYABLE_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 

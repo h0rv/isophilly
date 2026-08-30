@@ -132,7 +132,7 @@ def download() -> dict[str, object]:
             "returnGeometry": "true",
             "f": "geojson",
         },
-        headers={"User-Agent": "geo-philly neighborhood builder"},
+        headers={"User-Agent": "isophilly neighborhood builder"},
         timeout=60,
     )
     response.raise_for_status()

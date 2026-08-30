@@ -424,7 +424,7 @@ mod tests {
     fn parent_combines_available_children_and_fills_missing_quadrants()
     -> Result<(), Box<dyn std::error::Error>> {
         let root =
-            std::env::temp_dir().join(format!("geo-philly-pyramid-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("isophilly-pyramid-test-{}", std::process::id()));
         if root.exists() {
             fs::remove_dir_all(&root)?;
         }
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn dirty_child_rebuilds_only_its_existing_parent() -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
-            "geo-philly-pyramid-dirty-test-{}",
+            "isophilly-pyramid-dirty-test-{}",
             std::process::id()
         ));
         if root.exists() {
@@ -481,7 +481,7 @@ mod tests {
     fn inventory_distinguishes_expected_tiles_from_empty_space()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
-            "geo-philly-pyramid-inventory-test-{}",
+            "isophilly-pyramid-inventory-test-{}",
             std::process::id()
         ));
         if root.exists() {

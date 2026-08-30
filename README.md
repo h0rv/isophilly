@@ -1,4 +1,4 @@
-# geo-philly
+# IsoPhilly
 
 See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data provenance.
 

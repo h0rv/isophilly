@@ -17,7 +17,7 @@ errors, failed tile requests, blank canvases, uncovered parent gaps, or tiles
 that do not settle. It also checks an alternate Center City view, Rocky,
 Rittenhouse, Passyunk, the stadium complex, Manayunk, Northeast Philadelphia,
 West Philadelphia, basic controls, and repeated z8 requests. Set
-`GEO_PHILLY_VISUAL_ZOOMS` to a
+`ISOPHILLY_VISUAL_ZOOMS` to a
 comma-separated list when a change needs other levels.
 
 The server namespaces tiles by the renderer revision and the clean world's
