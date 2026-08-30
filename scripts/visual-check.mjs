@@ -21,8 +21,8 @@ const tileTimeout = Number.parseInt(process.env.ISOPHILLY_VISUAL_TIMEOUT ?? "180
 const settleBudget = Number.parseInt(process.env.ISOPHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
 const origin = `http://127.0.0.1:${port}`;
 
-/** @param {string} areaName @param {string} screenshotName */
-function localAreaCapture(areaName, screenshotName) {
+/** @param {string} areaName @param {string} screenshotName @param {string} [expectedLabel] */
+function localAreaCapture(areaName, screenshotName, expectedLabel = areaName) {
   const area = neighborhoodOverlay.features.find(
     (candidate) => candidate.kind === "local_area" && candidate.name === areaName,
   );
@@ -33,6 +33,22 @@ function localAreaCapture(areaName, screenshotName) {
     name: screenshotName,
     center: isometricLonLat(area.label[0], area.label[1]),
     localAreas: true,
+    expectedAreaLabel: expectedLabel,
+  };
+}
+
+/** @param {string} areaName @param {string} screenshotName */
+function planningAreaCapture(areaName, screenshotName) {
+  const area = neighborhoodOverlay.features.find(
+    (candidate) => candidate.kind === "planning_neighborhood" && candidate.name === areaName,
+  );
+  if (!Array.isArray(area?.label) || area.label.length !== 2) {
+    throw new Error(`planning-area smoke target is missing: ${areaName}`);
+  }
+  return {
+    name: screenshotName,
+    center: isometricLonLat(area.label[0], area.label[1]),
+    planningAreas: true,
     expectedAreaLabel: areaName,
   };
 }
@@ -332,7 +348,7 @@ async function waitForServer() {
 /**
  * @param {import("playwright-core").Page} page
  * @param {number} zoom
- * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", localAreas?: boolean, expectedAreaLabel?: string }} view
+ * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
   const started = performance.now();
@@ -403,9 +419,10 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   );
   const settledMs = performance.now() - started;
   const settledTileRequests = [...tileRequests];
-  if (view.localAreas === true) {
+  if (view.planningAreas === true) {
     await page.locator("#neighborhoods-toggle").click();
   }
+  if (view.localAreas === true) await page.locator("#local-areas-toggle").click();
   if (view.expectedAreaLabel !== undefined) {
     await page.waitForFunction(
       (expected) => {
@@ -449,6 +466,8 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       mode: element.dataset.mode,
       view: element.dataset.view,
       areaLabels: JSON.parse(element.dataset.areaLabels ?? "[]"),
+      planningAreas: JSON.parse(element.dataset.planningAreas ?? "[]"),
+      localAreas: JSON.parse(element.dataset.localAreas ?? "[]"),
       nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
       sampledColors: colors.size,
     };
@@ -456,6 +475,26 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   if (errors.length > 0) throw new Error(`z${zoom} browser errors:\n${errors.join("\n")}`);
   if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
+  }
+  if (view.planningAreas === true && canvas.planningAreas.length === 0) {
+    throw new Error(`${view.name} did not paint planning boundaries`);
+  }
+  if (view.planningAreas !== true && canvas.planningAreas.length !== 0) {
+    throw new Error(`${view.name} leaked planning boundaries`);
+  }
+  if (view.localAreas === true && canvas.localAreas.length === 0) {
+    throw new Error(`${view.name} did not paint local areas`);
+  }
+  if (view.localAreas !== true && canvas.localAreas.length !== 0) {
+    throw new Error(`${view.name} leaked local areas`);
+  }
+  if (
+    canvas.areaLabels.length > 24 ||
+    new Set(canvas.areaLabels).size !== canvas.areaLabels.length
+  ) {
+    throw new Error(
+      `${view.name} has noisy or duplicate labels: ${JSON.stringify(canvas.areaLabels)}`,
+    );
   }
   if (settledMs > settleBudget) {
     throw new Error(
@@ -563,6 +602,39 @@ async function interactions(browser, meta) {
   });
   await page.screenshot({ path: `${artifactDir}/mobile.png` });
 
+  await page.goto(`${origin}/?mode=city&z=8`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
+    timeout: tileTimeout,
+  });
+  const planningToggle = page.locator("#neighborhoods-toggle");
+  const localToggle = page.locator("#local-areas-toggle");
+  await localToggle.click();
+  await page.waitForFunction(
+    () => JSON.parse(document.querySelector("#map")?.dataset.localAreas ?? "[]").length > 0,
+  );
+  const localOnly = await canvas.evaluate((element) => ({
+    planning: JSON.parse(element.dataset.planningAreas ?? "[]").length,
+    local: JSON.parse(element.dataset.localAreas ?? "[]").length,
+  }));
+  if (localOnly.planning !== 0 || localOnly.local === 0) {
+    throw new Error(`local-area toggle is not independent: ${JSON.stringify(localOnly)}`);
+  }
+  await planningToggle.click();
+  await page.waitForFunction(
+    () => JSON.parse(document.querySelector("#map")?.dataset.planningAreas ?? "[]").length > 0,
+  );
+  await localToggle.click();
+  await page.waitForFunction(
+    () => JSON.parse(document.querySelector("#map")?.dataset.localAreas ?? "[]").length === 0,
+  );
+  const planningOnly = await canvas.evaluate((element) => ({
+    planning: JSON.parse(element.dataset.planningAreas ?? "[]").length,
+    local: JSON.parse(element.dataset.localAreas ?? "[]").length,
+  }));
+  if (planningOnly.planning === 0 || planningOnly.local !== 0) {
+    throw new Error(`planning toggle is not independent: ${JSON.stringify(planningOnly)}`);
+  }
+
   const landmarks = /** @type {{ name: string }[]} */ (meta.landmarks);
   if (!landmarks.some((landmark) => landmark.name === "Rocky")) {
     throw new Error("Rocky landmark is missing");
@@ -571,6 +643,7 @@ async function interactions(browser, meta) {
     viewport: [390, 844],
     controls,
     keyboardPan: true,
+    independentAreaToggles: true,
     defaultMode: "detailed",
     rotatedTo: "sw",
     prefetchedPanMs: Number(prefetchedPanMs.toFixed(1)),
@@ -706,12 +779,25 @@ try {
     await rockyPage.close();
     const neighborhoods = [
       { name: "rittenhouse", center: [985167.68, 310418.65] },
-      localAreaCapture("Italian Market", "local-south-italian-market"),
+      {
+        ...localAreaCapture(
+          "Reading Terminal & Convention Center",
+          "overlay-dense-center-city",
+          "Reading Terminal Market / Convention Center",
+        ),
+        planningAreas: true,
+      },
+      localAreaCapture("Italian Market", "overlay-italian-market"),
+      localAreaCapture("East Passyunk", "overlay-east-passyunk"),
       { name: "stadiums", center: [981156.04, 313684.68] },
-      localAreaCapture("Manayunk Main Street", "local-northwest-manayunk"),
-      localAreaCapture("Castor Avenue", "local-northeast-castor"),
+      localAreaCapture("Manayunk Main Street", "local-northwest-manayunk", "Main Street Manayunk"),
+      planningAreaCapture("Chestnut Hill", "overlay-sparse-chestnut-hill"),
       localAreaCapture("Africatown", "local-west-africatown"),
-      localAreaCapture("Fishtown Frankford Avenue", "local-river-wards-fishtown"),
+      localAreaCapture(
+        "Fishtown Frankford Avenue",
+        "overlay-fishtown-kensington",
+        "Frankford Avenue Arts Corridor",
+      ),
     ];
     for (const neighborhood of neighborhoods) {
       const neighborhoodPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });

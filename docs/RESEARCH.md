@@ -26,14 +26,20 @@ while the static server performs the same file reads.
 If continuous orbit becomes a product requirement, the lowest-risk hosted
 experiment is an opt-in, lazy-loaded
 [Google Maps JavaScript 3D map](https://developers.google.com/maps/documentation/javascript/3d-map-overview),
-not an offline export of Google tiles. It supports heading, tilt, camera motion,
-and independent glTF overlays. Google’s current
+not an offline export of Google tiles. It is technically viable for a live,
+continuously rotatable view and supports independent glTF overlays. Google
+currently bills that JavaScript route as an Immersive Maps map load: the first
+5,000 monthly loads are free, then the price is $7 per 1,000 through 100,000
+loads. Direct Map Tiles API Photorealistic 3D Tiles are a separate SKU with
+1,000 free root-tile requests, then $6 per 1,000 through 100,000
+([pricing](https://developers.google.com/maps/billing-and-pricing/pricing),
+[SKU details](https://developers.google.com/maps/billing-and-pricing/sku-details)).
+That is not viable under this project's saved-pixel requirement. Google's
 [Map Tiles policies](https://developers.google.com/maps/documentation/tile/policies)
-prohibit the prefetching, persistent storage, offline use, extraction, and
-machine analysis that an Isometric NYC-style download-and-regenerate pipeline
-would require. Do not spend on or integrate that path until Philadelphia
-coverage, key restrictions, quotas, attribution, and a rights-cleared Rocky
-model have been validated in a small opt-in prototype.
+prohibit prefetching, persistent or offline caching, image or machine analysis,
+and extraction into derived imagery or overlays. The default decision is no
+Google integration. Reconsider only if the product accepts live-only delivery,
+usage billing, required attribution, and no retained source pixels.
 
 Use the official 2015 Center City I3S scene for detailed architecture and
 facade textures. Across the rest of Philadelphia, extrude official City
@@ -103,7 +109,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Legacy downtown scene | [PASDA 2008 and 2009 downtown KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip) | 2,689 highest-detail models with photographed roofs and facades. It extends farther east, west, and south than the 2015 scene. | The smaller download is about 886 MB. Existing checkouts can reuse the retained 2.4 GB outer archive. | Import only `r0`, suppress overlap under the 2015 scene, and record the real 2008 and 2009 date. |
 | 1. Stadium scene | [PASDA 2008 stadium-area KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/Stadium%20Area%20Processed%20w%20LiDAR-KML.zip) | 814 highest-detail KML/COLLADA components with measured geometry and JPEG material textures. The 2008 source includes the since-demolished Spectrum. | 647 MB nested archive; output keeps 808 current components, 126,181 textured triangles, and about 84 MB of JPEGs. | Render through the same textured-mesh path as Center City; exclude the six Spectrum components and record the historical capture date. |
 | 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025 three-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
-| 2. Terrain/height | [2022 LiDAR/LAS catalog](https://opendataphilly.org/datasets/lidar-las-data/); [2022 DEM catalog/PASDA](https://www.pasda.psu.edu/uci/DataSummary.aspx?dataset=7152); [NOAA LAZ archive](https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/laz/geoid18/9848/index.html) | Citywide capture from Apr. 2022. Classified points can refine roof form and height; the DEM alone is only ground elevation. | The NOAA archive is about 93 GB across 752 LAZ files. A full default import would dwarf the current pipeline. | Keep optional and targeted. Use LAZ surface minus ground only where it materially improves a landmark or roof shape; do not impose a 93 GB first run. |
+| 2. Terrain/height | [2025 LiDAR full metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml); [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/) | Genuine citywide April 2025 classified LiDAR. LAS 1.4 point format 6 includes intensity but no RGB or NIR; one central sample measured about 62 returns/m². | 963 raw LAS files totaling 362.82 GiB. Full metadata lists access and use constraints as “None.” | Pilot only. Derive ground, surface, normalized height, roof planes, trees, and landmark geometry for three bounded areas before considering a bulk import. It cannot provide photographic facades. |
 | 3. Street facade reference | [KartaView photo API](https://kartaview.org/doc/photos), [license FAQ](https://kartaview.org/doc/faq) | Public crowdsourced photos expose position, heading, time, and image URLs under CC BY-SA 4.0. A Rittenhouse test found only three images within 500 m, from different years. | Coverage and camera pose are uneven. Correctly projecting a photo onto a visible wall also requires occlusion and attribution handling. | Useful future opt-in source, not a citywide default. Audit coverage before downloading, and never smear a nearby photo across an unmatched facade. |
 
 ### Citywide texture expansion
@@ -142,6 +148,41 @@ Ask `maps@phila.gov` for those source frames and written permission to publish
 irreversible rasterized texture tiles. The public
 [Pictometry viewer](https://pictometry.phila.gov/) is evidence that the imagery
 exists, not permission to scrape or redistribute it.
+
+### PASDA coverage audit
+
+PASDA has more useful geometry than the earlier source list showed, but no
+current public citywide multi-angle facade source. The decisive find is the
+[April 2025 Philadelphia LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
+and its [public LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/).
+The short PASDA catalog abstract is stale and says 2022; the full metadata and
+file inventory confirm a 2025 acquisition. The collection contains 963 LAS
+files totaling 362.82 GiB. It is LAS 1.4 point format 6, with classified points
+and intensity but no RGB or NIR. A sampled central tile contained about 62
+returns/m². The full metadata lists both access and use constraints as “None.”
+
+This point cloud can materially improve terrain, building heights, roof planes,
+tree masses, and detailed landmark geometry such as the Philadelphia Museum of
+Art steps. It cannot create photographic wall textures. The current public
+PASDA holdings still do not provide a modern, citywide set of calibrated
+multi-angle images or textured meshes for facades.
+
+Do not download all 362.82 GiB by default. First run one repeatable pilot over
+three contrasting areas: Center City towers (about 1.5 by 1.5 km), the Museum
+of Art/steps/Waterworks (about 0.8 by 0.8 km), and Port Richmond rowhouses
+(about 1 by 1 km). For each, retain the exact LAS tile list and checksums, build
+ground and surface rasters plus normalized heights, fit roof planes within City
+footprints, render all four headings, and compare at least 30 buildings with the
+current result. Only a clear visual improvement should authorize a citywide
+download.
+
+The [legacy 3D-model directory](https://www.pasda.psu.edu/download/philacity/data/3D_Models/)
+also includes 2010-era textured KML/COLLADA packages. The current pipeline
+already uses the strongest downtown and stadium material; other 2010 packages
+are suitable only for a bounded downtown experiment because their age and
+redistribution terms limit launch value. PASDA's separate 2010 raw nadir frame
+archive is roughly 1 TB, has no published frame positions, exterior orientation,
+or calibration, and shows little facade detail. It remains impractical.
 
 #### EagleView/Pictometry access
 
@@ -257,8 +298,10 @@ permission to publish derivatives.
 
 * Do not train image models or use satellite-to-pixel generation. It compromises
   geographic consistency, creates seam QA, and makes licensing/provenance harder.
-* Do not use Google 3-D Tiles as a production geometry/texture source; it is
-  neither the City’s authoritative geometry nor compatible with a simple,
-  independently redistributable deterministic pipeline.
+* Do not use Google's 3-D map products as a production geometry/texture source
+  under the saved-pixel requirement. Live-only Maps JavaScript 3-D and direct
+  Photorealistic 3D Tiles are technically viable at different prices, but their
+  policies prohibit the local, independently reproducible artifact required
+  here.
 * Do not make a browser fetch 546k footprints or citywide LiDAR at runtime.
   Pre-render the pyramid; retain the original vectors privately for rebuilds.

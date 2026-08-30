@@ -163,6 +163,45 @@ The server never loads `philly.bin` or renders a tile during a request.
 Prebuild does not delete old namespaces. A server that started before
 publication can continue serving its immutable old scene until it is restarted.
 
+## Audited future sources
+
+PASDA's [full April 2025 LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
+and [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/)
+confirm a citywide classified point cloud that is not yet part of ingest. The
+short PASDA catalog abstract incorrectly describes it as 2022. The actual
+collection is 963 LAS files totaling 362.82 GiB, in LAS 1.4 point format 6.
+It records intensity but no RGB or NIR; a sampled central tile measured about
+62 returns/m². The full metadata lists access and use constraints as “None.”
+
+This is a candidate geometry source for terrain, roofs, heights, trees, and
+landmark detail such as the Philadelphia Museum of Art steps. It is not a
+photographic facade source. No current public PASDA collection supplies
+citywide calibrated multi-angle facade imagery. Before any bulk download,
+evaluate only three pinned areas: Center City, the Museum of Art/Waterworks,
+and Port Richmond. Record source tiles and checksums, derive ground/surface and
+normalized-height products, render four headings, and compare at least 30
+buildings per area with the current scene.
+
+The remaining 2010 textured KML/COLLADA archives may support a bounded downtown
+experiment but are too old and have insufficiently clear redistribution terms
+for a default expansion. The roughly 1 TB raw nadir frame archive has no
+published positions, camera orientation, or calibration and is not an ingest
+candidate.
+
+Google's 3-D map products are viable only as live hosted views. The Maps
+JavaScript API 3-D map uses the Immersive Maps SKU: 5,000 free map loads per
+month, then $7 per 1,000 through 100,000. Direct Map Tiles API Photorealistic
+3D Tiles instead have 1,000 free root-tile requests, then cost $6 per 1,000
+through 100,000
+([pricing](https://developers.google.com/maps/billing-and-pricing/pricing),
+[SKU details](https://developers.google.com/maps/billing-and-pricing/sku-details)).
+Its [Map Tiles policies](https://developers.google.com/maps/documentation/tile/policies)
+prohibit the persistent/offline cache, prefetching, image or machine analysis,
+and extracted or derived imagery needed to save this project's source pixels.
+Neither route is therefore an approved input. Reconsider only if live-only
+delivery, billing, attribution, and no retained pixels become acceptable
+requirements.
+
 ## Reproducibility and publication
 
 The building export must contain at least 300 MB and produce at least 500,000

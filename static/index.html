@@ -37,7 +37,11 @@
     @media (max-width: 620px) {
       header { top: .4rem; left: .4rem; right: .4rem; gap: .35rem; padding: .35rem .4rem .35rem .65rem; }
       h1 { font-size: .95rem; }
-      #status, #sun-state, #neighborhoods-toggle, #color-toggle, #zoom-out, #zoom-in, #home, #rocky { display: none; }
+      #status, #sun-state, #color-toggle, #zoom-out, #zoom-in, #home, #rocky { display: none; }
+      #neighborhoods-toggle, #local-areas-toggle { font-size: 0; padding: .25rem; }
+      #neighborhoods-toggle::after { content: "N"; font-size: .78rem; }
+      #local-areas-toggle::after { content: "Local"; font-size: .72rem; }
+      #neighborhoods-toggle:disabled, #local-areas-toggle:disabled { display: none; }
       .orientation { display: none; }
       .controls { margin-left: auto; }
       button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; padding: .25rem .55rem; }
@@ -53,7 +57,8 @@
     <span id="orientation" class="orientation" title="North points up and right">↗ N</span>
     <span id="sun-state" aria-live="off"></span>
     <nav class="controls" aria-label="Map controls">
-      <button id="neighborhoods-toggle" aria-pressed="false" title="Toggle neighborhood boundaries">Neighborhoods</button>
+      <button id="neighborhoods-toggle" aria-pressed="false" title="Toggle planning neighborhood boundaries">Neighborhoods</button>
+      <button id="local-areas-toggle" aria-pressed="false" title="Toggle local cultural and commercial areas">Local areas</button>
       <button id="color-toggle" aria-pressed="true" title="Toggle richer map colors">Vivid</button>
       <button id="rich-toggle" aria-pressed="true" title="Toggle the fully textured Center City scene">Center City</button>
       <button id="rotate-left" aria-label="Rotate view 90 degrees left" title="Rotate 90° left">↶</button>
@@ -73,7 +78,7 @@
         <div>Press R or choose Rocky to visit the Philadelphia Museum of Art steps.</div>
         <div>Center City opens by default with four prebuilt 90° views. Toggle it off for the citywide illustrated overview.</div>
         <div>Rocky is marked on the Philadelphia Museum of Art steps in every Center City view.</div>
-        <div>Neighborhood boundaries are approximate. Dashed outlines mark locally named areas separately from planning boundaries.</div>
+        <div>Neighborhoods shows the Planning Commission's general boundaries. Local areas separately highlights selected cultural and commercial districts at useful close zooms.</div>
         <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">planning neighborhoods: Philadelphia City Planning Commission</a></div>
         <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">2025 aerial: City of Philadelphia / PASDA</a></div>
         <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 textured buildings: City of Philadelphia</a></div>

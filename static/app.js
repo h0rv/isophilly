@@ -30,6 +30,7 @@ const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
+const localAreasElement = document.querySelector("#local-areas-toggle");
 const colorElement = document.querySelector("#color-toggle");
 const richElement = document.querySelector("#rich-toggle");
 const rotateLeftElement = document.querySelector("#rotate-left");
@@ -45,6 +46,7 @@ if (
   !(zoomOutElement instanceof HTMLButtonElement) ||
   !(retryElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
+  !(localAreasElement instanceof HTMLButtonElement) ||
   !(colorElement instanceof HTMLButtonElement) ||
   !(richElement instanceof HTMLButtonElement) ||
   !(rotateLeftElement instanceof HTMLButtonElement) ||
@@ -62,6 +64,7 @@ const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
 const neighborhoodsToggle = neighborhoodsElement;
+const localAreasToggle = localAreasElement;
 const colorToggle = colorElement;
 const richToggle = richElement;
 const rotateLeft = rotateLeftElement;
@@ -91,6 +94,7 @@ let drawing = false;
 /** @type {Neighborhoods | undefined} */
 let neighborhoodData;
 let showNeighborhoods = false;
+let showLocalAreas = false;
 let vividColors = true;
 let richMode = true;
 let richViewIndex = 0;
@@ -104,6 +108,53 @@ const PREVIEW_TILE_ZOOM = 5;
 const MAX_CACHED_TILES = 512;
 const MAX_TILE_ATTEMPTS = 4;
 const PREFETCH_VIEW_LIMIT = 64;
+const LOCAL_AREA_PRESENTATION = new Map([
+  ["Africatown", { label: "Africatown", tier: 1 }],
+  ["Castor Avenue", { label: "Castor Avenue", tier: 1 }],
+  ["Fishtown Frankford Avenue", { label: "Frankford Avenue Arts Corridor", tier: 1 }],
+  ["Italian Market", { label: "Italian Market", tier: 1 }],
+  ["Manayunk Main Street", { label: "Main Street Manayunk", tier: 1 }],
+  ["52nd Street", { label: "52nd Street", tier: 2 }],
+  ["Antique Row", { label: "Antique Row", tier: 2 }],
+  ["Avenue of the Arts", { label: "Avenue of the Arts", tier: 2 }],
+  ["Baltimore Avenue", { label: "Baltimore Avenue", tier: 2 }],
+  ["Chestnut Hill Germantown Avenue", { label: "Chestnut Hill Village", tier: 2 }],
+  ["East Passyunk", { label: "East Passyunk", tier: 2 }],
+  ["El Centro de Oro", { label: "El Centro de Oro", tier: 2 }],
+  ["Fairmount Avenue", { label: "Fairmount Avenue", tier: 2 }],
+  ["Gayborhood", { label: "Gayborhood", tier: 2 }],
+  ["Historic Germantown", { label: "Historic Germantown", tier: 2 }],
+  ["Independence Mall", { label: "Independence Mall", tier: 2 }],
+  ["Kensington & Allegheny", { label: "Kensington & Allegheny", tier: 2 }],
+  ["Lancaster Avenue", { label: "Lancaster Avenue", tier: 2 }],
+  ["Little Saigon", { label: "Little Saigon", tier: 2 }],
+  ["Midtown Village", { label: "Midtown Village", tier: 2 }],
+  ["Mt. Airy Germantown Avenue", { label: "Mt. Airy Village", tier: 2 }],
+  ["North Broad", { label: "North Broad", tier: 2 }],
+  ["Northern Liberties 2nd Street", { label: "2nd Street / Northern Liberties", tier: 2 }],
+  ["Ogontz Avenue", { label: "Ogontz Avenue", tier: 2 }],
+  ["Old City Arts District", { label: "Old City Arts District", tier: 2 }],
+  ["Parkside Centennial District", { label: "Parkside Centennial District", tier: 2 }],
+  ["Parkway Museum District", { label: "Parkway Museum District", tier: 2 }],
+  ["Penn's Landing", { label: "Penn's Landing", tier: 2 }],
+  ["Point Breeze Avenue", { label: "Point Breeze Avenue", tier: 2 }],
+  ["Rittenhouse Row", { label: "Rittenhouse Row", tier: 2 }],
+  ["South Street Headhouse", { label: "South Street Headhouse", tier: 2 }],
+  ["Two Street", { label: "Two Street", tier: 2 }],
+  ["Washington Avenue Food Corridor", { label: "Washington Avenue Food Corridor", tier: 2 }],
+  ["Fabric Row", { label: "Fabric Row", tier: 3 }],
+  ["Jewelers' Row", { label: "Jewelers' Row", tier: 3 }],
+  ["Mexican Market", { label: "Mexican 9th Street", tier: 3 }],
+  [
+    "Reading Terminal & Convention Center",
+    { label: "Reading Terminal Market / Convention Center", tier: 3 },
+  ],
+]);
+const LOCAL_PARENT_LABELS = new Map([
+  ["Fishtown Frankford Avenue", ["Fishtown", "East Kensington", "Kensington"]],
+  ["Manayunk Main Street", ["Manayunk"]],
+  ["Old City Arts District", ["Old City"]],
+]);
 let activeView = "";
 /** @type {string | undefined} */
 let scheduledPrefetch;
@@ -389,7 +440,11 @@ function drawNow() {
   }
   drawLighting();
   canvas.dataset.areaLabels = "[]";
-  if (showNeighborhoods && !richMode) drawNeighborhoods(viewZoom, panX, panY, scale);
+  canvas.dataset.planningAreas = "[]";
+  canvas.dataset.localAreas = "[]";
+  if ((showNeighborhoods || showLocalAreas) && !richMode) {
+    drawAreaOverlays(viewZoom, panX, panY, scale);
+  }
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   drawLandmarks(viewZoom, panX, panY, scale);
   const pending = requested - loaded - failed;
@@ -426,43 +481,63 @@ function drawLighting() {
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
-function drawNeighborhoods(z, panX, panY, scale) {
+function drawAreaOverlays(z, panX, panY, scale) {
   if (neighborhoodData === undefined || z < 3) return;
+  const planningAreas = showNeighborhoods
+    ? neighborhoodData.features.filter((area) => area.kind === "planning_neighborhood")
+    : [];
+  const localAreas = showLocalAreas
+    ? neighborhoodData.features.filter(
+        (area) =>
+          area.kind === "local_area" &&
+          localAreaVisible(area, z) &&
+          areaLabelNearViewport(area, panX, panY, scale),
+      )
+    : [];
+  const suppressedParents = new Set(
+    localAreas.flatMap((area) => LOCAL_PARENT_LABELS.get(area.name) ?? []),
+  );
+  /** @type {{ area: Neighborhood, rings: { x: number, y: number }[][] }[]} */
+  const projectedPlanning = planningAreas.map((area) => ({
+    area,
+    rings: projectArea(area, panX, panY, scale),
+  }));
+  /** @type {{ area: Neighborhood, rings: { x: number, y: number }[][] }[]} */
+  const projectedLocal = localAreas.map((area) => ({
+    area,
+    rings: projectArea(area, panX, panY, scale),
+  }));
+
+  for (const projected of projectedPlanning) drawAreaGeometry(projected.rings, "planning");
+  for (const projected of projectedLocal) {
+    if ((LOCAL_AREA_PRESENTATION.get(projected.area.name)?.tier ?? 3) < 3) {
+      drawAreaGeometry(projected.rings, "local");
+    }
+  }
+
   /** @type {{ left: number, right: number, top: number, bottom: number }[]} */
   const occupiedLabels = [];
   /** @type {string[]} */
   const paintedLabels = [];
-  const areas = neighborhoodData.features.toSorted((left, right) => {
+  const labelBudget = Math.max(3, Math.floor((viewportWidth * viewportHeight) / 130_000));
+  const areas = [
+    ...localAreas,
+    ...planningAreas.filter((area) => !suppressedParents.has(area.name)),
+  ].toSorted((left, right) => {
     const priority = (right.priority ?? 0) - (left.priority ?? 0);
     if (priority !== 0) return priority;
     if (left.kind !== right.kind) return left.kind === "local_area" ? -1 : 1;
     return left.name.localeCompare(right.name);
   });
   for (const area of areas) {
-    ctx.save();
-    ctx.strokeStyle = area.kind === "local_area" ? "#d77a3eee" : "#2d292488";
-    ctx.lineWidth = area.kind === "local_area" ? 1.6 : 1;
-    if (area.kind === "local_area") ctx.setLineDash([4, 3]);
-    for (const ring of area.rings) {
-      ctx.beginPath();
-      for (let index = 0; index < ring.length; index += 1) {
-        const point = ring[index];
-        if (point === undefined) continue;
-        const [isoX, isoY] = isometricLonLat(point[0], point[1]);
-        const x = panX + (isoX - city().iso_bounds[0]) * scale;
-        const y = panY + (isoY - city().iso_bounds[1]) * scale;
-        if (index === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
+    if (paintedLabels.length >= labelBudget) break;
     if (z < (area.kind === "local_area" ? 6 : 5)) continue;
     const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
     const x = panX + (isoX - city().iso_bounds[0]) * scale;
     const y = panY + (isoY - city().iso_bounds[1]) * scale;
-    if (x < -80 || y < -20 || x > viewportWidth + 80 || y > viewportHeight + 20) continue;
-    const label = area.name;
+    const topInset = viewportWidth <= 620 ? 64 : 76;
+    if (x < 8 || y < topInset || x > viewportWidth - 8 || y > viewportHeight - 8) continue;
+    const label = areaLabel(area);
     ctx.font =
       area.kind === "local_area"
         ? "600 11px ui-sans-serif, system-ui"
@@ -489,6 +564,73 @@ function drawNeighborhoods(z, panX, panY, scale) {
     paintedLabels.push(label);
   }
   canvas.dataset.areaLabels = JSON.stringify(paintedLabels);
+  canvas.dataset.planningAreas = JSON.stringify(planningAreas.map((area) => area.name));
+  canvas.dataset.localAreas = JSON.stringify(localAreas.map((area) => area.name));
+}
+
+/** @param {Neighborhood} area @param {number} z */
+function localAreaVisible(area, z) {
+  const presentation = LOCAL_AREA_PRESENTATION.get(area.name);
+  if (presentation === undefined) return false;
+  return z >= (presentation.tier === 1 ? 6 : presentation.tier === 2 ? 7 : 8);
+}
+
+/** @param {Neighborhood} area */
+function areaLabel(area) {
+  return area.kind === "local_area"
+    ? (LOCAL_AREA_PRESENTATION.get(area.name)?.label ?? area.name)
+    : area.name;
+}
+
+/** @param {Neighborhood} area @param {number} panX @param {number} panY @param {number} scale */
+function areaLabelNearViewport(area, panX, panY, scale) {
+  const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
+  const x = panX + (isoX - city().iso_bounds[0]) * scale;
+  const y = panY + (isoY - city().iso_bounds[1]) * scale;
+  return x >= -120 && y >= 36 && x <= viewportWidth + 120 && y <= viewportHeight + 80;
+}
+
+/** @param {Neighborhood} area @param {number} panX @param {number} panY @param {number} scale */
+function projectArea(area, panX, panY, scale) {
+  return area.rings.map((ring) =>
+    ring.map((point) => {
+      const [isoX, isoY] = isometricLonLat(point[0], point[1]);
+      return {
+        x: panX + (isoX - city().iso_bounds[0]) * scale,
+        y: panY + (isoY - city().iso_bounds[1]) * scale,
+      };
+    }),
+  );
+}
+
+/** @param {{ x: number, y: number }[][]} rings @param {"planning" | "local"} kind */
+function drawAreaGeometry(rings, kind) {
+  ctx.save();
+  ctx.strokeStyle = kind === "local" ? "#e4935248" : "#24201d70";
+  ctx.fillStyle = "#ee9b4f14";
+  ctx.lineWidth = 0.8;
+  for (const ring of rings) {
+    if (ring.length === 0) continue;
+    const xs = ring.map(({ x }) => x);
+    const ys = ring.map(({ y }) => y);
+    const visible =
+      Math.max(...xs) >= -40 &&
+      Math.min(...xs) <= viewportWidth + 40 &&
+      Math.max(...ys) >= 36 &&
+      Math.min(...ys) <= viewportHeight + 40;
+    if (!visible) continue;
+    ctx.beginPath();
+    for (let index = 0; index < ring.length; index += 1) {
+      const point = ring[index];
+      if (point === undefined) continue;
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    }
+    ctx.closePath();
+    if (kind === "local") ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
@@ -726,6 +868,11 @@ neighborhoodsToggle.addEventListener("click", () => {
   neighborhoodsToggle.setAttribute("aria-pressed", String(showNeighborhoods));
   draw();
 });
+localAreasToggle.addEventListener("click", () => {
+  showLocalAreas = !showLocalAreas;
+  localAreasToggle.setAttribute("aria-pressed", String(showLocalAreas));
+  draw();
+});
 colorToggle.addEventListener("click", () => {
   vividColors = !vividColors;
   canvas.classList.toggle("vivid", vividColors);
@@ -744,6 +891,7 @@ async function setRichMode(enabled) {
   rotateLeft.hidden = !enabled;
   rotateRight.hidden = !enabled;
   neighborhoodsToggle.disabled = enabled;
+  localAreasToggle.disabled = enabled;
   syncSceneUrl();
   await activateScene();
 }
@@ -841,6 +989,7 @@ async function loadMeta() {
     rotateLeft.hidden = !richMode;
     rotateRight.hidden = !richMode;
     neighborhoodsToggle.disabled = richMode;
+    localAreasToggle.disabled = richMode;
     resize();
     await activateScene(true);
     void loadNeighborhoods();

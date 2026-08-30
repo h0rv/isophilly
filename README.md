@@ -110,6 +110,9 @@ pass and you are ready to publish.
 
 Generated data and tiles are intentionally gitignored. See the [data pipeline
 and attribution notes](docs/DATA.md) before publishing a build.
+The [research record](docs/RESEARCH.md) also documents the audited April 2025
+PASDA LiDAR candidate and why Google's 3-D map products are viable only as a
+live, billed mode rather than as saved source pixels for this project.
 
 ## Quality checks
 
