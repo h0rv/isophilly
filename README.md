@@ -100,7 +100,7 @@ uv run --locked poe static-dry-run
 uv run --locked poe static-preview
 ```
 
-The current z5 Center City build exports 18,009 files and uses 1,120.0 MiB.
+The current z5 Center City build exports 18,009 files and uses 1,245.0 MiB.
 The exporter checks the completed inventories and rejects builds that exceed
 the Cloudflare Free plan limits of 20,000 files or 25 MiB per file. Static
 asset requests and storage do not incur a charge. See the official
@@ -113,6 +113,9 @@ and attribution notes](docs/DATA.md) before publishing a build.
 The [research record](docs/RESEARCH.md) also documents the audited April 2025
 PASDA LiDAR candidate and why Google's 3-D map products are viable only as a
 live, billed mode rather than as saved source pixels for this project.
+The dated [PASDA facade audit](docs/PASDA_AUDIT.md) is the canonical inventory
+of photographed-side sources, duplicate archives, and conditions for reopening
+that research.
 
 ## Quality checks
 

@@ -136,15 +136,15 @@ impl Rasterizer<'_, '_> {
         let roof_left = Vertex::world(left, top, self.projection);
         let roof_right = Vertex::world(right, top, self.projection);
         let edge = (right.0 - left.0, right.1 - left.1);
-        let light = if edge.0 + edge.1 >= 0.0 { 0.72 } else { 0.84 };
+        let light = wall_light(edge);
         let style = WallStyle {
-            facade,
+            facade: wall_material(facade, seed, top - bottom),
             light,
             bottom,
             top,
             left,
             right,
-            seed,
+            seed: seed ^ facade_seed(((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)),
         };
         self.draw_wall_triangle([ground_left, ground_right, roof_right], style);
         self.draw_wall_triangle([ground_left, roof_right, roof_left], style);
@@ -282,13 +282,9 @@ impl Rasterizer<'_, '_> {
                 }
                 self.depth[offset] = depth;
                 let mut color = facade_detail((source_x, source_y), z, style);
-                let base = if style.top - style.bottom > 5.0 && z < style.bottom + 1.2 {
-                    0.82
-                } else {
-                    1.0
-                };
+                let base = wall_surface_light(z, style);
                 for channel in &mut color {
-                    *channel = shade(*channel, style.light * base);
+                    *channel = scale_channel(*channel, style.light * base);
                 }
                 self.set_pixel(offset, color);
             }
@@ -438,6 +434,10 @@ fn shade(channel: u8, light: f32) -> u8 {
     ((lit + 8) / 16 * 16).min(255) as u8
 }
 
+fn scale_channel(channel: u8, light: f32) -> u8 {
+    (f32::from(channel) * light).round().clamp(0.0, 255.0) as u8
+}
+
 fn soften(color: [u8; 3]) -> [u8; 3] {
     let luminance = (u16::from(color[0]) * 3 + u16::from(color[1]) * 6 + u16::from(color[2])) / 10;
     std::array::from_fn(|index| {
@@ -458,6 +458,60 @@ fn facade_seed(center: (f32, f32)) -> u64 {
     (center.0.round() as u64).wrapping_mul(0x9e37_79b9) ^ (center.1.round() as u64).rotate_left(23)
 }
 
+// The citywide walls are deliberately illustrative. Their material starts with the
+// building's robust aerial-derived roof palette, then gets a small deterministic
+// variation so long blocks do not read as a single sheet of painted cardboard.
+fn wall_material(facade: [u8; 3], seed: u64, height: f32) -> [u8; 3] {
+    let low_rise = [
+        [151, 96, 72],
+        [167, 112, 82],
+        [143, 145, 139],
+        [188, 169, 141],
+    ];
+    let high_rise = [
+        [151, 137, 121],
+        [132, 145, 150],
+        [174, 164, 145],
+        [146, 142, 136],
+    ];
+    let references = if height <= 16.0 { low_rise } else { high_rise };
+    let reference = references[(seed as usize) % references.len()];
+    let amount = if height <= 16.0 {
+        0.14 + f32::from(((seed >> 11) & 7) as u8) * 0.012
+    } else {
+        0.08 + f32::from(((seed >> 11) & 7) as u8) * 0.009
+    };
+    let tone = 0.94 + f32::from(((seed >> 19) & 7) as u8) * 0.011;
+    mix_rgb(facade, reference, amount).map(|channel| scale_channel(channel, tone))
+}
+
+fn wall_light(edge: (f32, f32)) -> f32 {
+    let length = edge.0.hypot(edge.1);
+    if length <= f32::EPSILON {
+        return 0.76;
+    }
+    let directional = ((edge.0 - edge.1) / length).abs().min(1.0);
+    let exposed_side = if edge.0 + edge.1 >= 0.0 { 0.0 } else { 0.055 };
+    (0.71 + directional * 0.105 + exposed_side).clamp(0.70, 0.87)
+}
+
+fn wall_surface_light(z: f32, style: WallStyle) -> f32 {
+    let height = style.top - style.bottom;
+    if height <= f32::EPSILON {
+        return 1.0;
+    }
+    let relative = ((z - style.bottom) / height).clamp(0.0, 1.0);
+    let mut light = 0.965 + relative * 0.065;
+    if height > 5.0 {
+        let ground_ao = ((z - style.bottom) / 1.8).clamp(0.0, 1.0);
+        light *= 0.80 + ground_ao * 0.20;
+    }
+    if height >= 8.0 && style.top - z < 0.32 {
+        light *= 0.86;
+    }
+    light
+}
+
 fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if style.top - style.bottom < 8.0 {
         return style.facade;
@@ -468,13 +522,20 @@ fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         return style.facade;
     }
     let along = ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length;
-    let floor = (z - style.bottom).rem_euclid(METERS_PER_FLOOR);
-    let column = (along + (style.seed % 13) as f32 * 0.19).rem_euclid(2.8);
-    if !(0.18..=METERS_PER_FLOOR - 0.18).contains(&floor) {
-        return style.facade.map(|channel| shade(channel, 0.8));
+    let floor_height = 3.0 + f32::from(((style.seed >> 7) & 3) as u8) * 0.12;
+    let floor = (z - style.bottom).rem_euclid(floor_height);
+    let bay_width = 2.65 + f32::from(((style.seed >> 13) & 7) as u8) * 0.11;
+    let column = (along + (style.seed % 13) as f32 * 0.19).rem_euclid(bay_width);
+    if !(0.18..=floor_height - 0.18).contains(&floor) {
+        return style.facade.map(|channel| scale_channel(channel, 0.84));
     }
-    if (0.72..=2.5).contains(&floor) && (0.42..=1.95).contains(&column) {
-        let glass = [72, 88, 96];
+    let window_right = bay_width - 0.65;
+    if (0.76..=2.42).contains(&floor) && (0.48..=window_right).contains(&column) {
+        let glass = if style.seed & 1 == 0 {
+            [72, 88, 96]
+        } else {
+            [82, 85, 82]
+        };
         return mix_rgb(
             style.facade,
             glass,
@@ -488,11 +549,12 @@ fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     style.facade
 }
 
-const METERS_PER_FLOOR: f32 = 3.2;
-
 #[cfg(test)]
 mod tests {
-    use super::{WallStyle, facade_detail, point_in_polygon, shade, soften};
+    use super::{
+        WallStyle, facade_detail, point_in_polygon, shade, soften, wall_light, wall_material,
+        wall_surface_light,
+    };
 
     #[test]
     fn point_in_polygon_handles_concave_footprint() {
@@ -536,11 +598,38 @@ mod tests {
             right: (20.0, 0.0),
             seed: 0,
         };
-        let band = facade_detail((3.0, 0.0), 3.2, style);
+        let band = facade_detail((3.0, 0.0), 3.0, style);
         let window = facade_detail((1.0, 0.0), 1.5, style);
 
         assert_ne!(band, base);
         assert_ne!(window, base);
         assert_ne!(window, band);
+    }
+
+    #[test]
+    fn wall_material_is_stable_and_keeps_the_aerial_palette_dominant() {
+        let facade = [160, 144, 128];
+        let first = wall_material(facade, 42, 10.0);
+        assert_eq!(first, wall_material(facade, 42, 10.0));
+        assert_ne!(first, wall_material(facade, 43, 10.0));
+        for channel in 0..3 {
+            assert!((i16::from(first[channel]) - i16::from(facade[channel])).abs() <= 32);
+        }
+    }
+
+    #[test]
+    fn wall_lighting_uses_orientation_and_vertical_depth() {
+        assert_ne!(wall_light((10.0, 0.0)), wall_light((10.0, 10.0)));
+        let style = WallStyle {
+            facade: [160, 144, 128],
+            light: 1.0,
+            bottom: 0.0,
+            top: 20.0,
+            left: (0.0, 0.0),
+            right: (20.0, 0.0),
+            seed: 0,
+        };
+        assert!(wall_surface_light(0.0, style) < wall_surface_light(10.0, style));
+        assert!(wall_surface_light(19.9, style) < wall_surface_light(10.0, style));
     }
 }

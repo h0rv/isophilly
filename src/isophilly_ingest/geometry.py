@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from itertools import repeat
 from numbers import Real
@@ -75,18 +76,39 @@ def height_from_values(values: Iterator[object]) -> float:
     return DEFAULT_HEIGHT_METERS
 
 
-def buildings(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[Building]:
+def footprint_id(geometry: BaseGeometry) -> str:
+    return hashlib.sha256(make_valid(geometry).normalize().wkb).hexdigest()[:24]
+
+
+def buildings(
+    frame: gpd.GeoDataFrame,
+    city: BaseGeometry,
+    height_evidence: dict[str, float] | None = None,
+) -> list[Building]:
     result: list[Building] = []
+    identifiers = [
+        footprint_id(geometry) if geometry is not None and not geometry.is_empty else None
+        for geometry in frame.geometry
+    ]
     frame = projected(frame)
     approximate = frame[HEIGHT_FIELDS[0]] if HEIGHT_FIELDS[0] in frame else repeat(None)
     maximum = frame[HEIGHT_FIELDS[1]] if HEIGHT_FIELDS[1] in frame else repeat(None)
-    for geometry, approximate_height, maximum_height in zip(
-        frame.geometry, approximate, maximum, strict=True
+    for geometry, approximate_height, maximum_height, identifier in zip(
+        frame.geometry, approximate, maximum, identifiers, strict=True
     ):
         if geometry is None or geometry.is_empty or not geometry.intersects(city):
             continue
         clipped = geometry if city.covers(geometry) else geometry.intersection(city)
-        height = height_from_values(iter((approximate_height, maximum_height)))
+        measured_height = (
+            height_evidence.get(identifier)
+            if height_evidence is not None and identifier is not None
+            else None
+        )
+        height = (
+            measured_height
+            if measured_height is not None
+            else height_from_values(iter((approximate_height, maximum_height)))
+        )
         for polygon in polygons(clipped, BUILDING_SIMPLIFY_METERS):
             if polygon.area < MIN_BUILDING_AREA_METERS:
                 continue

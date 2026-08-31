@@ -70,17 +70,19 @@ def _archive(
     inner_name: str = "ph_stadium_kml.zip",
     nested: bool = True,
     include_region: bool = True,
+    model_root: str = "kml",
 ) -> None:
     inner_path = path.with_suffix(".inner.zip")
     model_path = inner_path if nested else path
     with ZipFile(model_path, "w", ZIP_DEFLATED) as inner:
         if include_region:
-            inner.writestr(f"kml/{model_name}.kml", _top_kml(west=west))
+            inner.writestr(f"{model_root}/{model_name}.kml", _top_kml(west=west))
         inner.writestr(
-            f"kml/r0/{model_name}.kml", PLACEMENT_KML.replace("ph_stadium0001", model_name)
+            f"{model_root}/r0/{model_name}.kml",
+            PLACEMENT_KML.replace("ph_stadium0001", model_name),
         )
-        inner.writestr(f"kml/r0/{model_name}.dae", _dae(texcoord=texcoord))
-        inner.writestr("kml/r0/tmaps/p1.jpg", JPEG)
+        inner.writestr(f"{model_root}/r0/{model_name}.dae", _dae(texcoord=texcoord))
+        inner.writestr(f"{model_root}/r0/tmaps/p1.jpg", JPEG)
     if nested:
         with ZipFile(path, "w", ZIP_DEFLATED) as outer:
             outer.write(inner_path, f"models/{inner_name}")
@@ -118,6 +120,32 @@ class ColladaTest(unittest.TestCase):
                 inner_name="ph_downtown_kml.zip",
                 nested=False,
                 include_region=False,
+            )
+
+            (mesh,) = load_collada_meshes(
+                archive,
+                replace(
+                    LEGACY_DOWNTOWN,
+                    expected_model_count=1,
+                    published_bounds=(-75.17, 39.9, -75.15, 39.91),
+                ),
+                textures,
+            )
+
+            self.assertEqual(mesh.texture_id, 1_000_001)
+            self.assertEqual((textures / "1000001.jpg").read_bytes(), JPEG)
+
+    def test_loads_pasda_kml00_repack_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "kml00.zip"
+            textures = root / "textures"
+            _archive(
+                archive,
+                model_name="philly_0001",
+                nested=False,
+                include_region=False,
+                model_root="kml00",
             )
 
             (mesh,) = load_collada_meshes(

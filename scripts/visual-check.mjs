@@ -16,6 +16,7 @@ if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 10)) {
   throw new Error(`invalid ISOPHILLY_VISUAL_ZOOMS: ${process.env.ISOPHILLY_VISUAL_ZOOMS}`);
 }
 const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
+const VISUAL_TIME = "2026-06-21T16:00:00Z";
 const port = Number.parseInt(process.env.ISOPHILLY_VISUAL_PORT ?? "3107", 10);
 const tileTimeout = Number.parseInt(process.env.ISOPHILLY_VISUAL_TIMEOUT ?? "180000", 10);
 const settleBudget = Number.parseInt(process.env.ISOPHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
@@ -372,7 +373,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       errors.push(`${response.status()} ${response.url()}`);
     }
   });
-  const parameters = new URLSearchParams({ z: String(zoom) });
+  const parameters = new URLSearchParams({ z: String(zoom), time: VISUAL_TIME });
   if (view.mode !== "detailed") parameters.set("mode", "city");
   else parameters.set("view", view.orientation ?? "se");
   if (view.center !== undefined) {
@@ -547,7 +548,9 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
  */
 async function interactions(browser, meta) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  await page.goto(`${origin}/?z=5&view=se`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${origin}/?z=5&view=se&time=${encodeURIComponent(VISUAL_TIME)}`, {
+    waitUntil: "domcontentloaded",
+  });
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
     timeout: tileTimeout,
   });
@@ -602,12 +605,29 @@ async function interactions(browser, meta) {
   });
   await page.screenshot({ path: `${artifactDir}/mobile.png` });
 
-  await page.goto(`${origin}/?mode=city&z=8`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${origin}/?mode=city&z=8&time=${encodeURIComponent(VISUAL_TIME)}`, {
+    waitUntil: "domcontentloaded",
+  });
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
     timeout: tileTimeout,
   });
   const planningToggle = page.locator("#neighborhoods-toggle");
   const localToggle = page.locator("#local-areas-toggle");
+  const overlayControls = await page
+    .locator("#neighborhoods-toggle, #local-areas-toggle")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const bounds = button.getBoundingClientRect();
+        return { id: button.id, width: bounds.width, height: bounds.height };
+      }),
+    );
+  if (overlayControls.some((control) => control.width < 44 || control.height < 44)) {
+    throw new Error(`mobile overlay controls are too small: ${JSON.stringify(overlayControls)}`);
+  }
+  const overlayOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth,
+  );
+  if (overlayOverflow) throw new Error("mobile overlay controls overflow the viewport");
   await localToggle.click();
   await page.waitForFunction(
     () => JSON.parse(document.querySelector("#map")?.dataset.localAreas ?? "[]").length > 0,

@@ -9,11 +9,14 @@
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
   has a URL, retrieval time, byte count, and SHA-256 checksum.
+- If LiDAR heights are enabled, require a complete 664-tile evidence merge for
+  the pinned inventory. Do not publish from a diagnostic partial merge. Archive
+  the inventory, merged-evidence metadata, and applied-building count.
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.
 - Confirm that all four Center City pyramids include z0 through z5. The full
-  current static export contains 18,009 files and uses 1,120.0 MiB. The
+  current static export contains 18,009 files and uses 1,245.0 MiB. The
   exporter must keep the actual count below 20,000.
 
 ## Visual smoke test
@@ -40,6 +43,10 @@
 - Keep the City, OpenDataPhilly, and PASDA attribution visible.
   Re-check the current source terms because the code's MIT license does not
   cover source data or tiles.
+- Treat [`PASDA_AUDIT.md`](PASDA_AUDIT.md) as the facade-source decision record.
+  Do not publish PA DEP coastal photographs or derived facade textures until
+  Penn State/PA DEP confirms derivative-distribution rights and the annual
+  notification requirement has been satisfied and recorded.
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to
   localhost and is a development origin, not a hardened public edge server.
 - Serve the fully prebuilt static pyramid for an untrusted public audience. No

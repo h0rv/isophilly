@@ -146,7 +146,7 @@ not photographed facades. Texture sampling uses a stable world grid so
 adjacent output tiles do not request the same image on different pixel phases.
 
 The four z5 Center City pyramids add 4,096 files compared with z4. The current
-static export contains 18,009 files and uses 1,120.0 MiB, which remains below
+static export contains 18,009 files and uses 1,245.0 MiB, which remains below
 the 20,000 file limit checked by the exporter. The extra leaf tiles and finer
 ground sampling make prebuild slower. The server still reads immutable files,
 so request handling does not become more expensive.
@@ -165,9 +165,25 @@ publication can continue serving its immutable old scene until it is restarted.
 
 ## Audited future sources
 
+The complete 2026-08-30 PASDA imagery and 3-D decision record is
+[`PASDA_AUDIT.md`](PASDA_AUDIT.md). The current clean snapshot contains 3,498
+accepted textured mesh components and identifies photographed coverage for
+11,909 of 545,672 buildings: 2.18% by building count and 6.12% by footprint
+area. Recalculate those figures from `data/clean/meta.json` after any ingest.
+
+PA DEP's newly identified
+[2014 Schuylkill shoreline obliques](https://www.pasda.psu.edu/download/dep/CoastalZoneImageryInventory/DelEstCZ/2014/DECZ/Obliques/DEP%20-%20Schuylkill/)
+are the only un-ingested PASDA source likely to add real photographed walls.
+They contain 191 JPEGs (252.5 MiB) and 191 TIFFs (10.51 GiB), but no published
+camera pose, EOP, calibration, or georeferencing. They are a JPEG-first SfM and
+LiDAR-registration candidate, not an active source. Do not fetch the TIFF set
+until registration and contact-sheet review succeed. Public derivative rights
+and the metadata's annual Penn State notification requirement are a release
+gate.
+
 PASDA's [full April 2025 LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/)
-confirm a citywide classified point cloud that is not yet part of ingest. The
+confirm the citywide classified point cloud used by the opt-in queue below. The
 short PASDA catalog abstract incorrectly describes it as 2022. The actual
 collection is 963 LAS files totaling 362.82 GiB, in LAS 1.4 point format 6.
 It records intensity but no RGB or NIR; a sampled central tile measured about
@@ -182,11 +198,86 @@ and Port Richmond. Record source tiles and checksums, derive ground/surface and
 normalized-height products, render four headings, and compare at least 30
 buildings per area with the current scene.
 
-The remaining 2010 textured KML/COLLADA archives may support a bounded downtown
-experiment but are too old and have insufficiently clear redistribution terms
-for a default expansion. The roughly 1 TB raw nadir frame archive has no
-published positions, camera orientation, or calibration and is not an ingest
-candidate.
+### Resumable 2025 LiDAR ingest
+
+The repository includes an opt-in citywide LiDAR queue. It never makes the
+362.82 GiB archive a prerequisite for normal ingest and does not retain every
+raw tile:
+
+```sh
+uv run --locked poe lidar-plan
+uv run --locked poe lidar-next
+uv run --locked python -m isophilly_ingest.lidar run --all --discard-raw
+uv run --locked poe lidar-merge
+uv run --locked poe ingest
+uv run --locked poe prebuild
+```
+
+`lidar-plan` pins the official PASDA directory response, file sizes, City
+Limits checksum, Building Footprints checksum, selected tile names, URLs, and
+conservative filename-derived bounds in `data/lidar-2025/inventory.json`. It
+also creates a content-linked
+GeoParquet footprint index in official NAD83(2011) Pennsylvania South US survey
+feet (EPSG:6565). Re-running the command uses that pin. Use `lidar-plan
+--refresh` only when intentionally accepting a changed directory listing or
+footprint snapshot.
+
+An intentional refresh creates a new active inventory version. Existing
+progress entries and derived tiles are not trusted across a listing, City
+Limits, or Building Footprints checksum change. Planning resolves the same
+newest complete, content-addressed snapshots as normal ingest; it never selects
+a file merely because it is the largest matching file.
+
+`lidar-next` is the smoke-test path. It resumes one `.las.part`, verifies the
+pinned byte count, computes SHA-256, validates the LAS header and true bounds,
+and emits one atomic Zstandard Parquet file plus a provenance JSON file. It
+uses building-class points inside each footprint and nearby ground-class
+points to record robust roof and ground quantiles. Raw LAS is deleted only
+after the derived Parquet checksum has been written and reverified. The
+progress manifest is atomic, so the same commands resume after interruption.
+`lidar-status` audits every result against the active inventory, sibling
+provenance JSON, output size, SHA-256, and Parquet source fields. A progress
+flag without a valid artifact remains pending. Resumed HTTP responses must
+also return a matching `Content-Range` start and total before bytes are
+appended.
+
+The sequential `--all --discard-raw` path has peak raw storage near the largest
+individual PASDA tile rather than the complete archive. The current directory's
+largest files are about 1.2 GiB; allow several additional GiB for a partial
+download, the footprint index, per-tile evidence, and filesystem overhead.
+Network transfer is still the sum of every City-intersecting source tile and
+the exact selected count and bytes are printed by `lidar-plan`.
+The 2026-08-30 audit selected 664 of 963 files, totaling 289.51 GiB, and
+created a 102.1 MiB footprint index. The queue starts with the smallest file,
+so `lidar-next` is a bounded smoke test rather than an arbitrary 1.2 GiB pull.
+
+`lidar-merge` requires every selected tile to have a valid derived or
+outside-City result. A deliberate pilot can use `python -m
+isophilly_ingest.lidar merge --allow-partial`; its manifest records that it is
+partial. It writes `data/lidar-2025/building-evidence.partial.parquet` and its
+sibling JSON instead of the canonical artifact. Partial smoke merges are
+diagnostic only and normal `poe ingest` never discovers them; render input
+requires the complete 664-tile `building-evidence.parquet` merge. Merge
+verifies every sibling manifest, source SHA-256 shape, active
+inventory membership, source URL and byte count, output checksum, and
+footprint provenance. For a boundary-spanning building it prefers an
+observation that passes the height acceptance gate, then high-quality
+classification and ground support, before raw roof-point count. Normal `poe
+ingest` uses only evidence with at least 100 classified building returns, 20
+nearby ground returns, no more than 3 metres of roof spread, and roof spread no
+greater than the conservative height-relative complexity limit. It rejects
+evidence made from a different footprint snapshot or active inventory.
+When the artifact is absent, ingest behaves exactly as before. When present,
+the evidence refines fallback footprint heights; photographed meshes and
+explicit building parts retain their existing render priority. This pipeline
+does not invent or provide facade photography.
+
+The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
+archives are duplicate formats or lower LODs of the already-ingested 2,689
+downtown models. Their audited manifests add no photographed bounds or facades.
+The 19,208-file raw nadir archive totals 943.21 GiB and has no published
+positions, camera orientation, or calibration. Neither group is an ingest
+candidate; see `PASDA_AUDIT.md` before reconsidering it.
 
 Google's 3-D map products are viable only as live hosted views. The Maps
 JavaScript API 3-D map uses the Immersive Maps SKU: 5,000 free map loads per

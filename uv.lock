@@ -111,6 +111,7 @@ source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
     { name = "httpx" },
+    { name = "numpy" },
     { name = "pyarrow" },
     { name = "pydantic-settings" },
     { name = "pyogrio" },
@@ -129,6 +130,7 @@ dev = [
 requires-dist = [
     { name = "geopandas", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=20" },
     { name = "pydantic-settings", specifier = ">=2.10" },
     { name = "pyogrio", specifier = ">=0.10" },

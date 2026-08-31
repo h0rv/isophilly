@@ -39,11 +39,13 @@ class ColladaDataset:
     model_prefix: str
     expected_model_count: int
     texture_id_offset: int
+    model_roots: tuple[str, ...] = ("kml",)
     excluded_model_names: frozenset[str] = frozenset()
     published_bounds: tuple[float, float, float, float] | None = None
 
     def model_members(self, members: list[str]) -> tuple[str, ...]:
-        pattern = re.compile(rf"kml/r0/{re.escape(self.model_prefix)}\d+\.kml")
+        roots = "|".join(re.escape(root) for root in self.model_roots)
+        pattern = re.compile(rf"(?:{roots})/r0/{re.escape(self.model_prefix)}\d+\.kml")
         return tuple(sorted(member for member in members if pattern.fullmatch(member)))
 
     def identifier(self, model_name: str) -> int:
@@ -59,6 +61,11 @@ LEGACY_DOWNTOWN = ColladaDataset(
     model_prefix="philly_",
     expected_model_count=2_689,
     texture_id_offset=LEGACY_DOWNTOWN_TEXTURE_ID_OFFSET,
+    # PASDA's original outer archive contains kml/ph_downtown_kml.zip. Its
+    # smaller 2010 kml00.zip repackages the exact highest-detail r0 models
+    # directly below kml00/. Supporting both keeps old caches reproducible and
+    # makes the configured 886 MB download independently ingestible.
+    model_roots=("kml", "kml00"),
     published_bounds=(-75.1904191883, 39.9401820483, -75.1335632290, 39.9672535290),
 )
 STADIUM = ColladaDataset(

@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 
 from isophilly_ingest.config import DEFAULT_HEIGHT_METERS
-from isophilly_ingest.geometry import height_from_values
+from isophilly_ingest.geometry import buildings, footprint_id, height_from_values
 from isophilly_ingest.ingest import write_world
 from isophilly_ingest.models import (
     Bounds,
@@ -43,6 +43,20 @@ class HeightTests(unittest.TestCase):
         result = height_from_values(iter((None, 0.001)))
 
         self.assertEqual(result, DEFAULT_HEIGHT_METERS)
+
+    def test_lidar_evidence_overrides_footprint_height(self) -> None:
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+
+        polygon = Polygon(((0, 0), (10, 0), (10, 10), (0, 10)))
+        frame = gpd.GeoDataFrame(
+            {"approx_hgt": [30.0], "max_hgt": [30.0]}, geometry=[polygon], crs=32129
+        )
+
+        result = buildings(frame, polygon, {footprint_id(polygon): 21.5})
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].height, 21.5)
 
 
 class WorldFormatTests(unittest.TestCase):

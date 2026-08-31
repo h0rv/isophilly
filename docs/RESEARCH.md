@@ -20,7 +20,7 @@ working grid. Draw City footprints and OpenStreetMap parts around the 2015
 mesh, and share the depth buffer with the textured triangles. Their roofs can
 use aerial pixels, but their procedural walls must not be described as
 photographed facades. Four full z5 pyramids add 4,096 files over z4, for a
-current export of 18,009 files and 1,120.0 MiB. The finer build costs more time,
+current export of 18,009 files and 1,245.0 MiB. The finer build costs more time,
 while the static server performs the same file reads.
 
 If continuous orbit becomes a product requirement, the lowest-risk hosted
@@ -151,8 +151,24 @@ exists, not permission to scrape or redistribute it.
 
 ### PASDA coverage audit
 
-PASDA has more useful geometry than the earlier source list showed, but no
-current public citywide multi-angle facade source. The decisive find is the
+The exhaustive, dated source matrix and reopening criteria live in
+[`PASDA_AUDIT.md`](PASDA_AUDIT.md). PASDA has useful photographed models and
+geometry, but no current public citywide calibrated multi-angle facade source.
+The active ingest already uses the strongest published Center City, legacy
+downtown, and stadium textured models. Its clean snapshot photographs 11,909 of
+545,672 buildings: 2.18 percent by building count and 6.12 percent by footprint
+area.
+
+The audit found one additional angled-pixel candidate: PA DEP's public
+[2014 Schuylkill shoreline obliques](https://www.pasda.psu.edu/download/dep/CoastalZoneImageryInventory/DelEstCZ/2014/DECZ/Obliques/DEP%20-%20Schuylkill/).
+The collection has 191 JPEGs and 191 TIFFs with visibly useful river-facing
+building sides, but publishes no camera positions, EOP, calibration, or
+georeferencing. Pin and visually index the JPEG set, recover cameras with SfM,
+and register them to 2025 LiDAR before considering the 10.51 GiB TIFF delivery.
+The collection's unusual annual Penn State notification term and unclear public
+derivative rights remain a release gate.
+
+The decisive geometry find remains the
 [April 2025 Philadelphia LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and its [public LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/).
 The short PASDA catalog abstract is stale and says 2022; the full metadata and
@@ -176,13 +192,13 @@ footprints, render all four headings, and compare at least 30 buildings with the
 current result. Only a clear visual improvement should authorize a citywide
 download.
 
-The [legacy 3D-model directory](https://www.pasda.psu.edu/download/philacity/data/3D_Models/)
-also includes 2010-era textured KML/COLLADA packages. The current pipeline
-already uses the strongest downtown and stadium material; other 2010 packages
-are suitable only for a bounded downtown experiment because their age and
-redistribution terms limit launch value. PASDA's separate 2010 raw nadir frame
-archive is roughly 1 TB, has no published frame positions, exterior orientation,
-or calibration, and shows little facade detail. It remains impractical.
+The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
+downloads are alternate formats or lower LODs of the already-ingested 2,689
+downtown models. Their manifests add zero photographic bounds or facades. The
+19,208-file raw nadir archive is 943.21 GiB and publishes no frame positions,
+exterior orientation, or calibration. Do not download either group to look for
+new wall pixels; reopen the audit only under the triggers in the decision
+record.
 
 #### EagleView/Pictometry access
 
@@ -255,8 +271,8 @@ make it an optional, separately attributed source rather than the default.
 
 ### Rejected PASDA raw frames
 
-PASDA exposes about 19,208 RGB TIFF frames in a separate `philly_nadir`
-directory. The archive is roughly 1 TB. A sampled 4,872 by 3,248 TIFF had no
+PASDA exposes 19,208 RGB TIFF frames in a separate `philly_nadir` directory.
+The ZIP inventory totals 943.21 GiB. A sampled 4,872 by 3,248 TIFF had no
 GeoTIFF tags, world file, camera pose, or exterior orientation. It was near
 vertical and showed little useful facade. A coarse feature match against the
 official 2010 orthophoto produced no reliable registration.
@@ -266,6 +282,8 @@ metadata says there are no use constraints, while related Pictometry material
 has license restrictions. Do not ingest this archive. A future evaluation first
 needs image footprints, camera orientation and calibration, and written
 permission to publish derivatives.
+The definitive inventory and criteria for reopening this conclusion are in
+[`PASDA_AUDIT.md`](PASDA_AUDIT.md).
 
 ### Deterministic ingestion rules
 

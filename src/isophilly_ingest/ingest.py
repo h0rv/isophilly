@@ -35,6 +35,7 @@ from .config import (
 )
 from .download import download_all, local_snapshot
 from .geometry import buildings, city_rings, ground_rings, projected
+from .lidar import MERGED_EVIDENCE_PATH, PASDA_LAS_URL, load_height_evidence
 from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
 from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot
 from .osm import building_parts, source_metadata
@@ -166,6 +167,7 @@ def write_metadata(
     texture_sha256: bytes,
     texture_bytes: int,
     texture_coverage: dict[str, object],
+    lidar_height_count: int,
 ) -> None:
     heights = [building.height for building in packed_buildings]
     mesh_heights = [mesh.height for mesh in meshes]
@@ -177,6 +179,16 @@ def write_metadata(
         if source is SOURCES.building_parts:
             metadata.update(source_metadata(snapshot))
         sources.append(metadata)
+    if MERGED_EVIDENCE_PATH.exists():
+        sources.append(
+            {
+                "name": "PASDA 2025 LiDAR building evidence",
+                "url": PASDA_LAS_URL,
+                "file": MERGED_EVIDENCE_PATH.name,
+                "sha256": sha256(MERGED_EVIDENCE_PATH),
+                "bytes": MERGED_EVIDENCE_PATH.stat().st_size,
+            }
+        )
     metadata = {
         "schema_version": VERSION,
         "crs": {"epsg": EPSG, "units": "metres"},
@@ -190,6 +202,7 @@ def write_metadata(
         },
         "counts": {
             "buildings": len(packed_buildings),
+            "lidar_height_buildings": lidar_height_count,
             "building_parts": len(parts),
             "building_meshes": len(meshes),
             "center_city_building_meshes": sum(
@@ -291,7 +304,15 @@ async def main_async(*, refresh: bool = False) -> None:
     print(f"loaded {len(snapshots)} source snapshots", flush=True)
     print("projecting and clipping citywide footprints", flush=True)
     city, packed_city, bounds = city_geometry(snapshots[SOURCES.city.filename])
-    packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city)
+    height_evidence: dict[str, float] | None = None
+    if MERGED_EVIDENCE_PATH.exists():
+        building_snapshot = snapshots[SOURCES.buildings.filename]
+        height_evidence = load_height_evidence(MERGED_EVIDENCE_PATH, building_snapshot.sha256)
+        print(
+            f"loaded trustworthy LiDAR heights for {len(height_evidence):,} buildings",
+            flush=True,
+        )
+    packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city, height_evidence)
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
@@ -360,6 +381,7 @@ async def main_async(*, refresh: bool = False) -> None:
         texture_sha256,
         texture_bytes,
         texture_coverage,
+        len(height_evidence) if height_evidence is not None else 0,
     )
     (staging / "streets.bin").unlink(missing_ok=True)
     publish_clean(staging)

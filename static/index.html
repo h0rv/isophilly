@@ -25,6 +25,8 @@
     .controls { display: flex; gap: .3rem; margin-left: auto; }
     button { min-width: 2rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: 999px; padding: .34rem .65rem; cursor: pointer; font: inherit; font-size: .78rem; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
     button:hover { background: #464039; transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: .46; transform: none; }
+    button:disabled:hover { background: #302d28; }
     button[aria-pressed="true"] { border-color: #dc9e67; background: #68462f; }
     button:focus-visible, summary:focus-visible { outline: 2px solid #c88a6b; outline-offset: 2px; }
     details { position: relative; font-size: .75rem; }
@@ -57,8 +59,8 @@
     <span id="orientation" class="orientation" title="North points up and right">↗ N</span>
     <span id="sun-state" aria-live="off"></span>
     <nav class="controls" aria-label="Map controls">
-      <button id="neighborhoods-toggle" aria-pressed="false" title="Toggle planning neighborhood boundaries">Neighborhoods</button>
-      <button id="local-areas-toggle" aria-pressed="false" title="Toggle local cultural and commercial areas">Local areas</button>
+      <button id="neighborhoods-toggle" aria-pressed="false" title="Loading planning neighborhood boundaries" disabled>Neighborhoods</button>
+      <button id="local-areas-toggle" aria-pressed="false" title="Loading local cultural and commercial areas" disabled>Local areas</button>
       <button id="color-toggle" aria-pressed="true" title="Toggle richer map colors">Vivid</button>
       <button id="rich-toggle" aria-pressed="true" title="Toggle the fully textured Center City scene">Center City</button>
       <button id="rotate-left" aria-label="Rotate view 90 degrees left" title="Rotate 90° left">↶</button>

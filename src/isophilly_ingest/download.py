@@ -98,6 +98,11 @@ def _cached(source: Source) -> Snapshot | None:
     return None
 
 
+def cached_snapshot(source: Source) -> Snapshot | None:
+    """Return the same validated local snapshot selection used by normal ingest."""
+    return _cached(source)
+
+
 def local_snapshot(source: Source, path: Path) -> Snapshot:
     try:
         size = path.stat().st_size

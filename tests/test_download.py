@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +15,7 @@ from isophilly_ingest.download import (
     _download,
     _download_with_client,
     _save_response,
+    cached_snapshot,
 )
 
 
@@ -189,6 +191,28 @@ class DownloadTests(unittest.TestCase):
         sidecar.write_text(cached)
 
         self.assertEqual(_cached_local_digest(archive), expected)
+
+    def test_cached_snapshot_uses_newest_valid_snapshot_not_largest_file(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        older_payload = b"older but much larger" * 100
+        newer_payload = b"newer"
+        older_sha = hashlib.sha256(older_payload).hexdigest()
+        newer_sha = hashlib.sha256(newer_payload).hexdigest()
+        older = root / f"test-data-{older_sha[:12]}.bin"
+        newer = root / f"test-data-{newer_sha[:12]}.bin"
+        older.write_bytes(older_payload)
+        newer.write_bytes(newer_payload)
+        os.utime(older, ns=(1, 1))
+        os.utime(newer, ns=(2, 2))
+
+        with patch("isophilly_ingest.download.RAW_DIR", root):
+            snapshot = cached_snapshot(self.source)
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.path, newer)
 
 
 if __name__ == "__main__":

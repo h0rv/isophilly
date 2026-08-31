@@ -93,6 +93,8 @@ let lastPointer;
 let drawing = false;
 /** @type {Neighborhoods | undefined} */
 let neighborhoodData;
+/** @type {WeakMap<Neighborhood, { rings: [number, number][][], bounds: [number, number, number, number] }>} */
+const areaProjectionCache = new WeakMap();
 let showNeighborhoods = false;
 let showLocalAreas = false;
 let vividColors = true;
@@ -484,14 +486,17 @@ function drawLighting() {
 function drawAreaOverlays(z, panX, panY, scale) {
   if (neighborhoodData === undefined || z < 3) return;
   const planningAreas = showNeighborhoods
-    ? neighborhoodData.features.filter((area) => area.kind === "planning_neighborhood")
+    ? neighborhoodData.features.filter(
+        (area) =>
+          area.kind === "planning_neighborhood" && areaNearViewport(area, panX, panY, scale),
+      )
     : [];
   const localAreas = showLocalAreas
     ? neighborhoodData.features.filter(
         (area) =>
           area.kind === "local_area" &&
           localAreaVisible(area, z) &&
-          areaLabelNearViewport(area, panX, panY, scale),
+          areaNearViewport(area, panX, panY, scale),
       )
     : [];
   const suppressedParents = new Set(
@@ -583,18 +588,38 @@ function areaLabel(area) {
 }
 
 /** @param {Neighborhood} area @param {number} panX @param {number} panY @param {number} scale */
-function areaLabelNearViewport(area, panX, panY, scale) {
-  const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
-  const x = panX + (isoX - city().iso_bounds[0]) * scale;
-  const y = panY + (isoY - city().iso_bounds[1]) * scale;
-  return x >= -120 && y >= 36 && x <= viewportWidth + 120 && y <= viewportHeight + 80;
+function areaNearViewport(area, panX, panY, scale) {
+  const projected = cachedAreaProjection(area);
+  const left = panX + (projected.bounds[0] - city().iso_bounds[0]) * scale;
+  const top = panY + (projected.bounds[1] - city().iso_bounds[1]) * scale;
+  const right = panX + (projected.bounds[2] - city().iso_bounds[0]) * scale;
+  const bottom = panY + (projected.bounds[3] - city().iso_bounds[1]) * scale;
+  return right >= -80 && left <= viewportWidth + 80 && bottom >= 36 && top <= viewportHeight + 80;
+}
+
+/** @param {Neighborhood} area */
+function cachedAreaProjection(area) {
+  const cached = areaProjectionCache.get(area);
+  if (cached !== undefined) return cached;
+  const rings = area.rings.map((ring) => ring.map((point) => isometricLonLat(point[0], point[1])));
+  const points = rings.flat();
+  const projection = {
+    rings,
+    bounds: /** @type {[number, number, number, number]} */ ([
+      Math.min(...points.map((point) => point[0])),
+      Math.min(...points.map((point) => point[1])),
+      Math.max(...points.map((point) => point[0])),
+      Math.max(...points.map((point) => point[1])),
+    ]),
+  };
+  areaProjectionCache.set(area, projection);
+  return projection;
 }
 
 /** @param {Neighborhood} area @param {number} panX @param {number} panY @param {number} scale */
 function projectArea(area, panX, panY, scale) {
-  return area.rings.map((ring) =>
-    ring.map((point) => {
-      const [isoX, isoY] = isometricLonLat(point[0], point[1]);
+  return cachedAreaProjection(area).rings.map((ring) =>
+    ring.map(([isoX, isoY]) => {
       return {
         x: panX + (isoX - city().iso_bounds[0]) * scale,
         y: panY + (isoY - city().iso_bounds[1]) * scale,
@@ -965,10 +990,15 @@ async function loadNeighborhoods() {
     if (!isNeighborhoods(loaded)) throw new Error("neighborhood data has the wrong shape");
     neighborhoodData = loaded;
     neighborhoodsToggle.title = loaded.disclaimer;
+    localAreasToggle.title = "Toggle selected local cultural and commercial areas";
+    neighborhoodsToggle.disabled = richMode;
+    localAreasToggle.disabled = richMode;
     draw();
   } catch {
     neighborhoodsToggle.disabled = true;
+    localAreasToggle.disabled = true;
     neighborhoodsToggle.title = "Neighborhood boundaries are unavailable";
+    localAreasToggle.title = "Local-area overlays are unavailable";
   }
 }
 
