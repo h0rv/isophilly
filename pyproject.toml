@@ -66,6 +66,8 @@ oblique-status = { cmd = "python -m isophilly_ingest.coastal_obliques status", u
 oblique-review = { cmd = "bash -lc 'python -m isophilly_ingest.coastal_obliques metadata && python -m isophilly_ingest.coastal_obliques contact-sheet'", use_exec = true }
 oblique-sfm = { cmd = "python -m isophilly_ingest.coastal_obliques sfm-handoff", use_exec = true }
 oblique-sfm-plan = { cmd = "python -m isophilly_ingest.coastal_obliques sfm-plan", use_exec = true }
+land-cover-audit = { cmd = "python -m isophilly_ingest.land_cover audit", use_exec = true }
+land-cover-fetch = { cmd = "python -m isophilly_ingest.land_cover fetch", use_exec = true }
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
 static-export = { cmd = "python scripts/export_static.py", use_exec = true }

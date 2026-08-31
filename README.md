@@ -7,8 +7,10 @@ See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data prove
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
 scene, the legacy 2008/09 downtown and stadium-area textured models, and 2025
-City aerial photography. The launch view stays inside the strongest Center City
-source and offers four prebuilt 90-degree orientations. A toggle opens the
+City aerial photography. The official 2025 Philadelphia Parks & Recreation
+tree inventory adds depth-tested street-tree points across the city. The launch
+view stays inside the strongest Center City source and offers four prebuilt
+90-degree orientations. A toggle opens the
 citywide illustrated overview without implying that its aerial-derived walls
 are photographed facades.
 
@@ -31,7 +33,8 @@ uv run --locked poe serve
 
 Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
 `ingest` downloads official City Limits, Building Footprints, hydrology, park
-boundaries, OpenStreetMap building parts, and the 2015 Center City 3D model. It
+boundaries, the byte-pinned 2025 tree inventory, OpenStreetMap building parts,
+and the 2015 Center City 3D model. It
 also imports the highest-detail legacy downtown and stadium KML/COLLADA models.
 For the downtown source, new checkouts download PASDA's smaller `kml00.zip`.
 Existing checkouts reuse `data/raw/Philadelphia2008_downtown_kml.zip` when it is
@@ -39,8 +42,8 @@ present. It writes one `philly.bin` input plus a `meta.json` provenance record.
 The download and conversion are the slow first run step.
 The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
-Existing checkouts must rerun `ingest` because world format version 8 adds
-surface masks and height-backed building parts to the single render input.
+Existing checkouts must rerun `ingest` because world format version 9 adds
+the packed street-tree layer to the single render input.
 `prebuild` renders the citywide z8 scene and creates z0 through z7 by resizing
 those tiles. It also renders four Center City views at z5 and derives z0
 through z4 for each view. The Center City work makes a new prebuild heavier,
@@ -110,8 +113,12 @@ The exporter checks the completed inventories and rejects builds that exceed
 the Cloudflare Free plan limits of 20,000 files or 25 MiB per file. Static
 asset requests and storage do not incur a charge. See the official
 [Static Assets limits and billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
-documentation. Run `npx wrangler deploy` when the dry run and local preview
-pass and you are ready to publish.
+documentation. The export and preview commands are local checks. Do not run
+`npx wrangler deploy` until the release rights gates below are satisfied. The
+project needs written permission to redistribute tiles that contain City or
+PASDA texture pixels. PA DEP derived pixels have separate distribution and
+notification terms. After those rights are recorded, run the deploy command
+only when the dry run and local preview pass.
 
 Generated data and tiles are intentionally gitignored. See the [data pipeline
 and attribution notes](docs/DATA.md) before publishing a build.
@@ -119,12 +126,14 @@ The [research record](docs/RESEARCH.md) also documents the audited April 2025
 PASDA LiDAR candidate and why Google's 3-D map products are viable only as a
 live, billed mode rather than as saved source pixels for this project.
 The full 664-tile City-intersection LiDAR evidence queue was explicitly
-authorized on 2026-08-30, but remains opt-in, resumable, and separate from
-normal ingest. It improves geometry rather than facades; rejected-source gaps
-are explicit in provenance. Locally partial evidence is never canonical,
-while a canonical locally complete merge may record upstream source gaps and
-retain City fallback heights there. See [the data record](docs/DATA.md) for the
-confirmed PASDA-truncated source and recovery gate.
+authorized on 2026-08-30 and completed on 2026-08-31. The canonical schema-3
+merge accounts for 653 evidence tiles, three outside-City tiles, and eight
+structurally truncated PASDA sources; the rebuilt world applies trustworthy
+LiDAR heights to 292,048 buildings and retains City fallback heights in the
+recorded source gaps. It improves geometry rather than facades. See [the data
+record](docs/DATA.md) for the exact manifest, rejection rules, and recovery
+gate. The workflow remains opt-in, resumable, and separate from normal ingest;
+locally partial evidence is never canonical.
 The dated [PASDA facade audit](docs/PASDA_AUDIT.md) is the canonical inventory
 of photographed-side sources, duplicate archives, and conditions for reopening
 that research.
@@ -139,14 +148,17 @@ uv run --locked poe oblique-sfm
 uv run --locked poe oblique-sfm-plan
 ```
 
-This pins the official 2014 Schuylkill inventory, downloads one resumable frame,
-and produces labeled review artifacts with recorded hashes and tool versions
-without asserting georeferencing. The contact sheet decodes one full size JPEG
-at a time, saves a verified 320 by 240 thumbnail, and gives only the small
-thumbnails to ImageMagick montage. The cache key includes each source hash and
+`oblique-next` downloads one resumable frame by default. Repeating it or using
+the bounded all-frame workflow can complete the pinned 191-frame source set.
+The local workspace currently contains all 191 pinned JPEGs, but their presence
+does not assert reconstruction or georeferencing. The review command produces
+labeled artifacts with recorded hashes and tool versions. The contact sheet
+decodes one full size JPEG at a time and saves a verified 320 by 240 thumbnail.
+It gives only the small thumbnails to ImageMagick montage. The cache key
+includes each source hash and
 the ImageMagick version, so an interrupted run resumes without accepting stale
-thumbnails. The SfM handoff requires at least 20 contiguous frames
-by default and records collection completeness; one smoke frame is intentionally
+thumbnails. The SfM handoff requires at least 20 contiguous frames by default
+and records collection completeness. One smoke frame is intentionally
 insufficient.
 After all 191 JPEGs are present, `oblique-sfm-plan` performs a local-only
 preflight: it hashes every source image, reads the audited EXIF and dimensions,
@@ -174,7 +186,8 @@ The visual task is the repeatable browser release gate. It starts the local
 server, captures the citywide audit views plus all four Center City
 orientations, verifies Rocky in every orientation, exercises rotation and
 keyboard navigation at a 390-pixel mobile viewport, checks tile settlement and
-response policy, and writes screenshots plus a JSON timing report under
+response policy, rejects a rebuilt scene unless it has exactly 151,371 packed
+trees, and writes screenshots plus a JSON timing report under
 `artifacts/visual/`.
 
 Install a current Node.js LTS release and
@@ -188,7 +201,7 @@ ecosystems plus GitHub Actions.
 ## How it fits together
 
 ```text
-2015 I3S + 2008/09 COLLADA + City footprints + OSM parts + PASDA aerial
+2015 I3S + 2008/09 COLLADA + City footprints + PPR trees + OSM parts + PASDA aerial
              |
              v
 Python + GeoPandas/Shapely  ->  data/clean/philly.bin

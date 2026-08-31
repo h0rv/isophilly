@@ -82,7 +82,7 @@ def _cached(source: Source) -> Snapshot | None:
         if not source.accepts_size(path.stat().st_size):
             continue
         sha256 = _cached_local_digest(path)
-        if path.stem.removeprefix(prefix) != sha256[:12]:
+        if path.stem.removeprefix(prefix) != sha256[:12] or not source.accepts_digest(sha256):
             continue
         modified = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
         return Snapshot(
@@ -115,12 +115,15 @@ def local_snapshot(source: Source, path: Path) -> Snapshot:
             f"{source.name} archive has only {size:,} bytes; "
             f"expected at least {source.minimum_bytes:,}"
         )
+    sha256 = _cached_local_digest(path)
+    if not source.accepts_digest(sha256):
+        raise DownloadError(f"{source.name} archive SHA-256 does not match its pinned digest")
     modified = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
     return Snapshot(
         name=source.name,
         url=source.url,
         path=path,
-        sha256=_cached_local_digest(path),
+        sha256=sha256,
         size=size,
         fetched_at=modified,
         etag=None,
@@ -184,13 +187,13 @@ def _download_with_client(source: Source, client: httpx.Client) -> Snapshot:
             with client.stream("GET", source.url) as response:
                 response.raise_for_status()
                 snapshot = _save_response(source, response)
-                if source.accepts_size(snapshot.size):
+                if source.accepts_size(snapshot.size) and source.accepts_digest(snapshot.sha256):
                     return snapshot
                 cached = _cached(source)
                 if cached is None:
                     raise DownloadError(
                         f"{source.name} returned only {snapshot.size:,} bytes; "
-                        f"expected at least {source.minimum_bytes:,}"
+                        f"expected at least {source.minimum_bytes:,} bytes and its pinned digest"
                     )
                 print(
                     f"warning: {source.name} refresh was incomplete "

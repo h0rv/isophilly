@@ -1,4 +1,5 @@
 mod building_render;
+mod land_cover;
 mod mesh_render;
 mod mesh_texture;
 mod projection;
@@ -8,6 +9,8 @@ mod scene;
 mod server;
 mod texture;
 mod tile_codec;
+mod tile_identity;
+mod tree_render;
 mod world;
 
 use std::{io, path::Path};
@@ -16,6 +19,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
+    land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     server::{prebuild, prebuild_is_complete, serve},
     texture::AerialSource,
@@ -57,7 +61,11 @@ async fn main() -> io::Result<()> {
     match cli.command {
         Command::Prebuild { jobs } => {
             let world_path = Path::new("data/clean/philly.bin");
-            if prebuild_is_complete(&world_digest(world_path)?) {
+            let land_cover =
+                LandCoverMask::open_optional(Path::new("data/clean/land-cover-2018.isomask"))?;
+            let land_cover_sha256 = land_cover.as_ref().map(LandCoverMask::artifact_sha256);
+            drop(land_cover);
+            if prebuild_is_complete(&world_digest(world_path)?, land_cover_sha256.as_ref()) {
                 return Ok(());
             }
             let world = load_world(world_path)?;
@@ -72,7 +80,7 @@ async fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
             println!("prebuild using {jobs} workers");
-            pool.install(|| prebuild(&world, &aerial, &mesh_textures))
+            pool.install(|| prebuild(&world, &aerial, &mesh_textures, land_cover_sha256.as_ref()))
         }
         Command::Serve { port } => serve(port).await,
     }

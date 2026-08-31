@@ -903,6 +903,9 @@ try {
   if (!Number.isInteger(meta.counts?.building_meshes) || meta.counts.building_meshes < 1) {
     throw new Error(`server has no detailed building meshes: ${JSON.stringify(meta.counts)}`);
   }
+  if (meta.counts?.street_trees !== 151_371) {
+    throw new Error(`server has no complete street-tree layer: ${JSON.stringify(meta.counts)}`);
+  }
   if (!Array.isArray(meta.city_hall) || meta.city_hall.length !== 2) {
     throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
   }

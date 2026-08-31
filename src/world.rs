@@ -349,6 +349,21 @@ pub struct Building {
     pub height: f32,
     pub ring: Ring,
 }
+#[derive(Clone, Copy)]
+pub struct StreetTree {
+    pub point: (f32, f32),
+    pub diameter: f32,
+}
+
+impl StreetTree {
+    pub fn height(self) -> f32 {
+        (self.diameter * 8.0 + 3.0).clamp(3.5, 15.0)
+    }
+
+    pub fn crown_radius(self) -> f32 {
+        (self.diameter * 2.2 + 1.0).clamp(1.2, 5.0)
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoofShape {
     Flat,
@@ -427,6 +442,7 @@ pub struct World {
     pub city: Vec<Ring>,
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
+    pub street_trees: Vec<StreetTree>,
     pub building_iso_tree: RTree<Indexed>,
     pub building_source_tree: RTree<Indexed>,
     pub building_covered_by_mesh: Vec<bool>,
@@ -441,6 +457,8 @@ pub struct World {
     pub city_tree: RTree<Indexed>,
     pub water_tree: RTree<Indexed>,
     pub park_tree: RTree<Indexed>,
+    pub street_tree_iso_tree: RTree<Indexed>,
+    pub street_tree_source_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
     pub rich_source_bounds: Option<Bounds>,
     pub max_height: f32,
@@ -537,7 +555,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
             "not isophilly data",
         ));
     }
-    if cursor.u32()? != 8 {
+    if cursor.u32()? != 9 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -555,6 +573,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let city_ring_count = cursor.u32()? as usize;
     let water_count = cursor.u32()? as usize;
     let park_count = cursor.u32()? as usize;
+    let street_tree_count = cursor.u32()? as usize;
     let texture_sha256 = cursor
         .take(32)?
         .try_into()
@@ -654,6 +673,19 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let parks = (0..park_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
+    cursor.ensure_items(street_tree_count, 12)?;
+    let mut street_trees = Vec::with_capacity(street_tree_count);
+    for _ in 0..street_tree_count {
+        let point = (cursor.f32()?, cursor.f32()?);
+        let diameter = cursor.f32()?;
+        if !(0.0254..=2.0).contains(&diameter) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "street-tree diameter is outside the supported range",
+            ));
+        }
+        street_trees.push(StreetTree { point, diameter });
+    }
     if cursor.remaining() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -701,6 +733,8 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         .collect();
     let building_detailed_by_parts =
         detailed_buildings(&buildings, &building_source_tree, &building_parts);
+    let street_tree_iso_tree = index_street_trees(&street_trees, View::SouthEast);
+    let street_tree_source_tree = index_source_street_trees(&street_trees);
     let mut texture_ids: Vec<_> = building_meshes.iter().map(|mesh| mesh.texture_id).collect();
     texture_ids.sort_unstable();
     texture_ids.dedup();
@@ -719,6 +753,8 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         city_tree: index_rings(&city),
         water_tree: index_rings(&water),
         park_tree: index_rings(&parks),
+        street_tree_iso_tree,
+        street_tree_source_tree,
         buildings,
         building_parts,
         building_meshes,
@@ -728,6 +764,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         city,
         water,
         parks,
+        street_trees,
         iso_bounds: bounds.isometric(max_height),
         rich_source_bounds,
         max_height,
@@ -994,6 +1031,44 @@ fn index_rings(rings: &[Ring]) -> RTree<Indexed> {
             .collect(),
     )
 }
+fn index_street_trees(trees: &[StreetTree], view: View) -> RTree<Indexed> {
+    RTree::bulk_load(
+        trees
+            .iter()
+            .enumerate()
+            .map(|(index, tree)| {
+                let radius = tree.crown_radius();
+                let source = Bounds {
+                    min_x: tree.point.0 - radius,
+                    min_y: tree.point.1 - radius,
+                    max_x: tree.point.0 + radius,
+                    max_y: tree.point.1 + radius,
+                };
+                indexed(index, source.projected(tree.height(), view))
+            })
+            .collect(),
+    )
+}
+fn index_source_street_trees(trees: &[StreetTree]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        trees
+            .iter()
+            .enumerate()
+            .map(|(index, tree)| {
+                let radius = tree.crown_radius();
+                indexed(
+                    index,
+                    Bounds {
+                        min_x: tree.point.0 - radius,
+                        min_y: tree.point.1 - radius,
+                        max_x: tree.point.0 + radius,
+                        max_y: tree.point.1 + radius,
+                    },
+                )
+            })
+            .collect(),
+    )
+}
 fn indexed(index: usize, bounds: Bounds) -> Indexed {
     Indexed {
         index,
@@ -1142,7 +1217,7 @@ mod tests {
     }
 
     fn golden_world() -> std::io::Result<Vec<u8>> {
-        let hex = include_str!("../tests/fixtures/world-v8.hex")
+        let hex = include_str!("../tests/fixtures/world-v9.hex")
             .trim()
             .as_bytes();
         if !hex.len().is_multiple_of(2) {
@@ -1444,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_python_v8_golden_world() -> std::io::Result<()> {
+    fn parses_python_v9_golden_world() -> std::io::Result<()> {
         let bytes = golden_world()?;
         let digest = Sha256::digest(&bytes).into();
         let world = parse_world(&bytes, digest)?;
@@ -1458,6 +1533,9 @@ mod tests {
         assert_eq!(world.city.len(), 1);
         assert_eq!(world.water.len(), 1);
         assert_eq!(world.parks.len(), 1);
+        assert_eq!(world.street_trees.len(), 1);
+        assert_eq!(world.street_trees[0].point, (5.0, 5.0));
+        assert_eq!(world.street_trees[0].diameter, 0.25);
         assert_eq!(world.texture_ids, vec![7]);
         assert_eq!(
             world.texture_sha256,

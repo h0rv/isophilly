@@ -39,6 +39,12 @@ class Building:
     ring: Ring
 
 
+@dataclass(frozen=True, slots=True)
+class StreetTree:
+    point: Point
+    diameter_m: float
+
+
 class RoofShape(IntEnum):
     FLAT = 0
     GABLED = 1

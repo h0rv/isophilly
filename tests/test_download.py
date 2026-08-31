@@ -214,6 +214,64 @@ class DownloadTests(unittest.TestCase):
         assert snapshot is not None
         self.assertEqual(snapshot.path, newer)
 
+    def test_pinned_cache_prefers_older_expected_digest_over_newer_wrong_file(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        expected_payload = b"reviewed immutable snapshot"
+        wrong_payload = b"newer unreviewed replacement"
+        expected_sha = hashlib.sha256(expected_payload).hexdigest()
+        wrong_sha = hashlib.sha256(wrong_payload).hexdigest()
+        source = Source(
+            "Pinned data",
+            "pinned-data",
+            "https://example.test/pinned",
+            "bin",
+            immutable=True,
+            expected_sha256=expected_sha,
+        )
+        expected = root / f"pinned-data-{expected_sha[:12]}.bin"
+        wrong = root / f"pinned-data-{wrong_sha[:12]}.bin"
+        expected.write_bytes(expected_payload)
+        wrong.write_bytes(wrong_payload)
+        os.utime(expected, ns=(1, 1))
+        os.utime(wrong, ns=(2, 2))
+
+        with patch("isophilly_ingest.download.RAW_DIR", root):
+            snapshot = cached_snapshot(source)
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.path, expected)
+
+    def test_pinned_download_recovers_to_older_expected_cache(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        expected_payload = b"reviewed immutable snapshot"
+        expected_sha = hashlib.sha256(expected_payload).hexdigest()
+        source = Source(
+            "Pinned data",
+            "pinned-data",
+            "https://example.test/pinned",
+            "bin",
+            immutable=True,
+            expected_sha256=expected_sha,
+        )
+        expected = root / f"pinned-data-{expected_sha[:12]}.bin"
+        expected.write_bytes(expected_payload)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"unreviewed replacement", request=request)
+
+        with (
+            patch("isophilly_ingest.download.RAW_DIR", root),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            snapshot = _download_with_client(source, client)
+
+        self.assertEqual(snapshot.path, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

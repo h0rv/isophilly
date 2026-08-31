@@ -18,6 +18,7 @@ use crate::{
     scene::Scene,
     texture::AerialSource,
     tile_codec::{EXTENSION, MEDIA_TYPE},
+    tile_identity::{base_tile_version, is_generation_of, rich_tile_version},
     world::World,
 };
 
@@ -43,8 +44,6 @@ struct TileCoverage {
     tile_version: String,
     tiles: Vec<String>,
 }
-
-const PYRAMID_VERSION: &str = "v46-procedural-facades";
 
 pub async fn serve(port: u16) -> io::Result<()> {
     let scene = Arc::new(Scene::read_current()?);
@@ -118,8 +117,9 @@ pub fn prebuild(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
+    land_cover_sha256: Option<&[u8; 32]>,
 ) -> io::Result<()> {
-    let base_version = tile_version(world);
+    let base_version = base_tile_version(&world.world_sha256, land_cover_sha256);
     let tile_root = PathBuf::from("data/tiles");
     std::fs::create_dir_all(&tile_root)?;
     let build_lock = OpenOptions::new()
@@ -157,16 +157,16 @@ pub fn prebuild(
         };
         rich_versions.push((view, rich_version));
     }
-    let scene = Scene::from_world(world, tile_version, &rich_versions)?;
+    let scene = Scene::from_world(world, land_cover_sha256, tile_version, &rich_versions)?;
     scene.write_current()
 }
 
-pub fn prebuild_is_complete(world_sha256: &[u8; 32]) -> bool {
-    let base_version = tile_version_for_digest(world_sha256);
+pub fn prebuild_is_complete(world_sha256: &[u8; 32], land_cover_sha256: Option<&[u8; 32]>) -> bool {
+    let base_version = base_tile_version(world_sha256, land_cover_sha256);
     let Ok(current) = Scene::read_current() else {
         return false;
     };
-    if !current.matches_world(world_sha256)
+    if !current.matches_inputs(world_sha256, land_cover_sha256)
         || !is_generation_of(&current.tile_version, &base_version)
         || pyramid::validate_complete(&tile_cache_dir(&current.tile_version)).is_err()
         || current
@@ -370,36 +370,6 @@ fn logged_image(
         .into_response()
 }
 
-fn tile_version(world: &World) -> String {
-    tile_version_for_digest(&world.world_sha256)
-}
-
-fn tile_version_for_digest(world_sha256: &[u8; 32]) -> String {
-    let suffix = world_sha256[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("{PYRAMID_VERSION}-{suffix}")
-}
-
-fn rich_tile_version(tile_version: &str, view: crate::world::View) -> String {
-    format!(
-        "{tile_version}-rich-{}-z{}-full",
-        view.id(),
-        pyramid::RICH_ART_ZOOM
-    )
-}
-
-fn is_generation_of(candidate: &str, base: &str) -> bool {
-    candidate == base
-        || candidate
-            .strip_prefix(base)
-            .and_then(|suffix| suffix.strip_prefix("-r"))
-            .is_some_and(|revision| {
-                !revision.is_empty() && revision.bytes().all(|byte| byte.is_ascii_digit())
-            })
-}
-
 fn available_tile_version(base: &str) -> io::Result<String> {
     let mut revision = 0_u32;
     loop {
@@ -420,26 +390,4 @@ fn available_tile_version(base: &str) -> io::Result<String> {
 
 fn tile_cache_dir(tile_version: &str) -> PathBuf {
     PathBuf::from("data/tiles").join(tile_version)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_generation_of, rich_tile_version};
-    use crate::world::View;
-
-    #[test]
-    fn tile_generations_are_exact() {
-        assert!(is_generation_of("v1-abc", "v1-abc"));
-        assert!(is_generation_of("v1-abc-r2", "v1-abc"));
-        assert!(!is_generation_of("v1-abc-r", "v1-abc"));
-        assert!(!is_generation_of("v1-abcd", "v1-abc"));
-    }
-
-    #[test]
-    fn rich_tile_versions_include_view_resolution_and_full_ground() {
-        assert_eq!(
-            rich_tile_version("v1-abc", View::NorthWest),
-            "v1-abc-rich-nw-z5-full"
-        );
-    }
 }

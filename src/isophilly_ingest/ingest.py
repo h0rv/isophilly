@@ -30,19 +30,36 @@ from .config import (
     ROOT,
     SOURCES,
     STADIUM_ARCHIVE,
+    STREET_TREE_SOURCE_SHA256,
     TEXTURE_COVERAGE_JSON,
     WORLD_BIN,
 )
 from .download import download_all, local_snapshot
-from .geometry import buildings, city_rings, ground_rings, projected
+from .geometry import (
+    buildings,
+    city_rings,
+    ground_rings,
+    projected,
+    street_trees,
+    validate_street_tree_output,
+)
 from .lidar import MERGED_EVIDENCE_PATH, PASDA_LAS_URL, load_height_evidence, preflight_merge_read
 from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
-from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot
+from .models import (
+    Bounds,
+    Building,
+    BuildingMesh,
+    BuildingPart,
+    MeshFace,
+    Ring,
+    Snapshot,
+    StreetTree,
+)
 from .osm import building_parts, source_metadata
 from .quality import texture_coverage_report, write_texture_coverage
 
 WORLD_MAGIC = b"GEOPHILY"
-VERSION = 8
+VERSION = 9
 
 
 def load(snapshot: Snapshot) -> gpd.GeoDataFrame:
@@ -87,6 +104,7 @@ def write_world(
     city: list[Ring],
     water: list[Ring],
     parks: list[Ring],
+    trees: list[StreetTree],
     bounds: Bounds,
     texture_sha256: bytes,
 ) -> None:
@@ -95,7 +113,7 @@ def write_world(
     file.write(WORLD_MAGIC)
     file.write(
         struct.pack(
-            "<IIIIIIII",
+            "<IIIIIIIII",
             VERSION,
             EPSG,
             len(packed_buildings),
@@ -104,6 +122,7 @@ def write_world(
             len(city),
             len(water),
             len(parks),
+            len(trees),
         )
     )
     file.write(texture_sha256)
@@ -124,6 +143,8 @@ def write_world(
         write_ring(file, outline)
     for outline in parks:
         write_ring(file, outline)
+    for tree in trees:
+        file.write(struct.pack("<fff", tree.point[0], tree.point[1], tree.diameter_m))
 
 
 def pack_world(
@@ -134,13 +155,23 @@ def pack_world(
     city: list[Ring],
     water: list[Ring],
     parks: list[Ring],
+    trees: list[StreetTree],
     bounds: Bounds,
     texture_sha256: bytes,
 ) -> None:
     temporary = path.with_suffix(".bin.part")
     with temporary.open("wb") as file:
         write_world(
-            file, packed_buildings, parts, meshes, city, water, parks, bounds, texture_sha256
+            file,
+            packed_buildings,
+            parts,
+            meshes,
+            city,
+            water,
+            parks,
+            trees,
+            bounds,
+            texture_sha256,
         )
     temporary.replace(path)
 
@@ -151,6 +182,14 @@ def sha256(path: Path) -> str:
         while chunk := file.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_tree_snapshot(snapshot: Snapshot) -> None:
+    if snapshot.sha256 != STREET_TREE_SOURCE_SHA256:
+        raise ValueError(
+            "2025 tree inventory bytes changed; review the official replacement, schema, "
+            "count, and license before updating STREET_TREE_SOURCE_SHA256"
+        )
 
 
 def write_metadata(
@@ -164,6 +203,7 @@ def write_metadata(
     city: list[Ring],
     water: list[Ring],
     parks: list[Ring],
+    trees: list[StreetTree],
     texture_sha256: bytes,
     texture_bytes: int,
     texture_coverage: dict[str, object],
@@ -221,6 +261,7 @@ def write_metadata(
             "city_rings": len(city),
             "water": len(water),
             "parks": len(parks),
+            "street_trees": len(trees),
         },
         "height_m": {
             "buildings": {"min": min(heights), "max": max(heights)},
@@ -303,6 +344,8 @@ async def main_async(*, refresh: bool = False) -> None:
         print(f"verifying {source.name}", flush=True)
         snapshots[filename] = local_snapshot(source, path)
     print(f"loaded {len(snapshots)} source snapshots", flush=True)
+    tree_snapshot = snapshots[SOURCES.street_trees.filename]
+    validate_tree_snapshot(tree_snapshot)
     print("projecting and clipping citywide footprints", flush=True)
     city, packed_city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     height_evidence: dict[str, float] | None = None
@@ -318,6 +361,8 @@ async def main_async(*, refresh: bool = False) -> None:
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
+    trees = street_trees(load(tree_snapshot), city)
+    validate_street_tree_output(trees)
     if len(packed_buildings) < MIN_BUILDING_COUNT:
         raise ValueError(
             f"building source produced only {len(packed_buildings):,} usable footprints; "
@@ -325,6 +370,7 @@ async def main_async(*, refresh: bool = False) -> None:
         )
     print(f"packed {len(packed_buildings):,} building footprints", flush=True)
     print(f"packed {len(parts):,} height-backed building parts", flush=True)
+    print(f"packed {len(trees):,} inventoried street trees", flush=True)
     staging = prepare_clean_staging()
     texture_dir = staging / MESH_TEXTURE_DIR.name
     print("importing textured mesh sources", flush=True)
@@ -366,6 +412,7 @@ async def main_async(*, refresh: bool = False) -> None:
         packed_city,
         water,
         parks,
+        trees,
         bounds,
         texture_sha256,
     )
@@ -380,6 +427,7 @@ async def main_async(*, refresh: bool = False) -> None:
         packed_city,
         water,
         parks,
+        trees,
         texture_sha256,
         texture_bytes,
         texture_coverage,

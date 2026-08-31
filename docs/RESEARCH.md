@@ -1,6 +1,6 @@
 # Research: deterministic isometric Philadelphia
 
-Research updated: 2026-08-30. This is deliberately a **data-and-rendering**
+Research updated: 2026-08-31. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
@@ -48,8 +48,10 @@ the roofs, and derive a restrained wall palette from the same local pixels.
 This gives every neighborhood real geometry, height, roof detail, and local
 color while remaining honest that unseen walls are illustrative.
 
-Defer citywide point-cloud reconstruction, vegetation geometry, and an
-interactive 3-D engine. The City footprint service has **546,084** features
+Defer citywide point-cloud reconstruction, canopy or LiDAR-derived vegetation
+geometry, and an interactive 3-D engine. The active renderer already uses the
+official 2025 PPR street-tree inventory as a point-based visual layer. The City
+footprint service has **546,084** features
 (count queried
 2026-08-26); it is large but tractable offline. The captured GeoJSON is
 **476.4 MB** on disk. The earlier 110 MB estimate incorrectly inferred size
@@ -102,7 +104,9 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | --- | --- | --- | --- | --- |
 | 1. City clip | [City Limits catalog](https://opendataphilly.org/datasets/city-limits/) and [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/City_Limits/FeatureServer/0) | Official generalized standard boundary; catalog says updated 2012/as needed. | One small polygon; trivial. | Use as outer mask only; do not infer shoreline precision. |
 | 1. Buildings | [Building Footprints catalog](https://opendataphilly.org/datasets/building-footprints/), [GeoJSON download](https://hub.arcgis.com/api/v3/datasets/ab9e89e1273f445bb265846c90b38a96_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1), [FeatureServer](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/LI_BUILDING_FOOTPRINTS/FeatureServer/0) | Official planimetric outlines; City service describes early-2015 imagery plus continuous updates, catalog says weekly. It includes houses, commercial/industrial buildings, sheds, garages, etc. | 546,084 polygons; 476.4 MB GeoJSON captured on 2026-08-26; expect several hundred MB RAM in Python/GDAL. Batch/page or download snapshot once—never render straight from HTTP. | Core layer. Dissolve/clip/simplify only after retaining an immutable raw snapshot. |
-| 1. Water and parks | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) and City PPR properties | Small official masks that identify which aerial pixels represent water or vegetation. | Small vector layers. | Apply restrained color grading to the aerial image. Never replace it with flat polygons. |
+| 1. Water | [Hydrology catalog](https://opendataphilly.org/datasets/hydrology/) and [FeatureServer layer 1](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Hydrographic_Features_Poly/FeatureServer/1) | Official hydrology polygons. The retained 2026-08-27 snapshot is 6,151,395 bytes with SHA-256 `8e5b08218bb956e7ef8f266924a07966f570384ac1c303bd55c8ea68661361e8`. The current clean snapshot retains 69 rings. The retrieval date does not assert survey vintage. | Small vector layer. | Apply restrained color grading to matching aerial pixels. Never replace the aerial image with flat polygons. |
+| 1. Parks | [PPR Properties FeatureServer layer 0](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/PPR_Properties/FeatureServer/0) | Official park properties. The retained 2026-08-27 snapshot is 2,265,530 bytes with SHA-256 `50764361fbd49473ffdc06cd1443ab733554244edb3cf329773bdb4832fae4c7`. The current clean snapshot retains 659 polygons. The retrieval date does not assert survey vintage. | Small vector layer. | Grade only aerial pixels that already look like vegetation. Never replace the aerial image with flat polygons. |
+| 1. Street trees | [2025 Philadelphia Tree Inventory](https://opendataphilly.org/datasets/philadelphia-tree-inventory/), ArcGIS item `dc6826e1319c4b35a7b662bc6be68104_0` | Official 2025 PPR inventory. The pinned snapshot has 151,726 records, and 151,371 point geometries inside City Limits are retained. OpenDataPhilly identifies the City of Philadelphia License and no warranty. | The retained GeoJSON is 42,795,780 bytes with SHA-256 `cdec5a2141ef4c754ef714c76ca4a0203356dffb2bd14cde6d362e9353bd5a05`. | Render depth-tested tree proxies during prebuild. DBH informs a clamped visual size. The layer is an inventory, not complete vegetation coverage or measured crown and height geometry. |
 | Removed. Roads | [Street Centerlines catalog](https://opendataphilly.org/datasets/street-centerlines/) | Citywide reference linework, not exact road surfaces. | Manageable but visually noisy. | Do not ingest while the aerial image is the road surface. |
 | 1. Center City parts | [OpenStreetMap Simple 3D Buildings](https://wiki.openstreetmap.org/wiki/Simple_3D_Buildings) | The current snapshot provides 827 height-backed parts, including the Comcast Technology Center shaft and wings. | Small cached snapshot; live Overpass refresh is optional. | Use as fallback geometry only where no photographed mesh exists. Suppress the parent footprint when parts cover most of it. |
 | 1. Center City scene | [Philadelphia Buildings I3S service](https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer) | 367 official detailed chunks with roofs, facades, setbacks, landmarks, UV coordinates, and JPEG atlases. | About 38 MB of binary geometry and 146 MB of atlases in the current cache. | Render the textured triangles into four canonical z5 orientations. Fill gaps with City and OpenStreetMap geometry, but let only the 2015 mesh suppress those fallbacks. Get written City permission before redistributing tiles that include the atlases. |
@@ -111,6 +115,46 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025 three-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
 | 2. Terrain/height | [2025 LiDAR full metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml); [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/) | Genuine citywide April 2025 classified LiDAR. LAS 1.4 point format 6 includes intensity but no RGB or NIR; one central sample measured about 62 returns/m². | 963 raw LAS files totaling 362.82 GiB. Full metadata lists access and use constraints as “None.” | The user explicitly authorized the opt-in 664-tile City-intersection evidence queue on 2026-08-30 after the bounded-pilot design review. Process resumably and discard validated raw tiles. It cannot provide photographic facades, and partial evidence never becomes canonical. |
 | 3. Street facade reference | [KartaView photo API](https://kartaview.org/doc/photos), [license FAQ](https://kartaview.org/doc/faq) | Public crowdsourced photos expose position, heading, time, and image URLs under CC BY-SA 4.0. A Rittenhouse test found only three images within 500 m, from different years. | Coverage and camera pose are uneven. Correctly projecting a photo onto a visible wall also requires occlusion and attribution handling. | Useful future opt-in source, not a citywide default. Audit coverage before downloading, and never smear a nearby photo across an unmatched facade. |
+
+### PPR 2015 tree canopy source audit
+
+The City catalog describes the [PPR 2015 Tree Canopy
+Outlines](https://opendataphilly.org/datasets/ppr-tree-canopy/) as crowns wider
+than six feet. The City made the data from 2015 leaf off, three inch imagery,
+and it derived heights from 2015 LiDAR. The catalog applies the City of
+Philadelphia License. The public map labels `avg_height` in feet.
+
+A metadata and aggregate query audit on 2026-08-31 found 193,418 polygons in
+the [City CARTO table](https://cityofphiladelphia.carto.com/u/phl/tables/ppr_tree_canopy_outlines_2015/public).
+Its WGS84 bounds are `-75.2802459, 39.8713408` to
+`-74.9557098, 40.1378411`. The table has `objectid`, `polyid`, `fcode`,
+`avg_height`, `shape_length`, and `shape_area`, plus CARTO geometry fields.
+The main geometry uses EPSG:4326, and CARTO also stores a Web Mercator copy.
+The schema does not declare units for `shape_length` or `shape_area`, so an
+importer must not infer their units from the field names.
+Every row has `fcode` 3000 and a nonnull height. Heights range from 4 to 563
+feet, with a mean of 25.32 feet. The 50th, 90th, 95th, 99th, and 99.9th
+percentiles are 22, 45, 54, 70, and 84 feet. Eighty two rows exceed 100 feet,
+32 exceed 150 feet, nine exceed 200 feet, and four exceed 300 feet. Most of the
+largest values lie in Center City. Their locations and impossible tree heights
+are strong evidence of building or classification artifacts.
+
+The [ArcGIS service with the same
+name](https://services.arcgis.com/fLeGjb7u4uXqeF9q/ArcGIS/rest/services/PPR_Tree_Canopy_Outlines_2015/FeatureServer)
+is not a usable mirror. Its service JSON lists no layers or tables, and its
+advertised layer zero returns `Invalid URL`.
+Its stale service extent also covers only about 3.4 by 2.6 kilometres. Use the
+CARTO table as the only working official endpoint, and do not treat the ArcGIS
+service as a backup.
+
+Do not ingest the canopy outlines as measured tree geometry yet. A bounded
+pilot must first check polygon validity, confirm that the published bounds cover
+the intended City area, remove overlaps with current building footprints, and
+set a documented height rejection rule. Any accepted snapshot must record the
+endpoint, request time, byte count, SHA-256, row count, bounds, field schema,
+height distribution, and City license. The 2018 land cover raster remains the
+safer citywide vegetation mask because it has complete study area coverage and
+manual review.
 
 ### Citywide texture expansion
 
@@ -207,19 +251,16 @@ limit. On 2026-08-30 the user explicitly authorized the full opt-in queue of 664
 City-intersecting source tiles (289.51 GiB pinned). The queue remains resumable,
 checksum-verified, raw-discarding, and separate from normal ingest.
 
-PASDA currently lists five selected objects at exactly 200,000,000 bytes:
-`27086E256872N.las`, `27086E259512N.las`, `27086E262152N.las`,
-`27086E264792N.las`, and `27086E267432N.las`. Only the first has been fetched
-and structurally confirmed source-truncated: its exact listed payload SHA-256 is
-`c495f1e4258093b0aa3f8f7a641450f53c18937b0415f5955380cff6ad72a859`, while
-its LAS header requires 458,597,265 bytes. The other four are suspicious by
-size but are not called corrupt without structural evidence. A rejected source
-is recorded durably and excluded from retries/evidence. After all 664 sources
-are accounted for, canonical merge may remain locally complete while recording
-`source_coverage_complete:false`, rejected-source details, gap bounds, and
-affected-footprint counts; City heights remain the fallback in those gaps.
-`--allow-partial` is reserved for unfinished local processing, not an upstream
-PASDA defect.
+The completed 2026-08-31 queue accounts for all 664 selected sources: 653
+evidence tiles, three outside-City tiles, and eight exact but structurally
+truncated PASDA objects recorded as terminal `rejected_source` results. The
+canonical schema-3 merge contains 531,149 rows, records
+`source_coverage_complete:false`, and reports 10,429 union-deduplicated
+footprints intersecting rejected gaps. The subsequent ingest applied LiDAR
+heights to 292,048 buildings; City heights remain the fallback elsewhere.
+Use `uv run --locked poe lidar-status` and the canonical manifest for the exact
+filenames, validation records, gap bounds, and provenance. `--allow-partial`
+is reserved for unfinished local processing, not an upstream PASDA defect.
 
 The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
 downloads are alternate formats or lower LODs of the already-ingested 2,689

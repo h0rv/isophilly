@@ -56,7 +56,7 @@ permission from the City or PASDA.
 
 ## Known limits
 
-- World format version 8 stores exterior footprint rings. Courtyards and atria
+- World format version 9 stores exterior footprint rings. Courtyards and atria
   in the original footprint source are filled by the fallback extrusion.
 - The 2015 scene covers only Center City. The legacy downtown source is older
   and can show buildings that changed after 2009.

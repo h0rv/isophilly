@@ -27,6 +27,11 @@ CITY_SIMPLIFY_METERS = 1.0
 GROUND_SIMPLIFY_METERS = 1.0
 MIN_BUILDING_AREA_METERS = 10.0
 MIN_BUILDING_COUNT = 500_000
+STREET_TREE_SOURCE_ITEM_ID = "dc6826e1319c4b35a7b662bc6be68104_0"
+STREET_TREE_SOURCE_RECORD_COUNT = 151_726
+STREET_TREE_SOURCE_SHA256 = "cdec5a2141ef4c754ef714c76ca4a0203356dffb2bd14cde6d362e9353bd5a05"
+STREET_TREE_ACCEPTED_COUNT = 151_371
+STREET_TREE_PAYLOAD_SHA256 = "b47307b4134dea10fb0eace593a332ed135153202b7242ece2beb4f9ebb470d1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,9 +44,13 @@ class Source:
     attribution: str | None = None
     terms_url: str | None = None
     immutable: bool = False
+    expected_sha256: str | None = None
 
     def accepts_size(self, size: int) -> bool:
         return size >= self.minimum_bytes
+
+    def accepts_digest(self, sha256: str) -> bool:
+        return self.expected_sha256 is None or sha256 == self.expected_sha256
 
     def provenance(self) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -58,6 +67,7 @@ class Sources:
     buildings: Source
     water: Source
     parks: Source
+    street_trees: Source
     building_parts: Source
     downtown_meshes: Source
     legacy_downtown_meshes: Source
@@ -69,6 +79,7 @@ class Sources:
             self.buildings,
             self.water,
             self.parks,
+            self.street_trees,
             self.building_parts,
             self.downtown_meshes,
             self.legacy_downtown_meshes,
@@ -112,6 +123,18 @@ SOURCES = Sources(
         "ppr-properties",
         "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
         "PPR_Properties/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson",
+    ),
+    street_trees=Source(
+        "2025 Philadelphia Tree Inventory",
+        "philadelphia-tree-inventory-2025",
+        "https://hub.arcgis.com/api/v3/datasets/"
+        f"{STREET_TREE_SOURCE_ITEM_ID}/downloads/data?"
+        "format=geojson&spatialRefId=4326&where=1%3D1",
+        minimum_bytes=40_000_000,
+        attribution="Philadelphia Parks & Recreation",
+        terms_url="https://opendataphilly.org/datasets/philadelphia-tree-inventory/",
+        immutable=True,
+        expected_sha256=STREET_TREE_SOURCE_SHA256,
     ),
     building_parts=Source(
         "OpenStreetMap Center City Building Parts",

@@ -1,11 +1,11 @@
 # Data pipeline
 
-`uv run --locked poe ingest` loads eight source datasets and writes two
+`uv run --locked poe ingest` loads nine source datasets and writes two
 clean artifacts:
 
 - `data/clean/philly.bin` contains fallback buildings, building parts,
-  accepted textured meshes, surface masks, texture references, and the City
-  boundary.
+  accepted textured meshes, surface masks, street-tree points, texture
+  references, and the City boundary.
 - `data/clean/meta.json` records source URLs, request times, HTTP validators,
   SHA-256 checksums, bounds, counts, and output checksums.
 
@@ -19,14 +19,32 @@ The active pipeline has one source for each job:
 
 1. City Limits defines the render boundary.
 2. Building Footprints supplies citywide outlines and heights.
-3. Hydrology and park polygons provide restrained color grading masks.
-4. OpenStreetMap building parts supply documented Center City setbacks and
+3. Hydrology polygons provide restrained water color grading masks.
+4. Park polygons provide restrained vegetation color grading masks.
+5. OpenStreetMap building parts supply documented Center City setbacks and
    roof forms where photographed meshes are unavailable.
-5. The 2015 I3S scene supplies the newest detailed Center City geometry and
+6. The 2015 I3S scene supplies the newest detailed Center City geometry and
    textures.
-6. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
-7. The 2008 stadium archive supplies detailed geometry and textures for the
+7. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
+8. The 2008 stadium archive supplies detailed geometry and textures for the
    sports complex.
+9. The Philadelphia Parks & Recreation 2025 tree inventory supplies a
+   citywide point layer and trunk diameters.
+
+The current retained hydrology snapshot comes from the official
+[`Hydrographic_Features_Poly` FeatureServer layer 1](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Hydrographic_Features_Poly/FeatureServer/1).
+It was fetched on 2026-08-27. The GeoJSON is 6,151,395 bytes with SHA-256
+`8e5b08218bb956e7ef8f266924a07966f570384ac1c303bd55c8ea68661361e8`,
+and the current clean snapshot retains 69 water rings. The current park
+snapshot comes from the official
+[`PPR_Properties` FeatureServer layer 0](https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/PPR_Properties/FeatureServer/0).
+It was fetched on 2026-08-27. The GeoJSON is 2,265,530 bytes with SHA-256
+`50764361fbd49473ffdc06cd1443ab733554244edb3cf329773bdb4832fae4c7`,
+and the current clean snapshot retains 659 park polygons. The retrieval date is
+the snapshot date, not a claim about when either source was surveyed. Both
+catalog entries use the City of Philadelphia License and provide no warranty.
+Regenerate the counts from `data/clean/meta.json` when the clean snapshot
+changes.
 
 The importer resolves the mesh sources in this order: 2015 I3S, legacy
 downtown, stadium, then City footprint fallback. A lower priority mesh is
@@ -72,13 +90,193 @@ Street centerlines and `streets.bin` remain removed. Roads come directly from
 the aerial image. Water and park polygons now grade only matching aerial pixels
 instead of drawing flat replacement polygons.
 
+## Land cover class mask
+
+The planned vegetation mask uses PASDA dataset 1587, Philadelphia Land Cover Raster 2018. The
+source is layer 2 of the `PhillyLULC` MapServer. Its seven classes are tree canopy, grass and shrub,
+bare earth, water, building, road and railroad, and other paved surface. The source was made from
+2018 LiDAR and 2017 NAIP imagery, so it is a classification aid rather than current photography.
+
+The converter reads one exact File Geodatabase raster inside the audited PASDA ZIP. It builds the
+GDAL `OpenFileGDB` and `/vsizip` name itself from the pinned geodatabase root and a simple raster
+name. It rejects paths, connection strings, container results, subdatasets, and another GDAL
+driver. It also checks the source description and file list against the reviewed evidence.
+
+No reviewed reproducible GDAL and PROJ toolchain is pinned yet. The converter therefore fails
+closed on exact tool evidence. It requires GDAL 3.12.4, an OpenFileGDB build with raster and virtual
+file support, and the reviewed PROJ version. The evidence records the complete output digests for
+both GDAL version and build
+commands, the GDAL driver list, both general help commands, and `proj --version`. Reviewers must pin
+all of these values before the first conversion. The official driver syntax and virtual ZIP behavior are
+documented by [GDAL OpenFileGDB](https://gdal.org/en/stable/drivers/vector/openfilegdb.html) and
+[GDAL virtual file systems](https://gdal.org/en/stable/user/virtual_file_systems.html).
+
+The target grid is pinned to EPSG:32129 at 3 metre resolution. It has 9,098 columns and 10,174 rows,
+so its class payload is 92,563,052 bytes. Rows run from north to south. GDAL uses nearest neighbor
+resampling, one thread, and a 64 MB work limit. The converter rejects more than 100 million cells,
+non square cells, rotation, another data type, and values above the seven official classes. Source
+holes remain NoData class zero.
+
+The converter writes `classes.npy`, `grid.json`, and `conversion.json` in a versioned generation
+directory. The manifest records the source evidence, each member SHA-256, the NumPy SHA-256, and a
+count for every class. A complete audit runs before one atomic `current.json` pointer change. A
+failed or concurrent conversion leaves the prior generation active.
+
+The large source archive was not downloaded while this code was added. The archive SHA-256,
+geodatabase root, raster name, complete raster evidence, and tool evidence pins are therefore empty.
+Conversion, build, and audit commands fail closed while any pin is empty. After obtaining the
+archive, fetch it with the exact pinned command:
+
+```text
+uv run --locked poe land-cover-fetch
+```
+
+The command downloads only the official `ARCHIVE_URL` to the ignored
+`data/raw/PhiladelphiaLandCoverRaster2018.zip` path. It requires the exact 521,373,667 byte length
+and the pinned strong ETag. It uses 30 second connect, write, and pool timeouts and a 120 second read
+timeout. The archive gets four deterministic attempts with 2, 4, and 8 second delays. There is no jitter.
+Only transport failures, timeouts, HTTP 408, HTTP 429, and HTTP 500 to 599 responses are retried.
+
+Each flushed chunk updates an atomic checkpoint. A resumed request sends `Range` and `If-Range`, and
+the response must have status 206, the exact content range and length, and the same strong ETag. A
+legacy partial without that validator is discarded. Redirects, weak or changed ETags, malformed
+ranges, and other validation errors fail without a retry. The complete partial is hashed and then
+renamed atomically. The command prints the SHA-256 as a review candidate and does not change
+`AUDITED_SOURCE_ARCHIVE_SHA256`.
+
+Before review, the fetch command returns the full-file SHA-256 only as a candidate. After
+`AUDITED_SOURCE_ARCHIVE_SHA256` is set, both a completed partial and an existing cached archive must
+match it before reuse or publication. A mismatch leaves an existing destination unchanged. The
+fetch rejects symbolic links and nonregular destination, partial, checkpoint, and lock files. It
+opens cached archives, partial files, and checkpoints through file descriptors with the operating
+system's no-follow flag. It checks the opened device and inode against the pathname again after each
+read, and it repeats that check immediately before final rename. A pathname swap therefore fails
+without publishing the replacement. Checkpoint and final file changes are followed by a directory
+sync, so a reported checkpoint never depends only on an unflushed directory entry.
+
+The fetch lock contains its process ID and host name. A killed fetch can leave the exact
+`data/raw/PhiladelphiaLandCoverRaster2018.zip.download.lock` file behind. First, read that file.
+Second, confirm that the named process is not running on the named host. Third, remove only that
+exact lock file, and rerun the command. The fetch never guesses that a lock is stale and never
+removes another process's lock.
+
+After the fetch, run the candidate command below. Review the archive, the exact internal raster, the City
+metadata, and every printed tool value before adding the pins to `land_cover.py`.
+
+```text
+python -m isophilly_ingest.land_cover source-candidate \
+  --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip \
+  --gdb-root EXACT_ROOT.gdb \
+  --raster-name EXACT_RASTER_NAME
+```
+
+The command hashes the archive and each member. It also opens the exact raster and records the full
+raster and tool evidence used by all five empty pins. It prints one canonical JSON object with
+sorted keys and no optional formatting. Both names accept only ASCII letters, digits, periods,
+underscores, and hyphens, and each name must start with a letter or digit. The geodatabase root must
+end in `.gdb`.
+
+When adding the reviewed evidence to `land_cover.py`, keep the two typed pins below the
+`RasterEvidence` and `ToolchainEvidence` class declarations. Replace each `None` with its matching
+constructor call. Copy JSON scalar values exactly. Convert the `files` and `geotransform` JSON arrays
+to tuple literals, including the trailing comma for a one-item `files` tuple. Do not paste the JSON
+objects directly as Python dictionaries, because conversion audits compare the typed dataclasses and
+their tuples exactly. Import the module and run `tests.test_land_cover` after inserting the pins.
+Copy the same reviewed archive SHA-256 into `AUDITED_SOURCE_ARCHIVE_SHA256` in
+`src/land_cover.rs`; the optional Rust reader intentionally rejects a present artifact until that
+pin matches Python.
+
+First, convert the File Geodatabase raster after all review pins have been added. The raster name
+must be a simple exact name. The converter constructs the full GDAL connection string.
+
+```text
+python -m isophilly_ingest.land_cover convert \
+  --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip \
+  --raster-name EXACT_PINNED_RASTER_NAME
+
+python -m isophilly_ingest.land_cover build \
+  --conversion data/land-cover-2018/converted/generations/REVIEWED_GENERATION \
+  --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip
+```
+
+Both conversion and final mask writing take an exclusive lock before they hash or inspect large
+inputs. A concurrent process fails without changing the current output. A normal failure removes
+its lock and its unique temporary files, and a complete generation becomes active through one
+atomic pointer update. A killed process can leave `.convert.lock` or a hidden mask lock behind.
+Remove a stale lock only after checking that no converter or mask writer process is running. The
+next run then cleans its own temporary files and keeps the prior published output until the new
+output passes a complete read and digest check.
+
+The converter parses the ENVI header and requires the exact samples, lines, band count, zero header
+offset, unsigned byte data type, band sequential interleave, and little endian byte order. The
+stored rows run from north to south. A post-write audit reloads the NumPy grid and the final mask,
+checks their hashes and class counts, and only then publishes them.
+
+Run `uv run --locked poe land-cover-audit` to check the completed artifact without a network
+request. The artifact contains a 16 byte prefix, a JSON header, and one byte per target cell. The
+sampler uses nearest neighbor lookup and clamps exact outer bounds with the next representable
+floating point value.
+
+The Rust prebuilder now reads the optional mask with the same strict schema, source, grid, payload,
+and digest checks. A present invalid mask fails closed. Its whole-artifact SHA-256 is recorded in the
+scene and tile identity, so adding or changing the mask cannot reuse an earlier tile pyramid. The
+classes do not affect current pixels yet. Planned grading will let a matching City hydrology polygon
+override the raster class and use tree canopy and grass classes for vegetation. No mask data is sent
+to the browser.
+
+The City reserves rights in the dataset and provides it without a warranty. Confirm the current
+City and PASDA terms before publishing source pixels or raster tiles derived from them. Preserve the
+University of Vermont Spatial Analysis Laboratory and Philadelphia 2018 Tree Canopy Assessment
+credit in local provenance and any approved release.
+
+The tree input is the official
+[2025 Philadelphia Tree Inventory](https://opendataphilly.org/datasets/philadelphia-tree-inventory/),
+ArcGIS item `dc6826e1319c4b35a7b662bc6be68104_0`. The retained GeoJSON is
+42,795,780 bytes with SHA-256
+`cdec5a2141ef4c754ef714c76ca4a0203356dffb2bd14cde6d362e9353bd5a05`.
+It contains 151,726 records; 151,371 point geometries fall within the official
+City Limits geometry and are packed. The importer requires the exact fields
+`objectid`, `tree_name`, `tree_dbh`, `year`, `loc_y`, `loc_x`, and `geometry`,
+unique object IDs, and only year 2025. A changed file, schema, year, or record
+count fails closed and requires a reviewed pin update. `loc_x` and `loc_y`
+must be finite and agree with the GeoJSON point after projection to within one
+metre; the audited source has a consistent approximately 0.91 metre transform
+offset and no record exceeds that tolerance.
+
+Only projected x/y and DBH-derived diameter are retained, in stable object-ID
+order. The records contribute 1,816,452 bytes and the v9 header adds a four-byte
+count, for an exact 1,816,456-byte increase over the same v8 geometry. The
+ordered retained-record payload is separately pinned as SHA-256
+`b47307b4134dea10fb0eace593a332ed135153202b7242ece2beb4f9ebb470d1`.
+Both its exact 151,371-record count and digest are enforced, binding the output
+to the reviewed tree inventory and City Limits snapshot even though City Limits
+is otherwise a refreshable source. A newer wrong cached tree file cannot shadow
+the older pinned snapshot; cache selection and download fallback require the
+full expected SHA-256.
+
+The renderer builds spatial indexes once during prebuild, queries
+only points intersecting a tile, skips subpixel crowns, and writes trees into
+the shared depth buffer. No citywide tree array reaches the browser or request
+path. DBH is a trunk measurement, not tree height or crown width; the displayed
+height and crown are deliberately clamped visual proxies and must not be read
+as measurements. A narrow view-facing trunk reaches the ground. Each crown is
+a projected sphere rather than a flat disk: every output pixel solves the same
+sphere projection used for its depth, so building edges and overlapping crowns
+occlude consistently in all four orientations and across tile seams.
+
+OpenDataPhilly identifies the dataset license as the City of Philadelphia
+License and publishes it without a warranty of accuracy. Retain the source
+attribution and City terms link in release metadata and the viewer. The annual
+snapshot may change, so a future year must be reviewed as a new immutable
+source rather than silently replacing the 2025 release input.
+
 ## World format
 
 All values are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (8)
+u32      version (9)
 u32      EPSG (32129)
 u32      building count
 u32      building part count
@@ -86,6 +284,7 @@ u32      building mesh count
 u32      city ring count
 u32      water ring count
 u32      park ring count
+u32      street-tree count
 u8 x 32  SHA-256 digest of all retained texture atlases
 f64 x 4  official city bounds: min_x, min_y, max_x, max_y
 repeat building count times:
@@ -111,6 +310,8 @@ repeat water ring count times:
   ring
 repeat park ring count times:
   ring
+repeat street-tree count times:
+  f32 x, f32 y, trunk diameter in metres
 
 ring:
   u32    point count
@@ -138,7 +339,8 @@ pixel from the 0.75 metre PASDA working grid. The browser uses nearest-neighbor
 sampling only when it magnifies past a pyramid's canonical level.
 
 Every render path shares one depth buffer. The draw order is aerial ground,
-fallback buildings, then accepted textured mesh faces. In a Center City view,
+fallback buildings, accepted textured mesh faces, then depth-tested street
+trees. In a Center City view,
 the fallback pass uses City footprints and OpenStreetMap parts wherever the
 2015 mesh does not cover a building. Roofs use aerial samples. Walls use a
 procedural pattern with colors derived from nearby aerial pixels, so they are
@@ -269,10 +471,35 @@ raw tile:
 uv run --locked poe lidar-plan
 uv run --locked poe lidar-next
 uv run --locked python -m isophilly_ingest.lidar run --all --discard-raw
+uv run --locked poe lidar-recheck-rejected  # optional upstream repair check
+uv run --locked poe lidar-status
 uv run --locked poe lidar-merge
 uv run --locked poe ingest
 uv run --locked poe prebuild
+uv run --locked poe visual
 ```
+
+Read the current local queue state from `poe lidar-status`. Do not copy a
+mutable progress count into release notes. No build is LiDAR enabled until all
+664 selected sources are accounted for and `poe lidar-merge` publishes the
+canonical schema-3 Parquet and JSON pair. After the merge, verify the canonical
+manifest, its ordered rejected-source and gap records, and the applied-building
+count from the next ingest. Archive the pinned inventory, canonical pair,
+`data/clean/meta.json`, tile manifest, and visual report with the release. A
+diagnostic merge made with `--allow-partial` is never a release input.
+
+The 2026-08-31 completed run accounts for all 664 selected sources: 653
+evidence tiles, three outside-City tiles, and eight terminally rejected source
+tiles. The canonical schema-3 manifest is not partial, contains 531,149
+building-evidence rows, and binds the 17,079,778-byte Parquet file with SHA-256
+`ef513ef75a6f41e1c66654bdedc6fd5bf8183f0dd64debadccf6ec9cbdef55b3`.
+The eight rejected gaps intersect 10,429 unique footprints; this is a
+union-deduplicated intersection count, not a claim that every footprint lacks
+valid evidence from an adjacent tile. The subsequent schema-9 ingest applied
+trustworthy LiDAR heights to 292,048 of 545,672 packed buildings and retained
+City fallback heights elsewhere. The exact rejected filenames, bounds, source
+bytes, header requirements, URLs, and payload hashes live in
+`data/lidar-2025/building-evidence.json` and the progress ledger.
 
 `lidar-plan` pins the official PASDA directory response, file sizes, City
 Limits checksum, Building Footprints checksum, selected tile names, URLs, and

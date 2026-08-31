@@ -9,9 +9,14 @@
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
   has a URL, retrieval time, byte count, and SHA-256 checksum.
-- If LiDAR heights are enabled, require a complete 664-tile evidence merge for
-  the pinned inventory. Do not publish from a diagnostic partial merge. Archive
-  the inventory, merged-evidence metadata, and applied-building count.
+- A release does not use LiDAR heights until all 664 selected sources are
+  accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
+  and JSON pair. Do not publish from a diagnostic partial merge. Archive the
+  inventory, canonical pair, rejected-source and gap records, and the nonzero
+  applied-building count from the release ingest. The verified 2026-08-31
+  inputs account for 653 evidence tiles, three outside-City tiles, and eight
+  rejected PASDA sources; the schema-9 ingest applies LiDAR heights to 292,048
+  buildings.
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.

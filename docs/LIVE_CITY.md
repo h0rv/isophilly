@@ -4,6 +4,18 @@ The map can show planning neighborhood outlines, separately styled local names, 
 deterministic local lighting. These overlays stay independent of the textured tile pyramid.
 Live transit is intentionally disabled while the visual map is being finished.
 
+## Water and parks
+
+The ingest builds water and park masks from the City hydrology and PPR property sources. The tile
+builder uses the masks to color the aerial ground layer. Water has a small set of blue tones arranged
+in fixed diagonal bands. The bands use source coordinates, so they stay aligned across tile
+boundaries and camera views. Park grading applies only to aerial pixels that already look like
+vegetation, so courts, paths, and plazas keep their source color.
+
+These effects are baked into the tile images by `poe prebuild`. They add no browser timer, network
+request, or repeated repaint. There is no continuous motion, so people who prefer reduced motion see
+the same stable scene. Rebuild the tiles after changing the renderer to view the result.
+
 ## Neighborhood names
 
 The generated overlay comes from the Philadelphia City Planning Commission's
