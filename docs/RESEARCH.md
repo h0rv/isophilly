@@ -175,6 +175,16 @@ with a major timestamp break after frame 92. Use per-image EXIF-seeded
 pixels unless the recovered cameras pass the registration and reprojection
 gates in `PASDA_AUDIT.md`.
 
+The deterministic local preflight is `uv run --locked poe
+oblique-sfm-plan`. It requires and re-hashes all 191 JPEGs and validates their
+EXIF and dimensions without network access or any pycolmap import/execution. It
+atomically links the pinned source manifest to an immutable plan, checksum, and
+1,790-pair list split at 92/93 with frame 191 quarantined. This is planning
+evidence only, never reconstruction or georegistration evidence, and none of
+the source pixels or derived artifacts may be published. A changed or partial
+plan is resolved by archiving the entire local `sfm/plan/` directory after
+review, not by replacing individual files.
+
 The decisive geometry find remains the
 [April 2025 Philadelphia LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and its [public LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/).

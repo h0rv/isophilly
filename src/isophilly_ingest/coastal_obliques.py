@@ -8,6 +8,7 @@ import re
 import shutil
 import struct
 import subprocess
+from collections import Counter
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -81,6 +82,11 @@ SFM_IMAGE_MANIFEST_SHA256 = "2d6dfc5fc583b2145b32df221a273f0aec5038d6c1bad209d50
 SFM_MATCH_BREAK_AFTER = 92
 SFM_EXCLUDED_SEQUENCE_NUMBERS = (191,)
 SFM_LOCAL_MATCH_WINDOW = 10
+SFM_FIRST_CAPTURED_AT = "2014-07-02T10:33:09+00:00"
+SFM_LAST_CAPTURED_AT = "2014-07-02T10:47:18+00:00"
+SFM_BREAK_SECONDS = 174
+SFM_EXACT_CAMERA_GROUPS = 43
+SFM_SINGLETON_CAMERA_GROUPS = 16
 SFM_EXPECTED_DIMENSIONS = {
     (3607, 2404): 36,
     (3607, 2405): 150,
@@ -148,6 +154,16 @@ class SfmFrame:
     height: int
     captured_at: datetime
     focal_mm: int
+
+    @property
+    def included(self) -> bool:
+        return self.sequence not in SFM_EXCLUDED_SEQUENCE_NUMBERS
+
+    @property
+    def focal_pixels(self) -> float:
+        # These files were resized after capture. The long pixel edge corresponds to the
+        # 36 mm edge of the full-frame sensor in either landscape or portrait orientation.
+        return self.focal_mm * max(self.width, self.height) / 36.0
 
 
 def _collection_dir(collection: str) -> Path:
@@ -881,6 +897,386 @@ def contact_sheet(collection: str) -> Path:
     return output
 
 
+def _write_bytes_immutable(path: Path, content: bytes) -> None:
+    if path.exists():
+        if path.read_bytes() != content:
+            raise CoastalObliqueError(
+                f"refusing to replace immutable SfM plan artifact: {path}; archive the "
+                "existing sfm directory after reviewing the input or policy change"
+            )
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".part")
+    temporary.write_bytes(content)
+    temporary.replace(path)
+
+
+def _publish_immutable_artifact_set(output_dir: Path, artifacts: dict[str, bytes]) -> None:
+    expected_names = set(artifacts)
+
+    def validate_existing(directory: Path, *, allow_partial: bool) -> None:
+        if not directory.is_dir():
+            raise CoastalObliqueError(f"SfM artifact-set path is not a directory: {directory}")
+        actual_names = {path.name for path in directory.iterdir()}
+        unexpected = actual_names - expected_names
+        if unexpected:
+            raise CoastalObliqueError(
+                f"SfM artifact set contains unexpected entries: {sorted(unexpected)}"
+            )
+        if not allow_partial and actual_names != expected_names:
+            raise CoastalObliqueError(
+                f"SfM artifact set is incomplete: {sorted(actual_names)} != "
+                f"{sorted(expected_names)}"
+            )
+        for name in actual_names:
+            path = directory / name
+            if not path.is_file() or path.read_bytes() != artifacts[name]:
+                raise CoastalObliqueError(
+                    f"SfM artifact set drifted at {path}; archive the entire {output_dir.name} "
+                    "directory after review instead of mixing plan generations"
+                )
+
+    if output_dir.exists():
+        validate_existing(output_dir, allow_partial=False)
+        return
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = output_dir.parent / f".{output_dir.name}.part"
+    if staging.exists():
+        validate_existing(staging, allow_partial=True)
+    else:
+        staging.mkdir()
+    for name, content in artifacts.items():
+        _write_bytes_immutable(staging / name, content)
+    validate_existing(staging, allow_partial=False)
+    try:
+        staging.replace(output_dir)
+    except OSError as error:
+        if output_dir.exists():
+            validate_existing(output_dir, allow_partial=False)
+            return
+        raise CoastalObliqueError(f"could not publish atomic SfM artifact set: {error}") from error
+
+
+def _sfm_frame_manifest_sha256(frames: tuple[SfmFrame, ...]) -> str:
+    payload = json.dumps(
+        [{"name": frame.name, "sha256": frame.sha256} for frame in frames],
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _parse_sfm_frames(raw_frames: object) -> tuple[SfmFrame, ...]:
+    if not isinstance(raw_frames, list):
+        raise CoastalObliqueError("SfM metadata has no frame list")
+    frames: list[SfmFrame] = []
+    for index, raw in enumerate(raw_frames, start=1):
+        if not isinstance(raw, dict):
+            raise CoastalObliqueError(f"invalid SfM frame metadata at position {index}")
+        name, digest, width, height, exif = (
+            raw.get("name"),
+            raw.get("sha256"),
+            raw.get("width"),
+            raw.get("height"),
+            raw.get("exif"),
+        )
+        expected_name = f"Schuylkill   {index:03}.jpg"
+        if name != expected_name:
+            raise CoastalObliqueError(
+                f"noncanonical SfM frame at position {index}: {name!r} != {expected_name!r}"
+            )
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise CoastalObliqueError(f"invalid SHA-256 for {name}")
+        if not isinstance(width, int) or not isinstance(height, int) or width < 1 or height < 1:
+            raise CoastalObliqueError(f"invalid dimensions for {name}")
+        if not isinstance(exif, dict):
+            raise CoastalObliqueError(f"missing EXIF for {name}")
+        expected_exif = {
+            "Make": "Canon",
+            "Model": "Canon EOS 5D Mark II",
+            "LensModel": "EF70-300mm f/4.5-5.6 DO IS USM",
+            "Orientation": "1",
+        }
+        for field, expected in expected_exif.items():
+            if exif.get(field) != expected:
+                raise CoastalObliqueError(
+                    f"unexpected {field} for {name}: {exif.get(field)!r} != {expected!r}"
+                )
+        focal = exif.get("FocalLength")
+        match = re.fullmatch(r"(\d+)/1", focal) if isinstance(focal, str) else None
+        if match is None or int(match.group(1)) <= 0:
+            raise CoastalObliqueError(f"invalid EXIF focal length for {name}: {focal!r}")
+        captured = exif.get("DateTimeOriginal")
+        if not isinstance(captured, str):
+            raise CoastalObliqueError(f"missing EXIF capture time for {name}")
+        try:
+            captured_at = datetime.strptime(captured, "%Y:%m:%d %H:%M:%S").replace(tzinfo=UTC)
+        except ValueError as error:
+            raise CoastalObliqueError(
+                f"invalid EXIF capture time for {name}: {captured!r}"
+            ) from error
+        frames.append(
+            SfmFrame(
+                index,
+                name,
+                f"frame-{index:03}.jpg",
+                digest,
+                width,
+                height,
+                captured_at,
+                int(match.group(1)),
+            )
+        )
+    return tuple(frames)
+
+
+def _validate_sfm_profile(frames: tuple[SfmFrame, ...]) -> dict[str, object]:
+    if len(frames) != EXPECTED_COUNTS["schuylkill-2014"]:
+        raise CoastalObliqueError(f"SfM plan requires all 191 frames; found {len(frames)}")
+    manifest = _sfm_frame_manifest_sha256(frames)
+    if manifest != SFM_IMAGE_MANIFEST_SHA256:
+        raise CoastalObliqueError(
+            f"SfM image manifest changed: {manifest} != audited {SFM_IMAGE_MANIFEST_SHA256}"
+        )
+    dimensions = Counter((frame.width, frame.height) for frame in frames)
+    if dimensions != Counter(SFM_EXPECTED_DIMENSIONS):
+        raise CoastalObliqueError("SfM image dimensions differ from the audited flight")
+    focals = Counter(frame.focal_mm for frame in frames)
+    if focals != Counter(SFM_EXPECTED_FOCALS_MM):
+        raise CoastalObliqueError("SfM EXIF focal distribution differs from the audited flight")
+    groups = Counter((frame.width, frame.height, frame.focal_mm) for frame in frames)
+    singleton_groups = sum(count == 1 for count in groups.values())
+    if len(groups) != SFM_EXACT_CAMERA_GROUPS or singleton_groups != SFM_SINGLETON_CAMERA_GROUPS:
+        raise CoastalObliqueError("SfM intrinsic groups differ from the audited flight")
+    if any(
+        later.captured_at <= earlier.captured_at
+        for earlier, later in zip(frames, frames[1:], strict=False)
+    ):
+        raise CoastalObliqueError("SfM EXIF capture times are not strictly increasing")
+    first = frames[0].captured_at.isoformat()
+    last = frames[-1].captured_at.isoformat()
+    gaps = [
+        int((later.captured_at - earlier.captured_at).total_seconds())
+        for earlier, later in zip(frames, frames[1:], strict=False)
+    ]
+    largest_gap = max(gaps)
+    break_after = gaps.index(largest_gap) + 1
+    if (
+        first != SFM_FIRST_CAPTURED_AT
+        or last != SFM_LAST_CAPTURED_AT
+        or largest_gap != SFM_BREAK_SECONDS
+        or break_after != SFM_MATCH_BREAK_AFTER
+    ):
+        raise CoastalObliqueError("SfM EXIF timeline differs from the audited flight")
+    return {
+        "ordered_image_manifest_sha256": manifest,
+        "frame_count": len(frames),
+        "distinct_focal_lengths": len(focals),
+        "exact_focal_dimension_groups": len(groups),
+        "singleton_groups": singleton_groups,
+        "portrait_frames": [frame.name for frame in frames if frame.height > frame.width],
+        "capture_start": first,
+        "capture_end": last,
+        "largest_gap": {"after_sequence": break_after, "seconds": largest_gap},
+    }
+
+
+def _sfm_pairs(frames: tuple[SfmFrame, ...]) -> tuple[tuple[str, str], ...]:
+    included = [frame for frame in frames if frame.included]
+    pairs: list[tuple[str, str]] = []
+    for position, first in enumerate(included):
+        for second in included[position + 1 :]:
+            if first.sequence <= SFM_MATCH_BREAK_AFTER < second.sequence:
+                break
+            distance = second.sequence - first.sequence
+            if distance > SFM_LOCAL_MATCH_WINDOW:
+                break
+            pairs.append((first.staged_name, second.staged_name))
+    return tuple(pairs)
+
+
+def _sfm_plan_dict(
+    collection: str,
+    listing_sha256: str,
+    frames: tuple[SfmFrame, ...],
+    audit: dict[str, object],
+    pairs_sha256: str,
+    pair_count: int,
+) -> dict[str, object]:
+    images = [
+        {
+            "sequence": frame.sequence,
+            "source_name": frame.name,
+            "staged_name": frame.staged_name,
+            "sha256": frame.sha256,
+            "captured_at": frame.captured_at.isoformat(),
+            "included_in_baseline": frame.included,
+            "exclusion_reason": (
+                "non-3:2 portrait aspect outlier; retain for a later diagnostic"
+                if not frame.included
+                else None
+            ),
+            "camera": {
+                "camera_id": frame.sequence,
+                "sharing": "per-image",
+                "model": "SIMPLE_RADIAL",
+                "width": frame.width,
+                "height": frame.height,
+                "params": [
+                    round(frame.focal_pixels, 9),
+                    frame.width / 2.0,
+                    frame.height / 2.0,
+                    0.0,
+                ],
+                "has_prior_focal_length": True,
+                "focal_source": "EXIF focal mm × longest pixel edge / 36 mm full-frame edge",
+            },
+        }
+        for frame in frames
+    ]
+    return {
+        "schema_version": 1,
+        "kind": "deterministic-sfm-plan-not-execution-evidence",
+        "collection": collection,
+        "inventory_listing_sha256": listing_sha256,
+        "rights_warning": RIGHTS_WARNING,
+        "backend": {
+            "package": "pycolmap",
+            "version": SFM_PYCOLMAP_VERSION,
+            "platform": "CPython 3.13 / manylinux_2_28_x86_64",
+            "wheel_sha256": SFM_PYCOLMAP_LINUX_X86_64_SHA256,
+            "installed_or_imported_by_plan": False,
+        },
+        "input_audit": audit,
+        "images": images,
+        "matching": {
+            "mode": "explicit-imported-pairs",
+            "staged_names_avoid_source_filename_spaces": True,
+            "segments": [[1, SFM_MATCH_BREAK_AFTER], [SFM_MATCH_BREAK_AFTER + 1, 190]],
+            "excluded_sequences": list(SFM_EXCLUDED_SEQUENCE_NUMBERS),
+            "local_window": SFM_LOCAL_MATCH_WINDOW,
+            "pairs_path": "pairs.txt",
+            "pairs_sha256": pairs_sha256,
+            "pair_count": pair_count,
+            "cross_break_pairs": 0,
+            "loop_detection": False,
+        },
+        "options": {
+            "camera_mode": "PER_IMAGE",
+            "feature_extraction": {
+                "type": "SIFT",
+                "max_image_size": 2400,
+                "max_num_features": 8192,
+                "num_threads": 2,
+                "use_gpu": False,
+            },
+            "feature_matching": {
+                "max_num_matches": 8192,
+                "num_threads": 2,
+                "use_gpu": False,
+            },
+            "incremental_mapping": {
+                "num_threads": 2,
+                "random_seed": 0,
+                "multiple_models": True,
+                "max_num_models": 4,
+                "min_model_size": 20,
+                "max_runtime_seconds": 10800,
+                "ba_refine_focal_length": True,
+                "ba_refine_principal_point": False,
+                "ba_refine_extra_params": True,
+            },
+        },
+        "resource_bounds": {
+            "cpu_threads": 2,
+            "address_space_bytes": 8 * 1024**3,
+            "environment": {
+                "OMP_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+            },
+            "launcher_prefix": [
+                "prlimit",
+                "--as=8589934592",
+                "--",
+                "nice",
+                "-n",
+                "10",
+                "ionice",
+                "-c",
+                "3",
+                "taskset",
+                "-c",
+                "0,1",
+            ],
+            "may_not_overlap_citywide_lidar_processing": True,
+            "systemd_cgroup_claimed": False,
+        },
+        "promotion_gates": {
+            "dominant_model_registered_images_min": 153,
+            "median_track_length_min": 3,
+            "median_reprojection_error_px_max": 2.0,
+            "p95_reprojection_error_px_max": 4.0,
+            "focal_drift_from_exif_max_fraction": 0.1,
+            "require_no_temporal_camera_jump_or_reversal": True,
+            "failure_result": "visual-reference-only",
+        },
+        "georegistration": {
+            "status": None,
+            "method": "deterministic RANSAC plus Umeyama Sim(3) from recorded GCPs",
+            "crs": "EPSG:32129",
+            "minimum_gcps": 8,
+            "minimum_images_per_gcp": 2,
+            "minimum_inliers": 6,
+            "median_residual_m_max": 3.0,
+            "p95_residual_m_max": 8.0,
+            "withheld_checkpoints_min": 2,
+            "withheld_checkpoint_residual_m_max": 10.0,
+            "xy_source": "2025 PASDA orthophoto",
+            "z_source": "classified 2025 Philadelphia LiDAR",
+            "forbidden_controls": ["water", "trees", "changed structures"],
+            "model_aligner_allowed_without_true_camera_centers": False,
+        },
+        "execution": {"status": "not-run", "reconstruction_evidence": False},
+    }
+
+
+def sfm_plan(collection: str) -> Path:
+    if collection != "schuylkill-2014":
+        raise CoastalObliqueError(
+            "the deterministic SfM profile is currently audited only for schuylkill-2014"
+        )
+    metadata_path = write_metadata(collection)
+    try:
+        metadata = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CoastalObliqueError(f"cannot read SfM frame metadata: {metadata_path}") from error
+    if not isinstance(metadata, dict):
+        raise CoastalObliqueError("invalid SfM frame metadata document")
+    listing_sha256 = metadata.get("inventory_listing_sha256")
+    if listing_sha256 != AUDITED_LISTING_SHA256[collection]:
+        raise CoastalObliqueError("SfM metadata does not reference the audited inventory")
+    frames = _parse_sfm_frames(metadata.get("frames"))
+    audit = _validate_sfm_profile(frames)
+    pairs = _sfm_pairs(frames)
+    pairs_content = "".join(f"{first} {second}\n" for first, second in pairs).encode()
+    pairs_sha256 = hashlib.sha256(pairs_content).hexdigest()
+    plan = _sfm_plan_dict(collection, listing_sha256, frames, audit, pairs_sha256, len(pairs))
+    plan_content = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
+    plan_sha256 = hashlib.sha256(plan_content).hexdigest()
+    output_dir = _collection_dir(collection) / "sfm" / "plan"
+    _publish_immutable_artifact_set(
+        output_dir,
+        {
+            "pairs.txt": pairs_content,
+            "plan.json": plan_content,
+            "plan.sha256": f"{plan_sha256}  plan.json\n".encode(),
+        },
+    )
+    output = output_dir / "plan.json"
+    return output
+
+
 def _frame_sequence(frames: list[object]) -> tuple[list[int], bool]:
     numbers: list[int] = []
     for raw in frames:
@@ -983,15 +1379,26 @@ def sfm_handoff(collection: str, *, allow_incomplete: bool = False) -> Path:
             "georeferencing": None,
             "camera_pose": None,
             "camera_intrinsics": camera_audit,
+            "planning_policy": (
+                {
+                    "command": "poe oblique-sfm-plan",
+                    "required_before_execution": True,
+                    "match_segments": [[1, SFM_MATCH_BREAK_AFTER], [93, 190]],
+                    "excluded_sequences": list(SFM_EXCLUDED_SEQUENCE_NUMBERS),
+                    "missing_focal_exif_is_fatal": True,
+                }
+                if collection == "schuylkill-2014"
+                else None
+            ),
             "next_step": (
-                "Run CPU-bounded sequential matching with per-image EXIF-seeded SIMPLE_RADIAL "
-                "intrinsics, then independently register the recovered model to 2025 LiDAR and "
-                "stable control points."
+                "Run `poe oblique-sfm-plan` to validate and freeze the CPU-bounded, per-image "
+                "EXIF-seeded SIMPLE_RADIAL policy. The plan quarantines frame 191 and splits "
+                "matching between frames 92 and 93. It does not run reconstruction."
                 if backend
                 else (
-                    "Install the free COLMAP CLI or pycolmap, then run CPU-bounded sequential "
-                    "matching with per-image EXIF-seeded SIMPLE_RADIAL intrinsics. No "
-                    "reconstruction was run."
+                    "Run `poe oblique-sfm-plan` to validate per-image EXIF-seeded "
+                    "SIMPLE_RADIAL intrinsics before installing the pinned free pycolmap "
+                    "backend. Planning does not import pycolmap or run reconstruction."
                 )
             ),
             "rights_warning": RIGHTS_WARNING,
@@ -1020,6 +1427,7 @@ def _parser() -> argparse.ArgumentParser:
     sfm = commands.add_parser("sfm-handoff")
     add_collection(sfm)
     sfm.add_argument("--allow-incomplete", action="store_true")
+    add_collection(commands.add_parser("sfm-plan"))
     return parser
 
 
@@ -1055,10 +1463,13 @@ def main() -> None:
         print(write_metadata(args.collection))
     elif args.command == "contact-sheet":
         print(contact_sheet(args.collection))
-    else:
+    elif args.command == "sfm-handoff":
         path = sfm_handoff(args.collection, allow_incomplete=args.allow_incomplete)
         handoff = json.loads(path.read_text())
         print(f"{path}: {handoff['next_step']}")
+    else:
+        path = sfm_plan(args.collection)
+        print(f"{path}: immutable plan only; pycolmap was not imported or run")
 
 
 if __name__ == "__main__":

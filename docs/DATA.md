@@ -189,6 +189,7 @@ uv run --locked poe oblique-next       # resume and verify exactly one JPEG
 uv run --locked poe oblique-status     # re-hash and audit completed frames
 uv run --locked poe oblique-review     # metadata and labeled/hash-pinned contact sheet
 uv run --locked poe oblique-sfm        # guarded contiguous-sequence SfM handoff
+uv run --locked poe oblique-sfm-plan   # immutable, offline all-191 execution plan
 ```
 
 The review command has a fixed memory bound for source image decoding. It
@@ -224,6 +225,21 @@ focal/dimension/orientation groups), so shared-camera self-calibration is
 prohibited. Reconstruction must seed one `SIMPLE_RADIAL` camera per image,
 respect the frame 92/93 temporal break, and quarantine frame 191's aspect-ratio
 outlier for the first diagnostic.
+
+`oblique-sfm-plan` is stricter than the diagnostic handoff. It requires the
+complete pinned 191-frame Schuylkill set and locally re-hashes every JPEG while
+reading its EXIF, dimensions, and capture time. It performs no network access,
+does not import or execute pycolmap, and does not reconstruct anything. Its
+atomic artifact set is
+`data/coastal-obliques/schuylkill-2014/sfm/plan/{plan.json,pairs.txt,plan.sha256}`.
+The plan links the audited listing and ordered image manifest to 1,790 explicit
+sanitized-name pairs, split into frames 1 through 92 and 93 through 190; frame
+191 is recorded but quarantined. It also records the pinned backend version,
+CPU and memory bounds, and promotion and georegistration gates as policy rather
+than execution evidence. Publication is forbidden. If any member is missing or
+differs, the command changes none of the published plan set. Archive the entire
+`sfm/plan/` directory after reviewing the drift, then rerun; never replace one
+member in place.
 
 PASDA's [full April 2025 LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/)

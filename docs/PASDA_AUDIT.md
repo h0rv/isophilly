@@ -226,6 +226,7 @@ uv run --locked poe oblique-next
 uv run --locked poe oblique-status
 uv run --locked poe oblique-review
 uv run --locked poe oblique-sfm
+uv run --locked poe oblique-sfm-plan
 ```
 
 `oblique-next` downloads exactly one pending JPEG by default. Downloads resume
@@ -259,6 +260,22 @@ manifest labels the override and is not registration evidence. The handoff
 detects the free COLMAP CLI or `pycolmap`; if neither is installed it records that prerequisite
 instead of pretending a reconstruction occurred. It deliberately records pose
 and georeferencing as null because PASDA publishes neither.
+
+`oblique-sfm-plan` is the execution preflight, not an executor. It requires all
+191 pinned Schuylkill JPEGs, locally hashes every source, and validates every
+recorded EXIF focal length, camera/lens identity, orientation, dimension, and
+capture time. It performs no network call, does not install or import pycolmap,
+and runs no feature extraction, matching, or reconstruction. It atomically
+publishes the whole immutable set
+`sfm/plan/{plan.json,pairs.txt,plan.sha256}` only after every member is ready.
+The plan contains one EXIF-seeded `SIMPLE_RADIAL` camera per image and 1,790
+explicit sanitized-name pairs. No pair crosses the 174-second break between 92
+and 93, and no baseline pair includes quarantined frame 191. The plan pins
+pycolmap 4.1.1 and records the two-thread, 8 GiB address-space, and three-hour
+future-run bounds, but those records are policy and are not evidence that the
+backend exists or ran. Keep the source and all derivatives local. If the source
+or policy changes, archive the complete `sfm/plan/` directory after review and
+rerun; the planner refuses partial replacement or a mixed generation.
 
 The complete Schuylkill JPEG set is not a shared-camera flight. EXIF shows 24
 focal lengths from 70 to 270 mm and focal length changes in 106 of 190 frame

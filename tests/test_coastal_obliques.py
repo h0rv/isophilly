@@ -5,6 +5,7 @@ import json
 import unittest
 from contextlib import redirect_stderr
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,8 +21,16 @@ from isophilly_ingest.coastal_obliques import (
     CoastalObliqueError,
     Frame,
     Inventory,
+    SfmFrame,
+    _parse_sfm_frames,
     _parser,
+    _publish_immutable_artifact_set,
+    _sfm_frame_manifest_sha256,
+    _sfm_pairs,
+    _sfm_plan_dict,
     _validate_jpeg_file,
+    _validate_sfm_profile,
+    _write_bytes_immutable,
     contact_sheet,
     create_inventory,
     download_frame,
@@ -32,6 +41,7 @@ from isophilly_ingest.coastal_obliques import (
     parse_listing,
     read_jpeg_dimensions,
     sfm_handoff,
+    sfm_plan,
 )
 
 
@@ -594,6 +604,260 @@ class ReviewArtifactTests(unittest.TestCase):
         self.assertEqual(handoff["camera_intrinsics"]["distinct_focal_lengths"], 2)
         self.assertIn("shared intrinsic is prohibited", handoff["camera_intrinsics"]["policy"])
         self.assertIn("per-image EXIF-seeded", handoff["next_step"])
+
+
+class SfmPlanTests(unittest.TestCase):
+    @staticmethod
+    def _frame(
+        sequence: int, *, focal_mm: int = 70, width: int = 3607, height: int = 2405
+    ) -> SfmFrame:
+        return SfmFrame(
+            sequence=sequence,
+            name=f"Schuylkill   {sequence:03}.jpg",
+            staged_name=f"frame-{sequence:03}.jpg",
+            sha256=f"{sequence:064x}",
+            width=width,
+            height=height,
+            captured_at=datetime(2014, 7, 2, 10, 0, tzinfo=UTC) + timedelta(seconds=sequence),
+            focal_mm=focal_mm,
+        )
+
+    def test_plan_uses_unique_exif_seeded_cameras_even_for_same_focal(self) -> None:
+        frames = (self._frame(1), self._frame(2))
+
+        first = _sfm_plan_dict("schuylkill-2014", "a" * 64, frames, {}, "b" * 64, 1)
+        second = _sfm_plan_dict("schuylkill-2014", "a" * 64, frames, {}, "b" * 64, 1)
+
+        self.assertEqual(first, second)
+        images = first["images"]
+        self.assertIsInstance(images, list)
+        assert isinstance(images, list)
+        cameras = [image["camera"] for image in images]
+        self.assertEqual([camera["camera_id"] for camera in cameras], [1, 2])
+        self.assertTrue(all(camera["sharing"] == "per-image" for camera in cameras))
+        self.assertAlmostEqual(cameras[0]["params"][0], 70 * 3607 / 36, places=9)
+        backend = first["backend"]
+        assert isinstance(backend, dict)
+        self.assertFalse(backend["installed_or_imported_by_plan"])
+        self.assertEqual(
+            first["execution"], {"status": "not-run", "reconstruction_evidence": False}
+        )
+
+    def test_portrait_focal_seed_uses_long_sensor_edge(self) -> None:
+        portrait = self._frame(40, focal_mm=115, width=3607, height=5412)
+        plan = _sfm_plan_dict("schuylkill-2014", "a" * 64, (portrait,), {}, "b" * 64, 0)
+        images = plan["images"]
+        assert isinstance(images, list)
+        self.assertAlmostEqual(images[0]["camera"]["params"][0], 115 * 5412 / 36, places=9)
+
+    def test_pairs_encode_break_and_frame_191_quarantine(self) -> None:
+        frames = tuple(self._frame(sequence) for sequence in range(1, 192))
+
+        pairs = _sfm_pairs(frames)
+
+        self.assertEqual(len(pairs), 1790)
+        self.assertFalse(any("frame-191.jpg" in pair for pair in pairs))
+        self.assertFalse(any(int(first[6:9]) <= 92 < int(second[6:9]) for first, second in pairs))
+        self.assertTrue(all(" " not in first and " " not in second for first, second in pairs))
+
+    def test_missing_focal_exif_is_fatal(self) -> None:
+        raw = {
+            "name": "Schuylkill   001.jpg",
+            "sha256": "a" * 64,
+            "width": 3607,
+            "height": 2405,
+            "exif": {
+                "Make": "Canon",
+                "Model": "Canon EOS 5D Mark II",
+                "LensModel": "EF70-300mm f/4.5-5.6 DO IS USM",
+                "Orientation": "1",
+                "DateTimeOriginal": "2014:07:02 10:33:09",
+                "FocalLength": None,
+            },
+        }
+
+        with self.assertRaisesRegex(CoastalObliqueError, "focal"):
+            _parse_sfm_frames([raw])
+
+    def test_profile_gate_checks_the_whole_pinned_flight_shape(self) -> None:
+        frames = (self._frame(1), self._frame(2), self._frame(3))
+        patches = (
+            patch("isophilly_ingest.coastal_obliques.EXPECTED_COUNTS", {"schuylkill-2014": 3}),
+            patch(
+                "isophilly_ingest.coastal_obliques.SFM_IMAGE_MANIFEST_SHA256",
+                _sfm_frame_manifest_sha256(frames),
+            ),
+            patch(
+                "isophilly_ingest.coastal_obliques.SFM_EXPECTED_DIMENSIONS",
+                {(3607, 2405): 3},
+            ),
+            patch("isophilly_ingest.coastal_obliques.SFM_EXPECTED_FOCALS_MM", {70: 3}),
+            patch("isophilly_ingest.coastal_obliques.SFM_EXACT_CAMERA_GROUPS", 1),
+            patch("isophilly_ingest.coastal_obliques.SFM_SINGLETON_CAMERA_GROUPS", 0),
+            patch(
+                "isophilly_ingest.coastal_obliques.SFM_FIRST_CAPTURED_AT",
+                frames[0].captured_at.isoformat(),
+            ),
+            patch(
+                "isophilly_ingest.coastal_obliques.SFM_LAST_CAPTURED_AT",
+                frames[-1].captured_at.isoformat(),
+            ),
+            patch("isophilly_ingest.coastal_obliques.SFM_BREAK_SECONDS", 1),
+            patch("isophilly_ingest.coastal_obliques.SFM_MATCH_BREAK_AFTER", 1),
+        )
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+        ):
+            audit = _validate_sfm_profile(frames)
+            drifted = (*frames[:2], self._frame(3, width=3608))
+            with self.assertRaisesRegex(CoastalObliqueError, "dimensions"):
+                _validate_sfm_profile(drifted)
+
+        self.assertEqual(audit["frame_count"], 3)
+        self.assertEqual(audit["distinct_focal_lengths"], 1)
+
+    def test_immutable_plan_artifact_is_idempotent_and_refuses_drift(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "sfm" / "plan.json"
+
+        _write_bytes_immutable(path, b"same\n")
+        _write_bytes_immutable(path, b"same\n")
+
+        self.assertEqual(path.read_bytes(), b"same\n")
+        with self.assertRaisesRegex(CoastalObliqueError, "immutable"):
+            _write_bytes_immutable(path, b"changed\n")
+
+    def test_artifact_set_recovers_unpublished_partial_then_promotes_atomically(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        output = Path(directory.name) / "sfm" / "plan"
+        partial = output.parent / ".plan.part"
+        partial.mkdir(parents=True)
+        (partial / "plan.json").write_bytes(b"plan\n")
+        artifacts = {
+            "plan.json": b"plan\n",
+            "pairs.txt": b"a.jpg b.jpg\n",
+            "plan.sha256": b"hash  plan.json\n",
+        }
+
+        _publish_immutable_artifact_set(output, artifacts)
+
+        self.assertFalse(partial.exists())
+        self.assertEqual({path.name for path in output.iterdir()}, set(artifacts))
+        self.assertEqual((output / "pairs.txt").read_bytes(), artifacts["pairs.txt"])
+
+    def test_artifact_set_preflights_all_files_before_refusing_drift(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        output = Path(directory.name) / "sfm" / "plan"
+        output.mkdir(parents=True)
+        (output / "plan.json").write_bytes(b"old\n")
+        (output / "pairs.txt").write_bytes(b"old pairs\n")
+        before = {path.name: path.read_bytes() for path in output.iterdir()}
+
+        with self.assertRaisesRegex(CoastalObliqueError, "incomplete"):
+            _publish_immutable_artifact_set(
+                output,
+                {
+                    "plan.json": b"new\n",
+                    "pairs.txt": b"new pairs\n",
+                    "plan.sha256": b"new hash\n",
+                },
+            )
+
+        self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, before)
+
+    def test_sfm_plan_links_listing_plan_and_pairs_without_backend_or_network(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        metadata_path = root / "frame-metadata.json"
+        frames = (self._frame(1), self._frame(2), self._frame(3))
+        raw_frames = [
+            {
+                "name": frame.name,
+                "sha256": frame.sha256,
+                "width": frame.width,
+                "height": frame.height,
+                "exif": {
+                    "Make": "Canon",
+                    "Model": "Canon EOS 5D Mark II",
+                    "LensModel": "EF70-300mm f/4.5-5.6 DO IS USM",
+                    "Orientation": "1",
+                    "DateTimeOriginal": frame.captured_at.strftime("%Y:%m:%d %H:%M:%S"),
+                    "FocalLength": f"{frame.focal_mm}/1",
+                },
+            }
+            for frame in frames
+        ]
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "inventory_listing_sha256": AUDITED_LISTING_SHA256["schuylkill-2014"],
+                    "frames": raw_frames,
+                }
+            )
+        )
+
+        with (
+            patch("isophilly_ingest.coastal_obliques.COASTAL_DIR", root),
+            patch("isophilly_ingest.coastal_obliques.write_metadata", return_value=metadata_path),
+            patch(
+                "isophilly_ingest.coastal_obliques._validate_sfm_profile",
+                return_value={"ordered_image_manifest_sha256": "c" * 64},
+            ),
+            patch(
+                "isophilly_ingest.coastal_obliques.subprocess.run",
+                side_effect=AssertionError("planner must not execute a backend"),
+            ),
+            patch(
+                "isophilly_ingest.coastal_obliques.httpx.Client",
+                side_effect=AssertionError("planner must not use the network"),
+            ),
+        ):
+            output = sfm_plan("schuylkill-2014")
+            repeated = sfm_plan("schuylkill-2014")
+
+        self.assertEqual(output, repeated)
+        plan_bytes = output.read_bytes()
+        plan = json.loads(plan_bytes)
+        pairs = output.with_name("pairs.txt").read_bytes()
+        self.assertEqual(
+            plan["inventory_listing_sha256"], AUDITED_LISTING_SHA256["schuylkill-2014"]
+        )
+        self.assertEqual(plan["matching"]["pairs_sha256"], hashlib.sha256(pairs).hexdigest())
+        self.assertEqual(
+            output.with_name("plan.sha256").read_text(),
+            f"{hashlib.sha256(plan_bytes).hexdigest()}  plan.json\n",
+        )
+        self.assertFalse(plan["backend"]["installed_or_imported_by_plan"])
+        self.assertEqual(plan["execution"]["status"], "not-run")
+
+    def test_sfm_plan_rejects_unpinned_listing_before_artifact_publication(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        metadata_path = root / "frame-metadata.json"
+        metadata_path.write_text(json.dumps({"inventory_listing_sha256": "0" * 64, "frames": []}))
+
+        with (
+            patch("isophilly_ingest.coastal_obliques.COASTAL_DIR", root),
+            patch("isophilly_ingest.coastal_obliques.write_metadata", return_value=metadata_path),
+            self.assertRaisesRegex(CoastalObliqueError, "audited inventory"),
+        ):
+            sfm_plan("schuylkill-2014")
+
+        self.assertFalse((root / "schuylkill-2014" / "sfm").exists())
 
 
 class CliTests(unittest.TestCase):

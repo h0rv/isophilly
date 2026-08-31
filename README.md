@@ -134,6 +134,7 @@ uv run --locked poe oblique-plan
 uv run --locked poe oblique-next
 uv run --locked poe oblique-review
 uv run --locked poe oblique-sfm
+uv run --locked poe oblique-sfm-plan
 ```
 
 This pins the official 2014 Schuylkill inventory, downloads one resumable frame,
@@ -145,6 +146,16 @@ the ImageMagick version, so an interrupted run resumes without accepting stale
 thumbnails. The SfM handoff requires at least 20 contiguous frames
 by default and records collection completeness; one smoke frame is intentionally
 insufficient.
+After all 191 JPEGs are present, `oblique-sfm-plan` performs a local-only
+preflight: it hashes every source image, reads the audited EXIF and dimensions,
+and writes an immutable plan set under
+`data/coastal-obliques/schuylkill-2014/sfm/plan/`. It makes no network request,
+does not install or import pycolmap, and does not start reconstruction. The plan
+contains 1,790 explicit pairs split at frames 92/93, a per-image variable-zoom
+camera record, and the frame 191 quarantine. If any plan file differs, archive
+the entire `sfm/plan/` directory after reviewing the changed input or policy;
+the command will not mix old and new artifacts. These local source and plan
+artifacts are not published.
 Nothing in this pilot is published or used by normal ingest. The source's
 derivative-distribution terms remain a release gate; read
 [the audit](docs/PASDA_AUDIT.md) before fetching more.
