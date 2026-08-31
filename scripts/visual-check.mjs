@@ -1,26 +1,88 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 import { isometricLonLat } from "../static/city-overlay.js";
+import {
+  binaryFlagSetting,
+  CANONICAL_VISUAL_ZOOMS,
+  childHasExited,
+  drainGrowingTasks,
+  freezeRecords,
+  integerListSetting,
+  integerSetting,
+  pngEvidence,
+  publishSuccessAfterTeardown,
+  safeRunComponent,
+  sha256File,
+  stopChild,
+  validateCitySectorTargets,
+  validateReleaseZooms,
+  validateTileResponseSnapshot,
+  writeJsonAtomic,
+} from "./visual-check-lib.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const neighborhoodOverlay = JSON.parse(
   await readFile(fileURLToPath(new URL("../static/neighborhoods.json", import.meta.url)), "utf8"),
 );
-const zooms = (process.env.ISOPHILLY_VISUAL_ZOOMS ?? "3,4,5,7,9,10")
-  .split(",")
-  .map((value) => Number.parseInt(value, 10));
-if (zooms.some((zoom) => !Number.isInteger(zoom) || zoom < 0 || zoom > 10)) {
-  throw new Error(`invalid ISOPHILLY_VISUAL_ZOOMS: ${process.env.ISOPHILLY_VISUAL_ZOOMS}`);
-}
-const artifactDir = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
+const zooms = integerListSetting(
+  process.env.ISOPHILLY_VISUAL_ZOOMS,
+  CANONICAL_VISUAL_ZOOMS,
+  "ISOPHILLY_VISUAL_ZOOMS",
+  0,
+  10,
+);
+const artifactRoot = fileURLToPath(new URL("../artifacts/visual", import.meta.url));
 const VISUAL_TIME = "2026-06-21T16:00:00Z";
-const port = Number.parseInt(process.env.ISOPHILLY_VISUAL_PORT ?? "3107", 10);
-const tileTimeout = Number.parseInt(process.env.ISOPHILLY_VISUAL_TIMEOUT ?? "180000", 10);
-const settleBudget = Number.parseInt(process.env.ISOPHILLY_SETTLE_BUDGET_MS ?? "5000", 10);
+const port = integerSetting(
+  process.env.ISOPHILLY_VISUAL_PORT,
+  3107,
+  "ISOPHILLY_VISUAL_PORT",
+  1,
+  65535,
+);
+const tileTimeout = integerSetting(
+  process.env.ISOPHILLY_VISUAL_TIMEOUT,
+  180_000,
+  "ISOPHILLY_VISUAL_TIMEOUT",
+  1_000,
+  900_000,
+);
+const settleBudget = integerSetting(
+  process.env.ISOPHILLY_SETTLE_BUDGET_MS,
+  5_000,
+  "ISOPHILLY_SETTLE_BUDGET_MS",
+  100,
+  120_000,
+);
+const releaseMode = binaryFlagSetting(
+  process.env.ISOPHILLY_VISUAL_RELEASE,
+  false,
+  "ISOPHILLY_VISUAL_RELEASE",
+);
+const secondaryEnabled = binaryFlagSetting(
+  process.env.ISOPHILLY_VISUAL_SECONDARY,
+  true,
+  "ISOPHILLY_VISUAL_SECONDARY",
+);
+validateReleaseZooms(zooms, releaseMode);
 const origin = `http://127.0.0.1:${port}`;
+const gitSha = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: root,
+  encoding: "utf8",
+}).trim();
+const gitStatus = execFileSync("git", ["status", "--porcelain"], {
+  cwd: root,
+  encoding: "utf8",
+}).trim();
+if (releaseMode && gitStatus.length > 0) {
+  throw new Error("ISOPHILLY_VISUAL_RELEASE=1 requires a clean working tree");
+}
+const startedAt = new Date().toISOString();
+const runId = `${safeRunComponent(startedAt)}-${safeRunComponent(gitSha.slice(0, 12))}-${process.pid}`;
+const runDir = `${artifactRoot}/runs/${runId}`;
 
 /** @param {string} areaName @param {string} screenshotName @param {string} [expectedLabel] */
 function localAreaCapture(areaName, screenshotName, expectedLabel = areaName) {
@@ -53,12 +115,27 @@ function planningAreaCapture(areaName, screenshotName) {
     expectedAreaLabel: areaName,
   };
 }
+
+/** @param {string} areaName @param {string} screenshotName @param {string} sector */
+function citySectorCapture(areaName, screenshotName, sector) {
+  return { ...planningAreaCapture(areaName, screenshotName), sector };
+}
+
+/** @param {import("playwright-core").Page} page @param {string} name */
+async function screenshotEvidence(page, name) {
+  if (!/^[a-z0-9][a-z0-9._-]*\.png$/.test(name)) throw new Error(`unsafe screenshot name: ${name}`);
+  const bytes = await page.screenshot({ path: `${runDir}/${name}` });
+  return { file: name, ...pngEvidence(bytes) };
+}
+
 const server = spawn("target/release/isophilly", ["serve", "--port", String(port)], {
   cwd: root,
   env: { ...process.env, RUST_LOG: "isophilly=warn,tower_http=warn" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOutput = "";
+let serverSpawnError;
+let browser;
 let tileZoomLimit = 0;
 let richTileZoomLimit = 0;
 server.stdout.on("data", (chunk) => {
@@ -67,9 +144,43 @@ server.stdout.on("data", (chunk) => {
 server.stderr.on("data", (chunk) => {
   serverOutput += chunk.toString();
 });
+server.on("error", (error) => {
+  serverSpawnError = error;
+});
 
 /** @param {number} milliseconds */
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/** @param {number} timeout */
+async function waitForServerExit(timeout) {
+  if (childHasExited(server)) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      server.off("exit", onExit);
+      resolve(false);
+    }, timeout);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    server.once("exit", onExit);
+  });
+}
+
+async function stopServer() {
+  await stopChild(server, waitForServerExit);
+}
+
+let handlingSignal = false;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, async () => {
+    if (handlingSignal) return;
+    handlingSignal = true;
+    await browser?.close().catch(() => {});
+    await stopServer().catch(() => {});
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
 
 const pyramidAudits = [
   {
@@ -332,14 +443,32 @@ async function auditTextureCoverage() {
   return { available: true, citywide, areas: Object.fromEntries(byName), failures };
 }
 
-async function waitForServer() {
+/** @param {string} expectedTileVersion */
+async function waitForServer(expectedTileVersion) {
+  const readyLine = `IsoPhilly ${origin}`;
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (server.exitCode !== null) throw new Error(`server exited early:\n${serverOutput}`);
+    if (serverSpawnError !== undefined) throw new Error(`server spawn failed: ${serverSpawnError}`);
+    if (childHasExited(server)) throw new Error(`server exited early:\n${serverOutput}`);
+    if (!serverOutput.includes(readyLine)) {
+      await delay(100);
+      continue;
+    }
+    let response;
     try {
-      const response = await fetch(`${origin}/meta`);
-      if (response.ok) return response.json();
+      response = await fetch(`${origin}/meta`);
     } catch {
       // The listener is still starting.
+      await delay(100);
+      continue;
+    }
+    if (response.ok) {
+      const meta = await response.json();
+      if (meta.tile_version !== expectedTileVersion) {
+        throw new Error(
+          `server identity mismatch: ${meta.tile_version} != active ${expectedTileVersion}`,
+        );
+      }
+      return meta;
     }
     await delay(100);
   }
@@ -349,30 +478,41 @@ async function waitForServer() {
 /**
  * @param {import("playwright-core").Page} page
  * @param {number} zoom
- * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string }} view
+ * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string, expectedLandmark?: string, sector?: string }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
   const started = performance.now();
   const errors = [];
   const tileRequests = [];
+  const responseTasks = [];
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
-  page.on("response", async (response) => {
-    if (response.url().includes("/tiles/")) {
-      const headers = await response.allHeaders();
-      tileRequests.push({
-        status: response.status(),
-        cache: headers["x-tile-cache"] ?? "unknown",
-        bytes: Number.parseInt(headers["content-length"] ?? "0", 10),
-        contentType: headers["content-type"] ?? "unknown",
-        cacheControl: headers["cache-control"] ?? "",
-      });
-    } else if (response.status() >= 400 && !response.url().endsWith("/favicon.ico")) {
-      errors.push(`${response.status()} ${response.url()}`);
-    }
-  });
+  const onResponse = (response) => {
+    const task = (async () => {
+      if (response.url().includes("/tiles/")) {
+        const headers = await response.allHeaders();
+        const contentLength = headers["content-length"];
+        tileRequests.push({
+          status: response.status(),
+          cache: headers["x-tile-cache"] ?? "unknown",
+          bytes:
+            contentLength !== undefined && /^\d+$/.test(contentLength)
+              ? Number(contentLength)
+              : Number.NaN,
+          contentType: headers["content-type"] ?? "unknown",
+          cacheControl: headers["cache-control"] ?? "",
+        });
+      } else if (response.status() >= 400 && !response.url().endsWith("/favicon.ico")) {
+        errors.push(`${response.status()} ${response.url()}`);
+      }
+    })().catch((error) =>
+      errors.push(`response: ${error instanceof Error ? error.message : error}`),
+    );
+    responseTasks.push(task);
+  };
+  page.on("response", onResponse);
   const parameters = new URLSearchParams({ z: String(zoom), time: VISUAL_TIME });
   if (view.mode !== "detailed") parameters.set("mode", "city");
   else parameters.set("view", view.orientation ?? "se");
@@ -419,7 +559,10 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     { timeout: tileTimeout },
   );
   const settledMs = performance.now() - started;
-  const settledTileRequests = [...tileRequests];
+  page.off("response", onResponse);
+  await drainGrowingTasks(responseTasks);
+  const settledTileRequests = freezeRecords(tileRequests);
+  validateTileResponseSnapshot(settledTileRequests);
   if (view.planningAreas === true) {
     await page.locator("#neighborhoods-toggle").click();
   }
@@ -437,7 +580,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   }
   await page.waitForTimeout(100);
   const screenshot = view.name === "city-hall" ? `z${zoom}.png` : `${view.name}-z${zoom}.png`;
-  await page.screenshot({ path: `${artifactDir}/${screenshot}` });
+  const screenshotRecord = await screenshotEvidence(page, screenshot);
   const canvas = await page.locator("#map").evaluate((element) => {
     if (!(element instanceof HTMLCanvasElement)) throw new Error("map canvas is missing");
     const context = element.getContext("2d", { willReadFrequently: true });
@@ -469,6 +612,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       areaLabels: JSON.parse(element.dataset.areaLabels ?? "[]"),
       planningAreas: JSON.parse(element.dataset.planningAreas ?? "[]"),
       localAreas: JSON.parse(element.dataset.localAreas ?? "[]"),
+      landmarks: JSON.parse(element.dataset.landmarks ?? "[]"),
       nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
       sampledColors: colors.size,
     };
@@ -488,6 +632,9 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   }
   if (view.localAreas !== true && canvas.localAreas.length !== 0) {
     throw new Error(`${view.name} leaked local areas`);
+  }
+  if (view.expectedLandmark !== undefined && !canvas.landmarks.includes(view.expectedLandmark)) {
+    throw new Error(`${view.name} did not paint landmark ${view.expectedLandmark}`);
   }
   if (
     canvas.areaLabels.length > 24 ||
@@ -524,8 +671,9 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   }
   return {
     view: view.name,
+    sector: view.sector ?? null,
     zoom,
-    screenshot,
+    screenshot: screenshotRecord,
     performance: {
       domContentLoadedMs: Number(domContentLoadedMs.toFixed(1)),
       firstMapMs: Number(firstMapMs.toFixed(1)),
@@ -534,10 +682,10 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
     },
     canvas,
     tileResponses: {
-      total: tileRequests.length,
-      rendered: tileRequests.filter((request) => request.cache === "rendered").length,
-      disk: tileRequests.filter((request) => request.cache === "disk").length,
-      empty: tileRequests.filter((request) => request.cache === "empty").length,
+      total: settledTileRequests.length,
+      rendered: settledTileRequests.filter((request) => request.cache === "rendered").length,
+      disk: settledTileRequests.filter((request) => request.cache === "disk").length,
+      empty: settledTileRequests.filter((request) => request.cache === "empty").length,
     },
   };
 }
@@ -603,7 +751,7 @@ async function interactions(browser, meta) {
   await page.locator("details").evaluate((element) => {
     element.open = true;
   });
-  await page.screenshot({ path: `${artifactDir}/mobile.png` });
+  const screenshot = await screenshotEvidence(page, "mobile.png");
 
   await page.goto(`${origin}/?mode=city&z=8&time=${encodeURIComponent(VISUAL_TIME)}`, {
     waitUntil: "domcontentloaded",
@@ -668,6 +816,7 @@ async function interactions(browser, meta) {
     rotatedTo: "sw",
     prefetchedPanMs: Number(prefetchedPanMs.toFixed(1)),
     rocky: true,
+    screenshot,
   };
 }
 
@@ -710,10 +859,36 @@ async function profile(meta) {
   return { zoom, x, y, first, second, policy };
 }
 
-let browser;
+let report;
 try {
-  await mkdir(artifactDir, { recursive: true });
-  const meta = await waitForServer();
+  await mkdir(`${artifactRoot}/runs`, { recursive: true });
+  await mkdir(runDir);
+  const activeScene = JSON.parse(
+    await readFile(fileURLToPath(new URL("../data/tiles/current.json", import.meta.url)), "utf8"),
+  );
+  const activeScenePath = fileURLToPath(new URL("../data/tiles/current.json", import.meta.url));
+  const binaryPath = fileURLToPath(new URL("../target/release/isophilly", import.meta.url));
+  const activeSceneSha256 = await sha256File(activeScenePath);
+  const binarySha256 = await sha256File(binaryPath);
+  if (
+    typeof activeScene.tile_version !== "string" ||
+    typeof activeScene.world_sha256 !== "string"
+  ) {
+    throw new Error("active tile manifest is missing its tile or world identity");
+  }
+  if (releaseMode) {
+    if (!secondaryEnabled) {
+      throw new Error("release visual QA cannot disable secondary city-sector captures");
+    }
+    const worldPath = fileURLToPath(new URL("../data/clean/philly.bin", import.meta.url));
+    const worldSha256 = await sha256File(worldPath);
+    if (worldSha256 !== activeScene.world_sha256) {
+      throw new Error(
+        `active tiles are stale: world ${worldSha256} != scene ${activeScene.world_sha256}; run prebuild`,
+      );
+    }
+  }
+  const meta = await waitForServer(activeScene.tile_version);
   tileZoomLimit = meta.max_tile_zoom;
   richTileZoomLimit = meta.rich?.max_tile_zoom;
   if (!Number.isInteger(tileZoomLimit) || tileZoomLimit < 0 || tileZoomLimit > meta.max_zoom) {
@@ -749,6 +924,7 @@ try {
     headless: true,
     args: ["--no-sandbox", "--disable-gpu"],
   });
+  const browserVersion = browser.version();
   const pyramidAudit = await auditPyramid(browser, meta);
   const textureCoverageAudit = await auditTextureCoverage();
   const results = [];
@@ -767,20 +943,22 @@ try {
       }),
     );
     await page.close();
+    const richView = meta.rich.views.find((view) => view.id === orientation);
+    const richRocky = richView?.landmarks.find((landmark) => landmark.name === "Rocky");
+    if (richRocky === undefined) throw new Error(`${orientation} detailed view is missing Rocky`);
+    const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    results.push(
+      await capture(rockyPage, 5, {
+        name: `center-city-rocky-${orientation}`,
+        mode: "detailed",
+        orientation,
+        center: richRocky.point,
+        expectedLandmark: "Rocky",
+      }),
+    );
+    await rockyPage.close();
   }
-  const richRocky = meta.rich.views[0].landmarks.find((landmark) => landmark.name === "Rocky");
-  if (richRocky === undefined) throw new Error("Southeast detailed view is missing Rocky");
-  const richRockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-  results.push(
-    await capture(richRockyPage, 5, {
-      name: "center-city-rocky",
-      mode: "detailed",
-      orientation: "se",
-      center: richRocky.point,
-    }),
-  );
-  await richRockyPage.close();
-  if (process.env.ISOPHILLY_VISUAL_SECONDARY !== "0") {
+  if (secondaryEnabled) {
     const hall = /** @type {number[]} */ (meta.city_hall);
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     results.push(
@@ -818,7 +996,12 @@ try {
         "overlay-fishtown-kensington",
         "Frankford Avenue Arts Corridor",
       ),
+      citySectorCapture("Somerton", "city-sector-far-northeast", "far-northeast"),
+      citySectorCapture("Hunting Park", "city-sector-north", "north"),
+      citySectorCapture("Eastwick", "city-sector-southwest", "southwest"),
+      citySectorCapture("Whitman", "city-sector-lower-south", "lower-south"),
     ];
+    validateCitySectorTargets(neighborhoods);
     for (const neighborhood of neighborhoods) {
       const neighborhoodPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
       results.push(await capture(neighborhoodPage, 8, neighborhood));
@@ -826,17 +1009,24 @@ try {
     }
   }
   const interactionResults = await interactions(browser, meta);
-  const gitStatus = execFileSync("git", ["status", "--porcelain"], {
-    cwd: root,
-    encoding: "utf8",
-  }).trim();
-  const report = {
+  report = {
+    schemaVersion: 2,
+    success: true,
+    runId,
     generatedAt: new Date().toISOString(),
-    gitSha: execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-    }).trim(),
+    startedAt,
+    gitSha,
     gitDirty: gitStatus.length > 0,
+    releaseMode,
+    browser: {
+      version: browserVersion,
+      executable: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
+    },
+    viewport: { desktop: [1440, 960], mobile: [390, 844], deviceScaleFactor: 1 },
+    visualTime: VISUAL_TIME,
+    worldSha256: activeScene.world_sha256,
+    activeSceneSha256,
+    releaseBinarySha256: binarySha256,
     tileVersion: meta.tile_version,
     rendering,
     pyramidAudit,
@@ -844,16 +1034,57 @@ try {
     views: results,
     interactions: interactionResults,
   };
-  await writeFile(`${artifactDir}/report.json`, `${JSON.stringify(report, null, 2)}\n`);
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   const auditFailures = [...pyramidAudit.failures, ...textureCoverageAudit.failures];
   if (auditFailures.length > 0) {
     throw new Error(`visual regression audit failed:\n${auditFailures.join("\n")}`);
   }
+  await publishSuccessAfterTeardown(
+    async () => {
+      await browser?.close();
+      browser = undefined;
+    },
+    stopServer,
+    {
+      reportPath: `${runDir}/report.json`,
+      currentPath: `${artifactRoot}/current.json`,
+      reportReference: `runs/${runId}/report.json`,
+      report,
+      current: {
+        schemaVersion: 1,
+        success: true,
+        runId,
+        gitSha,
+        gitDirty: gitStatus.length > 0,
+        releaseMode,
+        tileVersion: meta.tile_version,
+        worldSha256: activeScene.world_sha256,
+        activeSceneSha256,
+        releaseBinarySha256: binarySha256,
+      },
+    },
+  );
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } catch (error) {
+  const failedReport = {
+    ...(report ?? {}),
+    schemaVersion: 2,
+    success: false,
+    runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    gitSha,
+    gitDirty: gitStatus.length > 0,
+    releaseMode,
+    error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+  };
+  await mkdir(runDir, { recursive: true });
+  await writeJsonAtomic(`${runDir}/report.json`, failedReport);
   process.stderr.write(`\nserver output:\n${serverOutput}\n`);
   throw error;
 } finally {
-  await browser?.close();
-  server.kill("SIGTERM");
+  try {
+    await browser?.close();
+  } finally {
+    await stopServer();
+  }
 }

@@ -4,11 +4,13 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import struct
+import time
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -56,18 +58,43 @@ LISTING_ROW = re.compile(
     re.IGNORECASE,
 )
 CONTENT_RANGE = re.compile(r"^bytes (?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+)$")
+STRONG_ETAG = re.compile(r'^"[\x21\x23-\x7e\x80-\xff]*"$')
 TILE_SIZE_FEET = 2_640.0
 EASTING_ROUNDING_FEET = 100.0
 # PASDA metadata identifies NAD83(2011) Pennsylvania South in US survey feet.
 CITY_CRS_FEET = 6565
 US_SURVEY_FOOT_METERS = 0.3048006096012192
 DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+DOWNLOAD_MAX_ATTEMPTS = 4
+DOWNLOAD_BACKOFF_SECONDS = 2.0
+DOWNLOAD_MAX_BACKOFF_SECONDS = 30.0
+PASDA_TIMEOUT = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
 POINT_CHUNK_SIZE = 750_000
 MAX_OPEN_SPILL_FILES = 64
 
 
 class LidarError(RuntimeError):
     pass
+
+
+class TransientLidarTransferError(LidarError):
+    """A bounded PASDA transfer exhausted retries but remains resumable."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PartialState:
+    downloaded_bytes: int
+    etag: str | None
+
+
+@dataclass(slots=True)
+class _TransferProgress:
+    state: _PartialState
+    persist: Callable[[_PartialState], None]
+
+    def checkpoint(self, downloaded_bytes: int, etag: str | None) -> None:
+        self.state = _PartialState(downloaded_bytes, etag)
+        self.persist(self.state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,7 +407,7 @@ def create_inventory(
     owns_client = client is None
     if client is None:
         client = httpx.Client(
-            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=120
+            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=PASDA_TIMEOUT
         )
     try:
         response = client.get(PASDA_LAS_URL)
@@ -762,6 +789,161 @@ def _record_progress(
     _write_json_atomic(PROGRESS_PATH, progress)
 
 
+class _RetryableResponseError(Exception):
+    pass
+
+
+def _retryable_status(status_code: int) -> bool:
+    return status_code in {408, 429} or 500 <= status_code <= 599
+
+
+def _strong_etag(headers: httpx.Headers) -> str | None:
+    value = headers.get("etag")
+    if value is None or value.lower().startswith("w/") or STRONG_ETAG.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _download_attempt(
+    tile: Tile,
+    client: httpx.Client,
+    partial: Path,
+    progress: _TransferProgress,
+) -> None:
+    offset = partial.stat().st_size if partial.exists() else 0
+    if offset != progress.state.downloaded_bytes:
+        raise LidarError(f"partial LAS and checkpoint differ for {tile.name}")
+    headers = (
+        {"Range": f"bytes={offset}-", "If-Range": progress.state.etag}
+        if offset and progress.state.etag is not None
+        else {}
+    )
+    with client.stream("GET", tile.url, headers=headers) as response:
+        if str(response.url) != tile.url:
+            raise LidarError(f"LiDAR tile redirected outside its pinned URL: {response.url}")
+        if _retryable_status(response.status_code):
+            raise _RetryableResponseError(f"HTTP {response.status_code}")
+        response.raise_for_status()
+        content_length = response.headers.get("content-length", "")
+        response_etag = _strong_etag(response.headers)
+        if offset and response.status_code == 206:
+            content_range = response.headers.get("content-range", "")
+            match = CONTENT_RANGE.fullmatch(content_range)
+            expected_response_bytes = tile.bytes - offset
+            if (
+                match is None
+                or int(match.group("start")) != offset
+                or int(match.group("end")) != tile.bytes - 1
+                or int(match.group("total")) != tile.bytes
+                or content_length != str(expected_response_bytes)
+            ):
+                raise LidarError(
+                    f"invalid resumed response for {tile.name}: Content-Range "
+                    f"{content_range!r}, Content-Length {content_length!r}"
+                )
+            if response_etag != progress.state.etag:
+                partial.unlink()
+                progress.checkpoint(0, None)
+                raise LidarError(
+                    f"resumed response validator changed for {tile.name}; old partial discarded"
+                )
+        elif offset:
+            offset = 0
+            if response.status_code != 200 or content_length != str(tile.bytes):
+                raise LidarError(
+                    f"invalid replacement response for {tile.name}: status "
+                    f"{response.status_code}, Content-Length {content_length!r}"
+                )
+            # Remove the old representation before binding offset zero to the
+            # replacement validator. A crash between these steps leaves no bytes
+            # that could be mistaken for the new response.
+            partial.unlink()
+            progress.checkpoint(0, response_etag)
+        elif response.status_code != 200 or content_length != str(tile.bytes):
+            raise LidarError(
+                f"invalid download response for {tile.name}: status {response.status_code}, "
+                f"Content-Length {content_length!r}; expected {tile.bytes}"
+            )
+        else:
+            progress.checkpoint(0, response_etag)
+        mode = "ab" if offset else "wb"
+        with partial.open(mode) as file:
+            for chunk in response.iter_bytes(DOWNLOAD_CHUNK_BYTES):
+                file.write(chunk)
+                file.flush()
+                # The manifest must never claim bytes that have not reached the filesystem.
+                # A complete-file SHA and LAS validation remain mandatory before promotion.
+                os.fsync(file.fileno())
+                progress.checkpoint(file.tell(), response_etag)
+
+
+def _transfer_with_retries(
+    tile: Tile,
+    client: httpx.Client,
+    partial: Path,
+    progress: _TransferProgress,
+) -> None:
+    if partial.exists() and partial.stat().st_size == tile.bytes:
+        progress.checkpoint(tile.bytes, progress.state.etag)
+        return
+    for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+        if partial.exists() and progress.state.etag is None:
+            partial.unlink()
+            progress.checkpoint(0, None)
+        try:
+            _download_attempt(tile, client, partial, progress)
+            return
+        except (httpx.TransportError, _RetryableResponseError) as error:
+            persisted = partial.stat().st_size if partial.exists() else 0
+            if progress.state.etag is None and partial.exists():
+                partial.unlink()
+                persisted = 0
+            progress.checkpoint(persisted, progress.state.etag)
+            if attempt == DOWNLOAD_MAX_ATTEMPTS:
+                raise TransientLidarTransferError(
+                    f"{tile.name} transfer exhausted {DOWNLOAD_MAX_ATTEMPTS} attempts at "
+                    f"{persisted:,}/{tile.bytes:,} bytes: {error}"
+                ) from error
+            delay_seconds = min(
+                DOWNLOAD_BACKOFF_SECONDS * (2 ** (attempt - 1)), DOWNLOAD_MAX_BACKOFF_SECONDS
+            )
+            print(
+                f"  transient transfer failure for {tile.name} on attempt "
+                f"{attempt}/{DOWNLOAD_MAX_ATTEMPTS} at {persisted:,}/{tile.bytes:,} bytes: "
+                f"{error}; retrying in {delay_seconds:g}s",
+                flush=True,
+            )
+            time.sleep(delay_seconds)
+
+
+def _resumable_partial_state(tile: Tile, partial: Path, entry: object) -> _PartialState:
+    if not partial.exists():
+        return _PartialState(0, None)
+    actual = partial.stat().st_size
+    if actual > tile.bytes:
+        raise LidarError(f"partial LAS is larger than pinned inventory: {partial}")
+    if (
+        not isinstance(entry, dict)
+        or entry.get("status") != "downloading"
+        or entry.get("expected_bytes", tile.bytes) != tile.bytes
+    ):
+        partial.unlink()
+        return _PartialState(0, None)
+    recorded = entry.get("downloaded_bytes")
+    if not isinstance(recorded, int) or recorded < 0 or recorded > tile.bytes:
+        partial.unlink()
+        return _PartialState(0, None)
+    etag = entry.get("etag")
+    if not isinstance(etag, str) or _strong_etag(httpx.Headers({"ETag": etag})) is None:
+        partial.unlink()
+        return _PartialState(0, None)
+    # A killed process can leave bytes ahead of the last manifest checkpoint. They
+    # came from the response bound to this stored strong validator, so a resumed
+    # request can use the actual size with If-Range. Promotion still requires full
+    # size, SHA-256, and LAS structure validation.
+    return _PartialState(actual, etag)
+
+
 def download_tile(tile: Tile, inventory: Inventory, client: httpx.Client) -> tuple[Path, str]:
     RAW_LAS_DIR.mkdir(parents=True, exist_ok=True)
     destination = RAW_LAS_DIR / tile.name
@@ -781,53 +963,35 @@ def download_tile(tile: Tile, inventory: Inventory, client: httpx.Client) -> tup
             _validate_exact_las_source(destination, digest)
             return destination, digest
         destination.unlink()
-    if partial.exists() and (
-        not isinstance(entry, dict)
-        or entry.get("status") != "downloading"
-        or entry.get("downloaded_bytes") != partial.stat().st_size
-    ):
-        partial.unlink()
-    if partial.exists() and partial.stat().st_size > tile.bytes:
-        raise LidarError(f"partial LAS is larger than pinned inventory: {partial}")
-    offset = partial.stat().st_size if partial.exists() else 0
-    _record_progress(inventory, tile, "downloading", downloaded_bytes=offset)
-    headers = {"Range": f"bytes={offset}-"} if offset else {}
-    with client.stream("GET", tile.url, headers=headers) as response:
-        response.raise_for_status()
-        if str(response.url) != tile.url:
-            raise LidarError(f"LiDAR tile redirected outside its pinned URL: {response.url}")
-        content_length = response.headers.get("content-length", "")
-        if offset and response.status_code == 206:
-            content_range = response.headers.get("content-range", "")
-            match = CONTENT_RANGE.fullmatch(content_range)
-            expected_response_bytes = tile.bytes - offset
-            if (
-                match is None
-                or int(match.group("start")) != offset
-                or int(match.group("end")) != tile.bytes - 1
-                or int(match.group("total")) != tile.bytes
-                or content_length != str(expected_response_bytes)
-            ):
-                raise LidarError(
-                    f"invalid resumed response for {tile.name}: Content-Range "
-                    f"{content_range!r}, Content-Length {content_length!r}"
-                )
-        elif offset:
-            offset = 0
-            if response.status_code != 200 or content_length != str(tile.bytes):
-                raise LidarError(
-                    f"invalid replacement response for {tile.name}: status "
-                    f"{response.status_code}, Content-Length {content_length!r}"
-                )
-        elif response.status_code != 200 or content_length != str(tile.bytes):
-            raise LidarError(
-                f"invalid download response for {tile.name}: status {response.status_code}, "
-                f"Content-Length {content_length!r}; expected {tile.bytes}"
-            )
-        mode = "ab" if offset else "wb"
-        with partial.open(mode) as file:
-            for chunk in response.iter_bytes(DOWNLOAD_CHUNK_BYTES):
-                file.write(chunk)
+    initial_state = _resumable_partial_state(tile, partial, entry)
+
+    def persist(state: _PartialState) -> None:
+        _record_progress(
+            inventory,
+            tile,
+            "downloading",
+            downloaded_bytes=state.downloaded_bytes,
+            **({"etag": state.etag} if state.etag is not None else {}),
+        )
+
+    progress_state = _TransferProgress(initial_state, persist)
+    persist(initial_state)
+    try:
+        _transfer_with_retries(tile, client, partial, progress_state)
+    except TransientLidarTransferError as error:
+        downloaded_bytes = partial.stat().st_size if partial.exists() else 0
+        _record_progress(
+            inventory,
+            tile,
+            "downloading",
+            downloaded_bytes=downloaded_bytes,
+            transient_attempts=DOWNLOAD_MAX_ATTEMPTS,
+            transient_error=str(error),
+            **(
+                {"etag": progress_state.state.etag} if progress_state.state.etag is not None else {}
+            ),
+        )
+        raise
     if partial.stat().st_size != tile.bytes:
         raise LidarError(
             f"incomplete LAS download for {tile.name}: "
@@ -858,18 +1022,69 @@ def recheck_rejected_sources(
             continue
         checked += 1
         candidate = RAW_LAS_DIR / f"{tile.name}.recheck.part"
-        candidate.unlink(missing_ok=True)
-        with client.stream("GET", tile.url) as response:
-            response.raise_for_status()
-            if str(response.url) != tile.url:
-                raise LidarError(f"LiDAR recheck redirected outside its pinned URL: {response.url}")
-            if response.status_code != 200 or response.headers.get("content-length") != str(
-                tile.bytes
-            ):
-                raise LidarError(f"invalid recheck response for {tile.name}")
-            with candidate.open("wb") as file:
-                for chunk in response.iter_bytes(DOWNLOAD_CHUNK_BYTES):
-                    file.write(chunk)
+        progress = _load_progress(inventory)
+        progress_tiles = progress["tiles"]
+        if not isinstance(progress_tiles, dict):
+            raise AssertionError("progress parser guarantees a tile mapping")
+        entry = progress_tiles.get(tile.name)
+        if candidate.exists() and (
+            not isinstance(entry, dict)
+            or entry.get("status") != "rejected_source"
+            or entry.get("recheck_expected_bytes") != tile.bytes
+            or entry.get("source_sha256") != metadata.get("source_sha256")
+            or not isinstance(entry.get("recheck_etag"), str)
+            or _strong_etag(httpx.Headers({"ETag": entry["recheck_etag"]})) is None
+        ):
+            candidate.unlink()
+        if candidate.exists() and candidate.stat().st_size > tile.bytes:
+            raise LidarError(f"recheck partial is larger than pinned inventory: {candidate}")
+
+        initial_etag = (
+            entry.get("recheck_etag") if candidate.exists() and isinstance(entry, dict) else None
+        )
+        initial_state = _PartialState(
+            candidate.stat().st_size if candidate.exists() else 0,
+            initial_etag if isinstance(initial_etag, str) else None,
+        )
+
+        def persist(
+            state: _PartialState,
+            *,
+            active_tile: Tile = tile,
+            active_metadata: dict[str, object] = metadata,
+        ) -> None:
+            _record_progress(
+                inventory,
+                active_tile,
+                "rejected_source",
+                **active_metadata,
+                recheck_expected_bytes=active_tile.bytes,
+                recheck_downloaded_bytes=state.downloaded_bytes,
+                **({"recheck_etag": state.etag} if state.etag is not None else {}),
+            )
+
+        progress_state = _TransferProgress(initial_state, persist)
+        persist(initial_state)
+        try:
+            _transfer_with_retries(tile, client, candidate, progress_state)
+        except TransientLidarTransferError as error:
+            _record_progress(
+                inventory,
+                tile,
+                "rejected_source",
+                **metadata,
+                recheck_expected_bytes=tile.bytes,
+                recheck_downloaded_bytes=candidate.stat().st_size if candidate.exists() else 0,
+                recheck_transient_attempts=DOWNLOAD_MAX_ATTEMPTS,
+                recheck_transient_error=str(error),
+                **(
+                    {"recheck_etag": progress_state.state.etag}
+                    if progress_state.state.etag is not None
+                    else {}
+                ),
+            )
+            print(f"  recheck remains rejected after transient failure: {error}", flush=True)
+            continue
         if candidate.stat().st_size != tile.bytes:
             candidate.unlink(missing_ok=True)
             raise LidarError(f"incomplete recheck response for {tile.name}")
@@ -878,6 +1093,7 @@ def recheck_rejected_sources(
             _validate_exact_las_source(candidate, digest)
         except InvalidLasSourceError:
             candidate.unlink(missing_ok=True)
+            _record_progress(inventory, tile, "rejected_source", **metadata)
             continue
         destination = RAW_LAS_DIR / tile.name
         candidate.replace(destination)
@@ -1103,6 +1319,25 @@ def process_tile(
             raise LidarError("refusing to discard raw LAS: derived checksum changed")
         raw.unlink()
         _record_progress(inventory, tile, "released", **metadata)
+
+
+def process_queue(
+    queue: Sequence[Tile],
+    inventory: Inventory,
+    client: httpx.Client,
+    *,
+    discard_raw: bool,
+) -> tuple[str, ...]:
+    """Process every queued tile while leaving exhausted transient transfers pending."""
+    transient_failures: list[str] = []
+    for position, tile in enumerate(queue, start=1):
+        print(f"[{position}/{len(queue)}] {tile.name} ({tile.bytes / 1024**2:.1f} MiB)")
+        try:
+            process_tile(tile, inventory, client, discard_raw=discard_raw)
+        except TransientLidarTransferError as error:
+            transient_failures.append(tile.name)
+            print(f"  pending after bounded retries: {error}", flush=True)
+    return tuple(transient_failures)
 
 
 def pending_tiles(inventory: Inventory) -> tuple[Tile, ...]:
@@ -1631,11 +1866,16 @@ def main() -> None:
                 parser.error("--max-tiles must be at least 1")
             queue = queue[: arguments.max_tiles]
         with httpx.Client(
-            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=None
+            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=PASDA_TIMEOUT
         ) as client:
-            for position, tile in enumerate(queue, start=1):
-                print(f"[{position}/{len(queue)}] {tile.name} ({tile.bytes / 1024**2:.1f} MiB)")
-                process_tile(tile, inventory, client, discard_raw=arguments.discard_raw)
+            transient_failures = process_queue(
+                queue, inventory, client, discard_raw=arguments.discard_raw
+            )
+        if transient_failures:
+            print(
+                f"left {len(transient_failures):,} transient transfer failures pending: "
+                f"{', '.join(transient_failures)}"
+            )
         print(_summary(inventory))
     elif arguments.command == "status":
         inventory = load_inventory()
@@ -1653,7 +1893,7 @@ def main() -> None:
         inventory = load_inventory()
         validate_active_sources(inventory)
         with httpx.Client(
-            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=None
+            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=PASDA_TIMEOUT
         ) as client:
             checked, repaired = recheck_rejected_sources(
                 inventory, client, discard_raw=arguments.discard_raw

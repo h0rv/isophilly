@@ -20,9 +20,11 @@ from shapely.geometry import Polygon, box
 from isophilly_ingest.lidar import (
     EVIDENCE_SCHEMA,
     PASDA_LAS_URL,
+    PASDA_TIMEOUT,
     Inventory,
     LidarError,
     Tile,
+    TransientLidarTransferError,
     _publish_staged_merge,
     _recover_merge_publication,
     _summary,
@@ -37,6 +39,7 @@ from isophilly_ingest.lidar import (
     parse_listing,
     pending_tiles,
     preflight_merge_read,
+    process_queue,
     process_tile,
     read_las_header,
     recheck_rejected_sources,
@@ -279,6 +282,12 @@ class LasTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.TestCase):
+    def test_pasda_timeout_bounds_each_network_phase(self) -> None:
+        self.assertEqual(PASDA_TIMEOUT.connect, 30.0)
+        self.assertEqual(PASDA_TIMEOUT.read, 120.0)
+        self.assertEqual(PASDA_TIMEOUT.write, 30.0)
+        self.assertEqual(PASDA_TIMEOUT.pool, 30.0)
+
     def test_rejects_redirected_tile_response(self) -> None:
         payload = las_bytes([(10, 20, 30, 2)])
         tile = Tile(
@@ -320,17 +329,28 @@ class DownloadTests(unittest.TestCase):
                     "inventory_listing_sha256": "a" * 64,
                     "inventory_city_sha256": "b" * 64,
                     "inventory_building_sha256": "c" * 64,
-                    "tiles": {tile.name: {"status": "downloading", "downloaded_bytes": 100}},
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloading",
+                            "expected_bytes": len(payload),
+                            "downloaded_bytes": 0,
+                            "etag": '"source-v1"',
+                        }
+                    },
                 }
             )
         )
 
         def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.headers["range"], "bytes=100-")
+            self.assertEqual(request.headers["if-range"], '"source-v1"')
             return httpx.Response(
                 206,
                 content=payload[100:],
-                headers={"Content-Range": f"bytes 100-{len(payload) - 1}/{len(payload)}"},
+                headers={
+                    "Content-Range": f"bytes 100-{len(payload) - 1}/{len(payload)}",
+                    "ETag": '"source-v1"',
+                },
                 request=request,
             )
 
@@ -346,6 +366,446 @@ class DownloadTests(unittest.TestCase):
         progress = json.loads((root / "progress.json").read_text())
         self.assertEqual(progress["tiles"][tile.name]["status"], "downloaded")
         self.assertEqual(progress["inventory_listing_sha256"], "a" * 64)
+
+    def test_legacy_weak_or_missing_etag_partial_restarts_from_zero(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        for etag in (None, 'W/"source-v1"'):
+            with self.subTest(etag=etag):
+                directory = TemporaryDirectory()
+                self.addCleanup(directory.cleanup)
+                root = Path(directory.name)
+                raw = root / "raw"
+                raw.mkdir()
+                partial = raw / f"{tile.name}.part"
+                partial.write_bytes(b"untrusted" * 12)
+                entry: dict[str, object] = {
+                    "status": "downloading",
+                    "expected_bytes": len(payload),
+                    "downloaded_bytes": partial.stat().st_size,
+                }
+                if etag is not None:
+                    entry["etag"] = etag
+                (root / "progress.json").write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 2,
+                            "inventory_listing_sha256": "a" * 64,
+                            "inventory_city_sha256": "b" * 64,
+                            "inventory_building_sha256": "c" * 64,
+                            "tiles": {tile.name: entry},
+                        }
+                    )
+                )
+
+                def handler(request: httpx.Request) -> httpx.Response:
+                    self.assertNotIn("range", request.headers)
+                    self.assertNotIn("if-range", request.headers)
+                    return httpx.Response(200, content=payload, request=request)
+
+                with (
+                    patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+                    patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+                    httpx.Client(transport=httpx.MockTransport(handler)) as client,
+                ):
+                    path, _ = download_tile(tile, inventory_for(tile), client)
+                self.assertEqual(path.read_bytes(), payload)
+
+    def test_changed_etag_on_partial_response_discards_without_appending(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        raw = root / "raw"
+        raw.mkdir()
+        partial = raw / f"{tile.name}.part"
+        partial.write_bytes(payload[:100])
+        (root / "progress.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "inventory_listing_sha256": "a" * 64,
+                    "inventory_city_sha256": "b" * 64,
+                    "inventory_building_sha256": "c" * 64,
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloading",
+                            "expected_bytes": len(payload),
+                            "downloaded_bytes": 100,
+                            "etag": '"source-v1"',
+                        }
+                    },
+                }
+            )
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["range"], "bytes=100-")
+            self.assertEqual(request.headers["if-range"], '"source-v1"')
+            return httpx.Response(
+                206,
+                content=payload[100:],
+                headers={
+                    "Content-Range": f"bytes 100-{len(payload) - 1}/{len(payload)}",
+                    "ETag": '"source-v2"',
+                },
+                request=request,
+            )
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            self.assertRaisesRegex(LidarError, "validator changed"),
+        ):
+            download_tile(tile, inventory_for(tile), client)
+        self.assertFalse(partial.exists())
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][tile.name]["downloaded_bytes"], 0)
+        self.assertNotIn("etag", progress["tiles"][tile.name])
+
+    def test_if_range_full_response_rewrites_partial_from_zero(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        raw = root / "raw"
+        raw.mkdir()
+        partial = raw / f"{tile.name}.part"
+        partial.write_bytes(b"old-prefix" * 10)
+        (root / "progress.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "inventory_listing_sha256": "a" * 64,
+                    "inventory_city_sha256": "b" * 64,
+                    "inventory_building_sha256": "c" * 64,
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloading",
+                            "expected_bytes": len(payload),
+                            "downloaded_bytes": partial.stat().st_size,
+                            "etag": '"source-v1"',
+                        }
+                    },
+                }
+            )
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["range"], "bytes=100-")
+            self.assertEqual(request.headers["if-range"], '"source-v1"')
+            return httpx.Response(
+                200,
+                content=payload,
+                headers={"ETag": '"source-v2"'},
+                request=request,
+            )
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            path, _ = download_tile(tile, inventory_for(tile), client)
+        self.assertEqual(path.read_bytes(), payload)
+
+    def test_read_timeout_retries_from_newly_persisted_partial(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2), (11, 21, 31, 6)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        requests: list[httpx.Request] = []
+
+        class TimedOutStream(httpx.SyncByteStream):
+            def __iter__(self):
+                yield payload[:200]
+                raise httpx.ReadTimeout("dead socket", request=requests[-1])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 1:
+                self.assertNotIn("range", request.headers)
+                return httpx.Response(
+                    200,
+                    headers={"Content-Length": str(len(payload)), "ETag": '"source-v1"'},
+                    stream=TimedOutStream(),
+                    request=request,
+                )
+            self.assertEqual(request.headers["range"], "bytes=128-")
+            self.assertEqual(request.headers["if-range"], '"source-v1"')
+            return httpx.Response(
+                206,
+                content=payload[128:],
+                headers={
+                    "Content-Range": f"bytes 128-{len(payload) - 1}/{len(payload)}",
+                    "ETag": '"source-v1"',
+                },
+                request=request,
+            )
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.DOWNLOAD_CHUNK_BYTES", 128),
+            patch("isophilly_ingest.lidar.time.sleep") as sleep,
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            path, _ = download_tile(tile, inventory_for(tile), client)
+
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(len(requests), 2)
+        sleep.assert_called_once_with(2.0)
+
+    def test_timeout_without_strong_etag_restarts_instead_of_appending(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2), (11, 21, 31, 6)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        requests: list[httpx.Request] = []
+
+        class TimedOutStream(httpx.SyncByteStream):
+            def __iter__(self):
+                yield payload[:200]
+                raise httpx.ReadTimeout("dead socket", request=requests[-1])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            self.assertNotIn("range", request.headers)
+            self.assertNotIn("if-range", request.headers)
+            if len(requests) == 1:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Length": str(len(payload)), "ETag": 'W/"weak"'},
+                    stream=TimedOutStream(),
+                    request=request,
+                )
+            return httpx.Response(200, content=payload, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.DOWNLOAD_CHUNK_BYTES", 128),
+            patch("isophilly_ingest.lidar.time.sleep"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            path, _ = download_tile(tile, inventory_for(tile), client)
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(len(requests), 2)
+
+    def test_retryable_http_status_uses_bounded_retry_path(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(503, request=request)
+            return httpx.Response(200, content=payload, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.time.sleep") as sleep,
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            path, _ = download_tile(tile, inventory_for(tile), client)
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(2.0)
+
+    def test_off_url_503_is_a_nonretryable_redirect_failure(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if request.url.host == "example.test":
+                return httpx.Response(
+                    302, headers={"Location": "https://evil.test/tile.las"}, request=request
+                )
+            return httpx.Response(503, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.time.sleep") as sleep,
+            httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True) as client,
+            self.assertRaisesRegex(LidarError, "redirected outside"),
+        ):
+            download_tile(tile, inventory_for(tile), client)
+        self.assertEqual(calls, 2)
+        sleep.assert_not_called()
+
+    def test_retry_exhaustion_stays_pending_and_queue_continues(self) -> None:
+        first = Tile("26452E204072N.las", "https://example.test/first.las", 500, (0, 0, 1, 1), True)
+        second = Tile(
+            "26479E201432N.las", "https://example.test/second.las", 500, (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(first, second)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectTimeout("PASDA unavailable", request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.DERIVED_DIR", root / "derived"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.time.sleep"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            self.assertRaises(TransientLidarTransferError),
+        ):
+            download_tile(first, inventory, client)
+        self.assertEqual(calls, 4)
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][first.name]["status"], "downloading")
+        self.assertEqual(progress["tiles"][first.name]["transient_attempts"], 4)
+        self.assertIn("exhausted 4 attempts", progress["tiles"][first.name]["transient_error"])
+        with patch("isophilly_ingest.lidar.DERIVED_DIR", root / "derived"):
+            self.assertEqual(pending_tiles(inventory), (first, second))
+
+        processed: list[str] = []
+
+        def fake_process(
+            tile: Tile, active: Inventory, client: httpx.Client, *, discard_raw: bool
+        ) -> None:
+            self.assertIs(active, inventory)
+            self.assertTrue(discard_raw)
+            processed.append(tile.name)
+            if tile == first:
+                raise TransientLidarTransferError("still pending")
+
+        with (
+            patch("isophilly_ingest.lidar.process_tile", side_effect=fake_process),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            failures = process_queue((first, second), inventory, client, discard_raw=True)
+        self.assertEqual(processed, [first.name, second.name])
+        self.assertEqual(failures, (first.name,))
+
+    def test_keyboard_interrupt_partial_is_resumed_on_restart(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2), (11, 21, 31, 6)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        inventory = inventory_for(tile)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+
+        class InterruptedStream(httpx.SyncByteStream):
+            def __iter__(self):
+                yield payload[:200]
+                raise KeyboardInterrupt
+
+        first_request = httpx.Request("GET", tile.url)
+        first_response = httpx.Response(
+            200,
+            headers={"Content-Length": str(len(payload)), "ETag": '"source-v1"'},
+            stream=InterruptedStream(),
+            request=first_request,
+        )
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.DOWNLOAD_CHUNK_BYTES", 128),
+            httpx.Client(transport=httpx.MockTransport(lambda request: first_response)) as client,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            download_tile(tile, inventory, client)
+
+        partial = root / "raw" / f"{tile.name}.part"
+        self.assertEqual(partial.read_bytes(), payload[:128])
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][tile.name]["downloaded_bytes"], 128)
+        self.assertEqual(progress["tiles"][tile.name]["etag"], '"source-v1"')
+
+        def resumed(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["range"], "bytes=128-")
+            self.assertEqual(request.headers["if-range"], '"source-v1"')
+            return httpx.Response(
+                206,
+                content=payload[128:],
+                headers={
+                    "Content-Range": f"bytes 128-{len(payload) - 1}/{len(payload)}",
+                    "ETag": '"source-v1"',
+                },
+                request=request,
+            )
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(resumed)) as client,
+        ):
+            path, _ = download_tile(tile, inventory, client)
+        self.assertEqual(path.read_bytes(), payload)
 
     def test_inventory_change_discards_unversioned_partial(self) -> None:
         payload = las_bytes([(10, 20, 30, 2)])
@@ -370,7 +830,13 @@ class DownloadTests(unittest.TestCase):
                     "inventory_listing_sha256": "e" * 64,
                     "inventory_city_sha256": "b" * 64,
                     "inventory_building_sha256": "c" * 64,
-                    "tiles": {tile.name: {"status": "downloading", "downloaded_bytes": 100}},
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloading",
+                            "downloaded_bytes": 100,
+                            "etag": '"source-v1"',
+                        }
+                    },
                 }
             )
         )
@@ -411,16 +877,29 @@ class DownloadTests(unittest.TestCase):
                     "inventory_listing_sha256": "a" * 64,
                     "inventory_city_sha256": "b" * 64,
                     "inventory_building_sha256": "c" * 64,
-                    "tiles": {tile.name: {"status": "downloading", "downloaded_bytes": 100}},
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloading",
+                            "downloaded_bytes": 100,
+                            "etag": '"source-v1"',
+                        }
+                    },
                 }
             )
         )
 
+        calls = 0
+
         def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
             return httpx.Response(
                 206,
                 content=payload[100:],
-                headers={"Content-Range": f"bytes 99-{len(payload) - 1}/{len(payload)}"},
+                headers={
+                    "Content-Range": f"bytes 99-{len(payload) - 1}/{len(payload)}",
+                    "ETag": '"source-v1"',
+                },
                 request=request,
             )
 
@@ -433,6 +912,7 @@ class DownloadTests(unittest.TestCase):
             download_tile(tile, inventory_for(tile), client)
 
         self.assertEqual(partial.read_bytes(), payload[:100])
+        self.assertEqual(calls, 1)
 
     def test_rejects_short_200_response_before_writing_source(self) -> None:
         payload = las_bytes([(10, 20, 30, 2)])
@@ -674,11 +1154,50 @@ class ArtifactTests(unittest.TestCase):
         with (
             patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
             patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
             httpx.Client(transport=httpx.MockTransport(handler)) as client,
         ):
             self.assertEqual(recheck_rejected_sources(inventory, client, discard_raw=True), (1, 0))
         self.assertTrue((derived / f"{tile.name}.json").exists())
         self.assertFalse((raw / tile.name).exists())
+
+    def test_recheck_transient_exhaustion_keeps_rejections_and_continues(self) -> None:
+        first = Tile("26452E204072N.las", "https://example.test/first.las", 500, (0, 0, 1, 1), True)
+        second = Tile(
+            "26479E201432N.las", "https://example.test/second.las", 500, (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(first, second)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        derived = root / "derived"
+        derived.mkdir()
+        self._write_rejection(derived, first, inventory)
+        self._write_rejection(derived, second, inventory)
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("dead socket", request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            patch("isophilly_ingest.lidar.DOWNLOAD_MAX_ATTEMPTS", 1),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            self.assertEqual(recheck_rejected_sources(inventory, client, discard_raw=True), (2, 0))
+
+        self.assertEqual(calls, 2)
+        self.assertTrue((derived / f"{first.name}.json").exists())
+        self.assertTrue((derived / f"{second.name}.json").exists())
+        progress = json.loads((root / "progress.json").read_text())
+        for tile in (first, second):
+            entry = progress["tiles"][tile.name]
+            self.assertEqual(entry["status"], "rejected_source")
+            self.assertEqual(entry["recheck_transient_attempts"], 1)
 
     def test_rejected_header_minimum_is_recomputed(self) -> None:
         tile = Tile("26452E204072N.las", "https://example.test/tile.las", 500, (0, 0, 1, 1), True)

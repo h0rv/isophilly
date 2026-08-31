@@ -52,6 +52,7 @@ audit = { cmd = "bash -lc 'uv audit --locked --preview-features audit-command &&
 check = { cmd = "bash -lc 'poe check-python && poe check-web && poe check-rust && poe audit'", use_exec = true }
 ingest = { cmd = "python -m isophilly_ingest.ingest", use_exec = true }
 neighborhoods = { cmd = "python scripts/build_neighborhoods.py", use_exec = true }
+neighborhood-audit = { cmd = "python scripts/build_neighborhoods.py --audit", use_exec = true }
 eagleview-plan = { cmd = "python -m isophilly_ingest.eagleview", use_exec = true }
 eagleview-smoke = { cmd = "python -m isophilly_ingest.eagleview --smoke", use_exec = true }
 lidar-plan = { cmd = "python -m isophilly_ingest.lidar plan", use_exec = true }

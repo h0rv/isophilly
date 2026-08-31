@@ -292,8 +292,22 @@ uses building-class points inside each footprint and nearby ground-class
 points to record robust roof and ground quantiles. Raw LAS is deleted only
 after the derived Parquet checksum has been written and reverified, or after an
 exact pinned payload is structurally rejected and its terminal provenance has
-been atomically written and revalidated. The
-progress manifest is atomic, so the same commands resume after interruption.
+been atomically written and revalidated. The progress manifest is atomic, so
+the same commands resume after interruption. PASDA requests use a 30 second
+connect timeout, a 120 second read timeout, and 30 second write and connection
+pool timeouts. Each tile gets at most four attempts. Retries wait 2, 4, and 8
+seconds, with no random delay. The job saves a response ETag with each checkpoint
+only when the server supplies a strong ETag. A retry can resume at the size of
+the saved partial file only when that strong ETag is present. The request sends
+the ETag in `If-Range`, and the response must return the same strong ETag with an
+exact matching `Content-Range` and length before the job appends data. A weak
+ETag, a missing ETag, or a legacy partial without an ETag causes a restart from
+zero. A full HTTP 200 response also rewrites the partial from zero. Each 4 MiB
+chunk is flushed to disk before the progress manifest records it. A killed
+process can leave a partial file ahead of the last manifest write. The job uses
+that actual file size only when the active inventory, tile, and stored strong
+ETag still match. The completed file still has to pass the pinned size, SHA-256,
+and LAS structure checks before it can replace the partial file.
 Each LAS point stream is decoded exactly once. Matching roof and buffered-ground
 Z integers are appended to per-building files in a tile-scoped `.lidar-work`
 directory through a 64-handle LRU. Quantiles then read one building at a time,
@@ -306,8 +320,8 @@ tile work directory is removed on success or failure.
 `lidar-status` audits every result against the active inventory, sibling
 provenance JSON, output size, SHA-256, and Parquet source fields. A progress
 flag without a valid artifact remains pending. Resumed HTTP responses must
-also return a matching `Content-Range` start and total before bytes are
-appended.
+also return a matching `Content-Range` start and total, along with the stored
+strong ETag, before bytes are appended.
 
 The sequential `--all --discard-raw` path has peak raw storage near the largest
 individual PASDA tile rather than the complete archive. The current directory's
@@ -315,6 +329,12 @@ largest files are about 1.2 GiB; allow several additional GiB for a partial
 download, the footprint index, per-tile evidence, and filesystem overhead.
 Network transfer is still the sum of every City-intersecting source tile and
 the exact selected count and bytes are printed by `lidar-plan`.
+Timeouts, connection errors, HTTP 408 and 429 responses, and HTTP 500 through
+599 responses use the bounded retry policy. Invalid redirects, byte ranges,
+lengths, hashes, and LAS structures do not retry. When all attempts fail, the
+queue records the saved byte count, leaves the tile pending, and continues with
+the remaining tiles. A later run resumes the pending tile when its checkpoint
+has a strong ETag. Otherwise, the later run starts that tile from zero.
 The 2026-08-30 audit selected 664 of 963 files, totaling 289.51 GiB, and
 created a 102.1 MiB footprint index. The queue starts with the smallest file,
 so `lidar-next` is a bounded smoke test rather than an arbitrary 1.2 GiB pull.
@@ -331,7 +351,10 @@ Run `uv run --locked poe lidar-recheck-rejected` to test whether PASDA repaired
 a terminal source without changing its directory entry. The old rejection stays
 authoritative while the replacement downloads separately. Only an exact-size,
 exact-URL response with a structurally complete LAS payload replaces it and
-resumes derivation; an unchanged truncation is discarded.
+resumes derivation. An unchanged truncation is discarded. Recheck downloads use
+the same timeouts, byte range validation, retry limit, and saved partial files.
+A recheck that exhausts transient retries keeps the old rejection and continues
+with the next rejected tile.
 
 `lidar-merge` requires every selected tile to be accounted for by a valid
 derived, outside-City, or validated terminal `rejected_source` result. A

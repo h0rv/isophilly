@@ -9,7 +9,7 @@
     "wrangler": "4.127.1"
   },
   "scripts": {
-    "check": "biome check static/app.js static/city-overlay.js tests/city-overlay.test.js scripts/visual-check.mjs && tsc --noEmit && node --test tests/city-overlay.test.js",
+    "check": "biome check static/app.js static/city-overlay.js tests/city-overlay.test.js tests/visual-check.test.js scripts/visual-check.mjs scripts/visual-check-lib.mjs && tsc --noEmit && node --test tests/city-overlay.test.js tests/visual-check.test.js",
     "visual": "node scripts/visual-check.mjs"
   }
 }

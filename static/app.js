@@ -20,7 +20,7 @@ import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js
 
 /** @typedef {{ schema_version: 1, tile_version: string, tiles: string[] }} TileCoverage */
 
-/** @typedef {{ name: string, kind: "planning_neighborhood" | "local_area", label: [number, number], rings: [number, number][][], source?: string, note?: string, priority?: number }} Neighborhood */
+/** @typedef {{ name: string, kind: "planning_neighborhood" | "local_area", label: [number, number], rings: [number, number][][], source?: string, note?: string, priority?: number, display?: boolean, display_label?: string, display_tier?: 1 | 2 | 3, draw_geometry?: boolean, relevance?: string, rationale?: string, associations?: string[], planning_parents?: string[], suppresses?: string[], overlap_group?: string }} Neighborhood */
 /** @typedef {{ source: string, disclaimer: string, features: Neighborhood[] }} Neighborhoods */
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
@@ -110,53 +110,6 @@ const PREVIEW_TILE_ZOOM = 5;
 const MAX_CACHED_TILES = 512;
 const MAX_TILE_ATTEMPTS = 4;
 const PREFETCH_VIEW_LIMIT = 64;
-const LOCAL_AREA_PRESENTATION = new Map([
-  ["Africatown", { label: "Africatown", tier: 1 }],
-  ["Castor Avenue", { label: "Castor Avenue", tier: 1 }],
-  ["Fishtown Frankford Avenue", { label: "Frankford Avenue Arts Corridor", tier: 1 }],
-  ["Italian Market", { label: "Italian Market", tier: 1 }],
-  ["Manayunk Main Street", { label: "Main Street Manayunk", tier: 1 }],
-  ["52nd Street", { label: "52nd Street", tier: 2 }],
-  ["Antique Row", { label: "Antique Row", tier: 2 }],
-  ["Avenue of the Arts", { label: "Avenue of the Arts", tier: 2 }],
-  ["Baltimore Avenue", { label: "Baltimore Avenue", tier: 2 }],
-  ["Chestnut Hill Germantown Avenue", { label: "Chestnut Hill Village", tier: 2 }],
-  ["East Passyunk", { label: "East Passyunk", tier: 2 }],
-  ["El Centro de Oro", { label: "El Centro de Oro", tier: 2 }],
-  ["Fairmount Avenue", { label: "Fairmount Avenue", tier: 2 }],
-  ["Gayborhood", { label: "Gayborhood", tier: 2 }],
-  ["Historic Germantown", { label: "Historic Germantown", tier: 2 }],
-  ["Independence Mall", { label: "Independence Mall", tier: 2 }],
-  ["Kensington & Allegheny", { label: "Kensington & Allegheny", tier: 2 }],
-  ["Lancaster Avenue", { label: "Lancaster Avenue", tier: 2 }],
-  ["Little Saigon", { label: "Little Saigon", tier: 2 }],
-  ["Midtown Village", { label: "Midtown Village", tier: 2 }],
-  ["Mt. Airy Germantown Avenue", { label: "Mt. Airy Village", tier: 2 }],
-  ["North Broad", { label: "North Broad", tier: 2 }],
-  ["Northern Liberties 2nd Street", { label: "2nd Street / Northern Liberties", tier: 2 }],
-  ["Ogontz Avenue", { label: "Ogontz Avenue", tier: 2 }],
-  ["Old City Arts District", { label: "Old City Arts District", tier: 2 }],
-  ["Parkside Centennial District", { label: "Parkside Centennial District", tier: 2 }],
-  ["Parkway Museum District", { label: "Parkway Museum District", tier: 2 }],
-  ["Penn's Landing", { label: "Penn's Landing", tier: 2 }],
-  ["Point Breeze Avenue", { label: "Point Breeze Avenue", tier: 2 }],
-  ["Rittenhouse Row", { label: "Rittenhouse Row", tier: 2 }],
-  ["South Street Headhouse", { label: "South Street Headhouse", tier: 2 }],
-  ["Two Street", { label: "Two Street", tier: 2 }],
-  ["Washington Avenue Food Corridor", { label: "Washington Avenue Food Corridor", tier: 2 }],
-  ["Fabric Row", { label: "Fabric Row", tier: 3 }],
-  ["Jewelers' Row", { label: "Jewelers' Row", tier: 3 }],
-  ["Mexican Market", { label: "Mexican 9th Street", tier: 3 }],
-  [
-    "Reading Terminal & Convention Center",
-    { label: "Reading Terminal Market / Convention Center", tier: 3 },
-  ],
-]);
-const LOCAL_PARENT_LABELS = new Map([
-  ["Fishtown Frankford Avenue", ["Fishtown", "East Kensington", "Kensington"]],
-  ["Manayunk Main Street", ["Manayunk"]],
-  ["Old City Arts District", ["Old City"]],
-]);
 let activeView = "";
 /** @type {string | undefined} */
 let scheduledPrefetch;
@@ -448,7 +401,7 @@ function drawNow() {
     drawAreaOverlays(viewZoom, panX, panY, scale);
   }
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
-  drawLandmarks(viewZoom, panX, panY, scale);
+  canvas.dataset.landmarks = JSON.stringify(drawLandmarks(viewZoom, panX, panY, scale));
   const pending = requested - loaded - failed;
   const scope =
     richView() === undefined
@@ -499,9 +452,7 @@ function drawAreaOverlays(z, panX, panY, scale) {
           areaNearViewport(area, panX, panY, scale),
       )
     : [];
-  const suppressedParents = new Set(
-    localAreas.flatMap((area) => LOCAL_PARENT_LABELS.get(area.name) ?? []),
-  );
+  const suppressedParents = new Set(localAreas.flatMap((area) => area.suppresses ?? []));
   /** @type {{ area: Neighborhood, rings: { x: number, y: number }[][] }[]} */
   const projectedPlanning = planningAreas.map((area) => ({
     area,
@@ -515,7 +466,7 @@ function drawAreaOverlays(z, panX, panY, scale) {
 
   for (const projected of projectedPlanning) drawAreaGeometry(projected.rings, "planning");
   for (const projected of projectedLocal) {
-    if ((LOCAL_AREA_PRESENTATION.get(projected.area.name)?.tier ?? 3) < 3) {
+    if (projected.area.draw_geometry === true) {
       drawAreaGeometry(projected.rings, "local");
     }
   }
@@ -575,16 +526,13 @@ function drawAreaOverlays(z, panX, panY, scale) {
 
 /** @param {Neighborhood} area @param {number} z */
 function localAreaVisible(area, z) {
-  const presentation = LOCAL_AREA_PRESENTATION.get(area.name);
-  if (presentation === undefined) return false;
-  return z >= (presentation.tier === 1 ? 6 : presentation.tier === 2 ? 7 : 8);
+  if (area.display !== true || area.display_tier === undefined) return false;
+  return z >= (area.display_tier === 1 ? 6 : area.display_tier === 2 ? 7 : 8);
 }
 
 /** @param {Neighborhood} area */
 function areaLabel(area) {
-  return area.kind === "local_area"
-    ? (LOCAL_AREA_PRESENTATION.get(area.name)?.label ?? area.name)
-    : area.name;
+  return area.kind === "local_area" ? (area.display_label ?? area.name) : area.name;
 }
 
 /** @param {Neighborhood} area @param {number} panX @param {number} panY @param {number} scale */
@@ -661,6 +609,7 @@ function drawAreaGeometry(rings, kind) {
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
 function drawLandmarks(z, panX, panY, scale) {
   const landmarks = richView()?.landmarks ?? city().landmarks;
+  const painted = [];
   for (const landmark of landmarks) {
     if (z < landmark.min_zoom) continue;
     const x = panX + (landmark.point[0] - sceneBounds()[0]) * scale;
@@ -677,7 +626,9 @@ function drawLandmarks(z, panX, panY, scale) {
     ctx.strokeText(landmark.name, pixelX + 10, pixelY - 11);
     ctx.fillStyle = "#191714";
     ctx.fillText(landmark.name, pixelX + 10, pixelY - 11);
+    painted.push(landmark.name);
   }
+  return painted;
 }
 
 /** Draw Rocky as a tiny raised-arms figure instead of an ambiguous map pin. */
@@ -1064,6 +1015,20 @@ function isNeighborhoods(value) {
     candidate.features.every((feature) => {
       if (typeof feature !== "object" || feature === null) return false;
       const area = /** @type {Record<string, unknown>} */ (feature);
+      const validLocalPresentation =
+        area.kind !== "local_area" ||
+        (typeof area.display === "boolean" &&
+          typeof area.display_label === "string" &&
+          [1, 2, 3].includes(/** @type {number} */ (area.display_tier)) &&
+          typeof area.draw_geometry === "boolean" &&
+          typeof area.relevance === "string" &&
+          typeof area.rationale === "string" &&
+          Array.isArray(area.associations) &&
+          area.associations.every((association) => typeof association === "string") &&
+          Array.isArray(area.planning_parents) &&
+          area.planning_parents.every((parent) => typeof parent === "string") &&
+          Array.isArray(area.suppresses) &&
+          area.suppresses.every((parent) => typeof parent === "string"));
       return (
         typeof area.name === "string" &&
         (area.kind === "planning_neighborhood" || area.kind === "local_area") &&
@@ -1071,7 +1036,8 @@ function isNeighborhoods(value) {
         Array.isArray(area.label) &&
         area.label.length === 2 &&
         area.label.every(Number.isFinite) &&
-        Array.isArray(area.rings)
+        Array.isArray(area.rings) &&
+        validLocalPresentation
       );
     })
   );

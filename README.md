@@ -1,6 +1,8 @@
 # IsoPhilly
 
-See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data provenance.
+See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data provenance. Run
+`uv run --locked poe neighborhood-audit` to verify the checked-in 148 planning neighborhoods and all
+61 local areas configured for display without network or browser access.
 
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
