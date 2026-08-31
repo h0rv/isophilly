@@ -319,19 +319,13 @@ The 2026-08-30 audit selected 664 of 963 files, totaling 289.51 GiB, and
 created a 102.1 MiB footprint index. The queue starts with the smallest file,
 so `lidar-next` is a bounded smoke test rather than an arbitrary 1.2 GiB pull.
 
-Five selected PASDA objects are listed at exactly 200,000,000 bytes:
-`27086E256872N.las`, `27086E259512N.las`, `27086E262152N.las`,
-`27086E264792N.las`, and `27086E267432N.las`. The first is confirmed
-source-truncated: PASDA served the exact pinned 200,000,000 bytes with SHA-256
-`c495f1e4258093b0aa3f8f7a641450f53c18937b0415f5955380cff6ad72a859`, but its
-LAS header declares 15,286,563 30-byte records after a 375-byte header and thus
-requires 458,597,265 bytes. It is durably marked `rejected_source`; its raw file
-was removed only after the rejection record passed validation. The other four
-have not yet been structurally confirmed and must not be described as corrupt.
-The downloader requires exact pinned HTTP lengths/ranges and hashes, then the
-LAS structural minimum. An exact but structurally invalid object is terminal,
-excluded from retry and evidence, and retained through its URL, sizes, hash,
-parsed header, expected minimum, and error metadata.
+PASDA serves some selected objects at their exact pinned directory size even
+though their LAS headers declare a larger point-record payload. The downloader
+requires exact pinned HTTP lengths/ranges and hashes, then the LAS structural
+minimum. An exact but structurally truncated object is terminal, excluded from
+retry and evidence, and retained through its URL, sizes, hash, parsed header,
+expected minimum, and error metadata. Record the final exact rejection list and
+coverage impact only after the full queue and canonical merge finish.
 
 Run `uv run --locked poe lidar-recheck-rejected` to test whether PASDA repaired
 a terminal source without changing its directory entry. The old rejection stays
@@ -345,13 +339,17 @@ deliberate unfinished-local-state diagnostic can use `python -m
 isophilly_ingest.lidar merge --allow-partial`; its manifest records that it is
 partial. It writes `data/lidar-2025/building-evidence.partial.parquet` and its
 sibling JSON instead of the canonical artifact. Partial smoke merges are
-diagnostic only and normal `poe ingest` never discovers them. Once all 664
+diagnostic only, always record `source_coverage_complete:false`, and normal
+`poe ingest` never discovers them. Once all 664
 sources are accounted for, a canonical merge with upstream rejections is still
 locally `partial:false`, but records `source_coverage_complete:false`, the
-rejected-source list/count, gap bounds, and affected-footprint counts. Normal
-ingest may consume that canonical evidence and retains City fallback heights in
-rejected gaps. Canonical merge remains blocked by locally pending, missing, or
-invalid artifacts. Merge
+deterministically ordered rejected-source list, exact source failure provenance,
+gap bounds, per-gap intersecting-footprint counts, and a union-deduplicated
+intersecting-footprint total. “Intersecting” does not claim that every footprint
+lacks evidence from an adjacent valid tile. Normal ingest may consume that
+canonical evidence and retains City fallback heights in rejected gaps. Status
+prints the rejected tile names as well as their count. Canonical merge remains
+blocked by locally pending, missing, or invalid artifacts. Merge
 verifies every sibling manifest, source SHA-256 shape, active
 inventory membership, source URL and byte count, output checksum, and
 footprint provenance. For a boundary-spanning building it prefers an
@@ -366,11 +364,21 @@ the evidence refines fallback footprint heights; photographed meshes and
 explicit building parts retain their existing render priority. This pipeline
 does not invent or provide facade photography.
 
-The 2026-08-30 live diagnostic partial merge uses manifest schema 2 and records
-23 accounted sources: 22 evidence tiles, one rejected source, and 641 pending.
-It contains 273 evidence rows and reports 2,326 City footprints affected by the
-confirmed rejected-source gap. These figures describe unfinished local state,
-not a canonical artifact; regenerate rather than copy them after queue progress.
+The canonical Parquet and schema-3 JSON manifest are both staged and checked
+before publication. Schema-2 manifests predate the complete rejection and gap
+provenance and must be regenerated with `poe lidar-merge`. Rejected-gap
+inspection happens before either active destination is replaced, so a
+footprint-index or gap-audit failure preserves the prior pair. Publication uses
+a transaction marker and renames the prior pair to backups first. A failed
+second rename restores both prior files; a later run resolves a crash marker by
+either accepting a fully validated new pair or restoring the backups. The JSON
+is published last, and readers also verify its recorded Parquet size and
+SHA-256. Recovery runs for both canonical and diagnostic-partial destinations
+before a merge scans tile state, so even an otherwise-early merge error repairs
+an interrupted publication. Ingest checks for a marker before testing whether
+the canonical Parquet exists, and the evidence loader repeats that check. A
+reader never repairs writer state; it fails closed with instructions to run
+`poe lidar-merge`.
 
 The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
 archives are duplicate formats or lower LODs of the already-ingested 2,689

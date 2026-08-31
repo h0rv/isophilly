@@ -35,7 +35,7 @@ from .config import (
 )
 from .download import download_all, local_snapshot
 from .geometry import buildings, city_rings, ground_rings, projected
-from .lidar import MERGED_EVIDENCE_PATH, PASDA_LAS_URL, load_height_evidence
+from .lidar import MERGED_EVIDENCE_PATH, PASDA_LAS_URL, load_height_evidence, preflight_merge_read
 from .mesh import building_meshes, merge_mesh_sources, prune_mesh_textures, texture_digest
 from .models import Bounds, Building, BuildingMesh, BuildingPart, MeshFace, Ring, Snapshot
 from .osm import building_parts, source_metadata
@@ -179,6 +179,7 @@ def write_metadata(
         if source is SOURCES.building_parts:
             metadata.update(source_metadata(snapshot))
         sources.append(metadata)
+    preflight_merge_read(MERGED_EVIDENCE_PATH)
     if MERGED_EVIDENCE_PATH.exists():
         sources.append(
             {
@@ -305,6 +306,7 @@ async def main_async(*, refresh: bool = False) -> None:
     print("projecting and clipping citywide footprints", flush=True)
     city, packed_city, bounds = city_geometry(snapshots[SOURCES.city.filename])
     height_evidence: dict[str, float] | None = None
+    preflight_merge_read(MERGED_EVIDENCE_PATH)
     if MERGED_EVIDENCE_PATH.exists():
         building_snapshot = snapshots[SOURCES.buildings.filename]
         height_evidence = load_height_evidence(MERGED_EVIDENCE_PATH, building_snapshot.sha256)

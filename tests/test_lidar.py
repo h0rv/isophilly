@@ -23,6 +23,9 @@ from isophilly_ingest.lidar import (
     Inventory,
     LidarError,
     Tile,
+    _publish_staged_merge,
+    _recover_merge_publication,
+    _summary,
     derive_evidence,
     download_tile,
     inventory_dict,
@@ -33,6 +36,7 @@ from isophilly_ingest.lidar import (
     parse_inventory,
     parse_listing,
     pending_tiles,
+    preflight_merge_read,
     process_tile,
     read_las_header,
     recheck_rejected_sources,
@@ -745,7 +749,9 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(merge_evidence(inventory, allow_partial=True), 1)
             self.assertTrue(partial.is_file())
             self.assertEqual(merged.read_bytes(), b"existing complete artifact")
-            self.assertTrue(json.loads(partial.with_suffix(".json").read_text())["partial"])
+            partial_manifest = json.loads(partial.with_suffix(".json").read_text())
+            self.assertTrue(partial_manifest["partial"])
+            self.assertFalse(partial_manifest["source_coverage_complete"])
             self._write_artifact(
                 root,
                 second,
@@ -765,7 +771,10 @@ class ArtifactTests(unittest.TestCase):
         rejected = Tile(
             "26479E201432N.las", "https://example.test/rejected.las", 200, (0, 0, 1, 1), True
         )
-        inventory = inventory_for(usable, rejected)
+        rejected_second = Tile(
+            "26505E201432N.las", "https://example.test/rejected-two.las", 300, (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(usable, rejected, rejected_second)
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -780,6 +789,7 @@ class ArtifactTests(unittest.TestCase):
             [self._row(usable, building_points=200, ground_points=100, height=10, spread=1)],
         )
         self._write_rejection(derived, rejected, inventory)
+        self._write_rejection(derived, rejected_second, inventory)
         gpd.GeoDataFrame(
             {"building_id": ["gap-building"], "source_sha256": [inventory.building_sha256]},
             geometry=[box(1, 1, 2, 2)],
@@ -790,19 +800,243 @@ class ArtifactTests(unittest.TestCase):
             patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
             patch("isophilly_ingest.lidar.FOOTPRINTS_PATH", footprints),
             patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", merged),
+            patch("isophilly_ingest.lidar.PARTIAL_EVIDENCE_PATH", root / "partial.parquet"),
         ):
             self.assertEqual(merge_evidence(inventory), 1)
 
         manifest = json.loads(merged.with_suffix(".json").read_text())
         self.assertFalse(manifest["partial"])
         self.assertFalse(manifest["source_coverage_complete"])
-        self.assertEqual(manifest["accounted_tiles"], 2)
-        self.assertEqual(manifest["rejected_source_tiles"], [rejected.name])
-        self.assertEqual(manifest["rejected_source_gaps"][0]["affected_footprints"], 1)
+        self.assertEqual(manifest["accounted_tiles"], 3)
+        self.assertEqual(manifest["rejected_source_tiles"], [rejected.name, rejected_second.name])
+        self.assertEqual(
+            [gap["intersecting_footprints"] for gap in manifest["rejected_source_gaps"]],
+            [1, 1],
+        )
+        self.assertEqual(manifest["rejected_source_intersecting_footprints_unique"], 1)
+        provenance = manifest["rejected_source_provenance"]
+        self.assertEqual(
+            [item["tile"] for item in provenance], [rejected.name, rejected_second.name]
+        )
+        self.assertEqual(provenance[0]["source_sha256"], "e" * 64)
+        self.assertGreater(provenance[0]["expected_minimum_bytes"], provenance[0]["actual_bytes"])
         with patch("isophilly_ingest.lidar.INVENTORY_PATH", root / "missing-inventory.json"):
             self.assertEqual(
                 load_height_evidence(merged, inventory.building_sha256), {"same-building": 10}
             )
+
+    def test_gap_failure_preserves_existing_merge_pair(self) -> None:
+        usable = Tile(
+            "26452E204072N.las", "https://example.test/usable.las", 100, (0, 0, 1, 1), True
+        )
+        rejected = Tile(
+            "26479E201432N.las", "https://example.test/rejected.las", 200, (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(usable, rejected)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        derived = root / "derived"
+        derived.mkdir()
+        merged = root / "building-evidence.parquet"
+        merged_metadata = merged.with_suffix(".json")
+        merged.write_bytes(b"existing parquet")
+        merged_metadata.write_text("existing metadata")
+        self._write_artifact(
+            derived,
+            usable,
+            inventory,
+            [self._row(usable, building_points=200, ground_points=100, height=10, spread=1)],
+        )
+        self._write_rejection(derived, rejected, inventory)
+        with (
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", merged),
+            patch("isophilly_ingest.lidar.PARTIAL_EVIDENCE_PATH", root / "partial.parquet"),
+            patch(
+                "isophilly_ingest.lidar._rejected_source_gap",
+                side_effect=LidarError("gap audit failed"),
+            ),
+            self.assertRaisesRegex(LidarError, "gap audit failed"),
+        ):
+            merge_evidence(inventory)
+        self.assertEqual(merged.read_bytes(), b"existing parquet")
+        self.assertEqual(merged_metadata.read_text(), "existing metadata")
+        self.assertFalse(merged.with_suffix(".parquet.part").exists())
+        self.assertFalse(merged_metadata.with_suffix(".json.part").exists())
+
+        with (
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", merged),
+            patch("isophilly_ingest.lidar.PARTIAL_EVIDENCE_PATH", root / "partial.parquet"),
+            patch(
+                "isophilly_ingest.lidar._rejected_source_gap",
+                return_value=(
+                    {
+                        "tile": rejected.name,
+                        "bounds_ft": [0.0, 0.0, 10.0, 10.0],
+                        "intersecting_footprints": 0,
+                    },
+                    set(),
+                ),
+            ),
+            patch(
+                "isophilly_ingest.lidar._validate_staged_merge",
+                side_effect=LidarError("stage audit failed"),
+            ),
+            self.assertRaisesRegex(LidarError, "stage audit failed"),
+        ):
+            merge_evidence(inventory)
+        self.assertEqual(merged.read_bytes(), b"existing parquet")
+        self.assertEqual(merged_metadata.read_text(), "existing metadata")
+        self.assertFalse(merged.with_suffix(".parquet.part").exists())
+        self.assertFalse(merged_metadata.with_suffix(".json.part").exists())
+
+    def test_second_replace_failure_restores_prior_merge_pair(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        destination = root / "building-evidence.parquet"
+        metadata_destination = destination.with_suffix(".json")
+        temporary = destination.with_suffix(".parquet.part")
+        metadata_temporary = metadata_destination.with_suffix(".json.part")
+        destination.write_bytes(b"old parquet")
+        metadata_destination.write_text("old metadata")
+        temporary.write_bytes(b"new parquet")
+        metadata_temporary.write_text("new metadata")
+        original_replace = Path.replace
+
+        def fail_metadata_replace(source: Path, target: Path) -> Path:
+            if source == metadata_temporary and target == metadata_destination:
+                raise OSError("forced metadata replace failure")
+            return original_replace(source, target)
+
+        with (
+            patch.object(Path, "replace", autospec=True, side_effect=fail_metadata_replace),
+            self.assertRaisesRegex(OSError, "forced metadata replace failure"),
+        ):
+            _publish_staged_merge(destination, temporary, metadata_temporary)
+        self.assertEqual(destination.read_bytes(), b"old parquet")
+        self.assertEqual(metadata_destination.read_text(), "old metadata")
+        self.assertFalse(destination.with_suffix(".parquet.backup").exists())
+        self.assertFalse(destination.with_suffix(".json.backup").exists())
+        self.assertFalse(destination.with_suffix(".publish.json").exists())
+
+    def test_crash_recovery_restores_prior_pair_before_metadata_publish(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        destination = root / "building-evidence.parquet"
+        metadata_destination = destination.with_suffix(".json")
+        destination.write_bytes(b"new parquet installed before crash")
+        destination.with_suffix(".parquet.backup").write_bytes(b"old parquet")
+        destination.with_suffix(".json.backup").write_text("old metadata")
+        destination.with_suffix(".publish.json").write_text(
+            json.dumps({"schema_version": 1, "had_parquet": True, "had_metadata": True})
+        )
+
+        _recover_merge_publication(destination)
+
+        self.assertEqual(destination.read_bytes(), b"old parquet")
+        self.assertEqual(metadata_destination.read_text(), "old metadata")
+        self.assertFalse(destination.with_suffix(".parquet.backup").exists())
+        self.assertFalse(destination.with_suffix(".json.backup").exists())
+        self.assertFalse(destination.with_suffix(".publish.json").exists())
+
+    def test_merge_recovers_both_destinations_before_early_no_path_exit(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        canonical = root / "canonical.parquet"
+        partial = root / "partial.parquet"
+        for destination in (canonical, partial):
+            destination.write_bytes(b"interrupted new parquet")
+            destination.with_suffix(".parquet.backup").write_bytes(b"prior parquet")
+            destination.with_suffix(".json.backup").write_text("prior metadata")
+            destination.with_suffix(".publish.json").write_text(
+                json.dumps({"schema_version": 1, "had_parquet": True, "had_metadata": True})
+            )
+
+        with (
+            patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", canonical),
+            patch("isophilly_ingest.lidar.PARTIAL_EVIDENCE_PATH", partial),
+            self.assertRaisesRegex(LidarError, "no validated derived"),
+        ):
+            merge_evidence(inventory_for())
+
+        for destination in (canonical, partial):
+            self.assertEqual(destination.read_bytes(), b"prior parquet")
+            self.assertEqual(destination.with_suffix(".json").read_text(), "prior metadata")
+            self.assertFalse(destination.with_suffix(".publish.json").exists())
+
+    def test_reader_marker_fails_closed_even_when_active_parquet_is_missing(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "building-evidence.parquet"
+        path.with_suffix(".publish.json").write_text(
+            json.dumps({"schema_version": 1, "had_parquet": True, "had_metadata": True})
+        )
+        with self.assertRaisesRegex(LidarError, "interrupted.*poe lidar-merge"):
+            preflight_merge_read(path)
+        with self.assertRaisesRegex(LidarError, "interrupted.*poe lidar-merge"):
+            load_height_evidence(path, "c" * 64)
+
+    def test_crash_recovery_accepts_fully_valid_new_pair_and_cleans_backups(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        destination = root / "building-evidence.parquet"
+        pq.write_table(pa.table({"value": [1]}), destination)
+        metadata_destination = destination.with_suffix(".json")
+        metadata_destination.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "output_file": destination.name,
+                    "output_bytes": destination.stat().st_size,
+                    "output_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                    "rows": 1,
+                }
+            )
+        )
+        destination.with_suffix(".parquet.backup").write_bytes(b"old parquet")
+        destination.with_suffix(".json.backup").write_text("old metadata")
+        destination.with_suffix(".publish.json").write_text(
+            json.dumps({"schema_version": 1, "had_parquet": True, "had_metadata": True})
+        )
+
+        _recover_merge_publication(destination)
+
+        self.assertEqual(pq.read_table(destination).to_pydict(), {"value": [1]})
+        self.assertEqual(json.loads(metadata_destination.read_text())["schema_version"], 3)
+        self.assertFalse(destination.with_suffix(".parquet.backup").exists())
+        self.assertFalse(destination.with_suffix(".json.backup").exists())
+        self.assertFalse(destination.with_suffix(".publish.json").exists())
+
+    def test_schema_two_merge_requires_regeneration(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        merged = root / "building-evidence.parquet"
+        merged.write_bytes(b"legacy")
+        merged.with_suffix(".json").write_text(json.dumps({"schema_version": 2}))
+        with self.assertRaisesRegex(LidarError, "schema 2 is legacy.*lidar-merge"):
+            load_height_evidence(merged, "c" * 64)
+
+    def test_summary_lists_rejected_tiles_deterministically(self) -> None:
+        first = Tile("26452E204072N.las", "https://example.test/one.las", 100, (0, 0, 1, 1), True)
+        second = Tile("26479E201432N.las", "https://example.test/two.las", 200, (0, 0, 1, 1), True)
+        inventory = inventory_for(second, first)
+
+        def metadata(tile: Tile, _: Inventory) -> dict[str, object]:
+            return {"result": "rejected_source", "tile": tile.name}
+
+        with (
+            patch("isophilly_ingest.lidar.pending_tiles", return_value=()),
+            patch("isophilly_ingest.lidar.validate_tile_artifact", side_effect=metadata),
+        ):
+            summary = _summary(inventory)
+        self.assertIn(f"rejected tiles {first.name}, {second.name}", summary)
 
     def test_height_loader_rejects_complex_roof_spread(self) -> None:
         tile = Tile("26452E204072N.las", "https://example.test/one.las", 100, (0, 0, 1, 1), True)
@@ -823,11 +1057,13 @@ class ArtifactTests(unittest.TestCase):
         with (
             patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
             patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", merged),
+            patch("isophilly_ingest.lidar.PARTIAL_EVIDENCE_PATH", root / "partial.parquet"),
         ):
             merge_evidence(inventory, allow_partial=True)
         manifest_path = merged.with_suffix(".json")
         manifest = json.loads(manifest_path.read_text())
         manifest["partial"] = True
+        manifest["source_coverage_complete"] = False
         manifest_path.write_text(json.dumps(manifest))
         with patch("isophilly_ingest.lidar.INVENTORY_PATH", root / "missing-inventory.json"):
             with self.assertRaisesRegex(LidarError, "complete LiDAR merge"):

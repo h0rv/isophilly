@@ -1125,7 +1125,7 @@ def pending_tiles(inventory: Inventory) -> tuple[Tile, ...]:
 
 def _rejected_source_gap(
     tile: Tile, metadata: dict[str, object], inventory: Inventory
-) -> dict[str, object]:
+) -> tuple[dict[str, object], set[str]]:
     las = metadata.get("las")
     if not isinstance(las, dict):
         raise LidarError(f"rejected source has no LAS bounds: {tile.name}")
@@ -1141,17 +1141,158 @@ def _rejected_source_gap(
         if sources != {inventory.building_sha256}:
             raise LidarError(f"footprint index has invalid provenance for gap {tile.name}")
         buildings = buildings.loc[buildings.geometry.intersects(box(*bounds))]
+    identifiers = {str(value) for value in buildings["building_id"].tolist()}
+    return (
+        {
+            "tile": tile.name,
+            "bounds_ft": list(bounds),
+            "intersecting_footprints": len(identifiers),
+        },
+        identifiers,
+    )
+
+
+def _rejected_source_provenance(tile: Tile, metadata: dict[str, object]) -> dict[str, object]:
     return {
         "tile": tile.name,
-        "bounds_ft": list(bounds),
-        "affected_footprints": int(buildings["building_id"].nunique()),
+        "source_url": metadata["source_url"],
+        "source_bytes": metadata["source_bytes"],
+        "source_sha256": metadata["source_sha256"],
+        "actual_bytes": metadata["actual_bytes"],
+        "expected_minimum_bytes": metadata["expected_minimum_bytes"],
+        "error": metadata["error"],
     }
 
 
+def _validate_staged_merge(
+    parquet_path: Path, metadata_path: Path, destination: Path, expected_rows: int
+) -> None:
+    try:
+        metadata = json.loads(metadata_path.read_text())
+        parquet_metadata = pq.read_metadata(parquet_path)
+    except (json.JSONDecodeError, OSError, pa.ArrowException) as error:
+        raise LidarError("staged LiDAR merge is unreadable") from error
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("output_file") != destination.name
+        or metadata.get("output_bytes") != parquet_path.stat().st_size
+        or metadata.get("output_sha256") != sha256_file(parquet_path)
+        or metadata.get("rows") != expected_rows
+        or parquet_metadata.num_rows != expected_rows
+    ):
+        raise LidarError("staged LiDAR merge provenance is invalid")
+
+
+def _publication_paths(destination: Path) -> tuple[Path, Path, Path]:
+    return (
+        destination.with_suffix(".parquet.backup"),
+        destination.with_suffix(".json.backup"),
+        destination.with_suffix(".publish.json"),
+    )
+
+
+def _published_merge_pair_is_valid(destination: Path, metadata_path: Path) -> bool:
+    try:
+        metadata = json.loads(metadata_path.read_text())
+        return (
+            isinstance(metadata, dict)
+            and metadata.get("schema_version") == 3
+            and metadata.get("output_file") == destination.name
+            and metadata.get("output_bytes") == destination.stat().st_size
+            and metadata.get("output_sha256") == sha256_file(destination)
+            and metadata.get("rows") == pq.read_metadata(destination).num_rows
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, pa.ArrowException):
+        return False
+
+
+def _rollback_merge_publication(destination: Path, transaction: dict[str, object]) -> None:
+    metadata_path = destination.with_suffix(".json")
+    parquet_backup, metadata_backup, marker = _publication_paths(destination)
+    for active, backup, flag in (
+        (destination, parquet_backup, "had_parquet"),
+        (metadata_path, metadata_backup, "had_metadata"),
+    ):
+        if backup.exists():
+            active.unlink(missing_ok=True)
+            backup.replace(active)
+        elif not transaction.get(flag):
+            active.unlink(missing_ok=True)
+    parquet_backup.unlink(missing_ok=True)
+    metadata_backup.unlink(missing_ok=True)
+    marker.unlink(missing_ok=True)
+
+
+def _recover_merge_publication(destination: Path) -> None:
+    metadata_path = destination.with_suffix(".json")
+    parquet_backup, metadata_backup, marker = _publication_paths(destination)
+    if not marker.exists():
+        if parquet_backup.exists() or metadata_backup.exists():
+            raise LidarError(f"orphaned LiDAR merge publication backup for {destination}")
+        return
+    try:
+        transaction = json.loads(marker.read_text())
+    except json.JSONDecodeError as error:
+        raise LidarError(f"corrupt LiDAR merge publication marker: {marker}") from error
+    if (
+        not isinstance(transaction, dict)
+        or not isinstance(transaction.get("had_parquet"), bool)
+        or not isinstance(transaction.get("had_metadata"), bool)
+    ):
+        raise LidarError(f"invalid LiDAR merge publication marker: {marker}")
+    if _published_merge_pair_is_valid(destination, metadata_path):
+        parquet_backup.unlink(missing_ok=True)
+        metadata_backup.unlink(missing_ok=True)
+        marker.unlink()
+        return
+    _rollback_merge_publication(destination, transaction)
+
+
+def preflight_merge_read(path: Path = MERGED_EVIDENCE_PATH) -> None:
+    parquet_backup, metadata_backup, marker = _publication_paths(path)
+    if marker.exists():
+        raise LidarError(
+            f"LiDAR merge publication is interrupted for {path}; "
+            "run `poe lidar-merge` to recover it before ingest"
+        )
+    if parquet_backup.exists() or metadata_backup.exists():
+        raise LidarError(
+            f"LiDAR merge publication has orphaned backups for {path}; "
+            "run `poe lidar-merge` to recover it before ingest"
+        )
+
+
+def _publish_staged_merge(destination: Path, temporary: Path, metadata_temporary: Path) -> None:
+    metadata_destination = destination.with_suffix(".json")
+    _recover_merge_publication(destination)
+    parquet_backup, metadata_backup, marker = _publication_paths(destination)
+    transaction: dict[str, object] = {
+        "schema_version": 1,
+        "had_parquet": destination.exists(),
+        "had_metadata": metadata_destination.exists(),
+    }
+    _write_json_atomic(marker, transaction)
+    try:
+        if transaction["had_parquet"]:
+            destination.replace(parquet_backup)
+        if transaction["had_metadata"]:
+            metadata_destination.replace(metadata_backup)
+        temporary.replace(destination)
+        metadata_temporary.replace(metadata_destination)
+    except Exception:
+        _rollback_merge_publication(destination, transaction)
+        raise
+    parquet_backup.unlink(missing_ok=True)
+    metadata_backup.unlink(missing_ok=True)
+    marker.unlink()
+
+
 def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
+    _recover_merge_publication(MERGED_EVIDENCE_PATH)
+    _recover_merge_publication(PARTIAL_EVIDENCE_PATH)
     paths: list[Path] = []
     invalid: list[str] = []
-    rejected: list[str] = []
+    rejected: list[tuple[Tile, dict[str, object]]] = []
     for tile in inventory.tiles:
         if not tile.selected:
             continue
@@ -1163,7 +1304,7 @@ def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
         if metadata.get("result") == "derived":
             paths.append(DERIVED_DIR / f"{tile.name}.parquet")
         elif metadata.get("result") == "rejected_source":
-            rejected.append(tile.name)
+            rejected.append((tile, metadata))
     if invalid and not allow_partial:
         examples = "; ".join(invalid[:3])
         raise LidarError(
@@ -1203,41 +1344,51 @@ def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
     footprints = set(result.column("source_footprints_sha256").to_pylist())
     if len(footprints) != 1:
         raise LidarError("merged evidence has inconsistent footprint provenance")
-    temporary = destination.with_suffix(".parquet.part")
-    pq.write_table(result, temporary, compression="zstd")
-    temporary.replace(destination)
     selected_tiles = sum(tile.selected for tile in inventory.tiles)
-    rejected_gaps = [
-        _rejected_source_gap(
-            tile,
-            validate_tile_artifact(tile, inventory),
-            inventory,
-        )
-        for tile in inventory.tiles
-        if tile.name in rejected
+    rejected_gaps: list[dict[str, object]] = []
+    intersecting_footprints: set[str] = set()
+    for tile, metadata in rejected:
+        gap, identifiers = _rejected_source_gap(tile, metadata, inventory)
+        rejected_gaps.append(gap)
+        intersecting_footprints.update(identifiers)
+    rejected_tiles = [tile.name for tile, _ in rejected]
+    rejection_provenance = [
+        _rejected_source_provenance(tile, metadata) for tile, metadata in rejected
     ]
-    _write_json_atomic(
-        destination.with_suffix(".json"),
-        {
-            "schema_version": 2,
+    temporary = destination.with_suffix(".parquet.part")
+    metadata_destination = destination.with_suffix(".json")
+    metadata_temporary = metadata_destination.with_suffix(".json.part")
+    temporary.unlink(missing_ok=True)
+    metadata_temporary.unlink(missing_ok=True)
+    try:
+        pq.write_table(result, temporary, compression="zstd")
+        manifest = {
+            "schema_version": 3,
             "inventory_listing_sha256": inventory.listing_sha256,
             "inventory_city_sha256": inventory.city_sha256,
             "inventory_building_sha256": inventory.building_sha256,
             "selected_tiles": selected_tiles,
             "accounted_tiles": selected_tiles - len(invalid),
             "evidence_tiles": len(paths),
-            "source_coverage_complete": not rejected,
+            "source_coverage_complete": not rejected and not invalid,
             "rejected_source_count": len(rejected),
-            "rejected_source_tiles": rejected,
+            "rejected_source_tiles": rejected_tiles,
             "rejected_source_gaps": rejected_gaps,
+            "rejected_source_intersecting_footprints_unique": len(intersecting_footprints),
+            "rejected_source_provenance": rejection_provenance,
             "partial": partial,
             "source_footprints_sha256": next(iter(footprints)),
             "output_file": destination.name,
-            "output_bytes": destination.stat().st_size,
-            "output_sha256": sha256_file(destination),
+            "output_bytes": temporary.stat().st_size,
+            "output_sha256": sha256_file(temporary),
             "rows": result.num_rows,
-        },
-    )
+        }
+        _write_json_atomic(metadata_temporary, manifest)
+        _validate_staged_merge(temporary, metadata_temporary, destination, result.num_rows)
+        _publish_staged_merge(destination, temporary, metadata_temporary)
+    finally:
+        temporary.unlink(missing_ok=True)
+        metadata_temporary.unlink(missing_ok=True)
     return result.num_rows
 
 
@@ -1245,13 +1396,19 @@ def load_height_evidence(
     path: Path, expected_source_sha256: str, *, allow_partial: bool = False
 ) -> dict[str, float]:
     """Load only dense, bounded evidence derived from the current footprints."""
+    preflight_merge_read(path)
     try:
         metadata = json.loads(path.with_suffix(".json").read_text())
     except (FileNotFoundError, json.JSONDecodeError) as error:
         raise LidarError(f"missing or corrupt merged LiDAR metadata for {path}") from error
+    if not isinstance(metadata, dict):
+        raise LidarError("merged LiDAR evidence provenance is invalid")
+    if metadata.get("schema_version") == 2:
+        raise LidarError(
+            "merged LiDAR manifest schema 2 is legacy; regenerate it with `poe lidar-merge`"
+        )
     if (
-        not isinstance(metadata, dict)
-        or metadata.get("schema_version") != 2
+        metadata.get("schema_version") != 3
         or metadata.get("output_sha256") != sha256_file(path)
         or metadata.get("output_bytes") != path.stat().st_size
         or metadata.get("source_footprints_sha256") != expected_source_sha256
@@ -1264,6 +1421,8 @@ def load_height_evidence(
     rejected_source_count = metadata.get("rejected_source_count")
     rejected_sources = metadata.get("rejected_source_tiles")
     rejected_gaps = metadata.get("rejected_source_gaps")
+    rejected_unique = metadata.get("rejected_source_intersecting_footprints_unique")
+    rejected_provenance = metadata.get("rejected_source_provenance")
     selected_tiles = metadata.get("selected_tiles")
     accounted_tiles = metadata.get("accounted_tiles")
     if (
@@ -1272,30 +1431,62 @@ def load_height_evidence(
         or not isinstance(rejected_sources, list)
         or not all(isinstance(name, str) for name in rejected_sources)
         or not isinstance(rejected_gaps, list)
+        or not isinstance(rejected_unique, int)
+        or rejected_unique < 0
+        or not isinstance(rejected_provenance, list)
         or not isinstance(selected_tiles, int)
         or not isinstance(accounted_tiles, int)
-        or source_coverage_complete != (len(rejected_sources) == 0)
+        or source_coverage_complete != (len(rejected_sources) == 0 and not partial)
         or rejected_source_count != len(rejected_sources)
     ):
         raise LidarError("merged LiDAR evidence has invalid source-coverage metadata")
     gap_tiles: list[str] = []
+    gap_intersections: list[int] = []
     for gap in rejected_gaps:
         if not isinstance(gap, dict):
             raise LidarError("merged LiDAR evidence has invalid rejected-source gap")
         tile = gap.get("tile")
         bounds = gap.get("bounds_ft")
-        affected = gap.get("affected_footprints")
+        intersecting = gap.get("intersecting_footprints")
         if (
             not isinstance(tile, str)
             or not isinstance(bounds, list)
             or len(bounds) != 4
             or not all(isinstance(value, int | float) for value in bounds)
-            or not isinstance(affected, int)
-            or affected < 0
+            or not isinstance(intersecting, int)
+            or intersecting < 0
         ):
             raise LidarError("merged LiDAR evidence has invalid rejected-source gap")
         gap_tiles.append(tile)
-    if sorted(gap_tiles) != sorted(rejected_sources):
+        gap_intersections.append(intersecting)
+    provenance_tiles: list[str] = []
+    for provenance in rejected_provenance:
+        if not isinstance(provenance, dict):
+            raise LidarError("merged LiDAR evidence has invalid rejected-source provenance")
+        tile = provenance.get("tile")
+        actual_bytes = provenance.get("actual_bytes")
+        expected_minimum = provenance.get("expected_minimum_bytes")
+        if (
+            not isinstance(tile, str)
+            or not isinstance(provenance.get("source_url"), str)
+            or not isinstance(provenance.get("source_bytes"), int)
+            or not _is_sha256(provenance.get("source_sha256"))
+            or not isinstance(actual_bytes, int)
+            or provenance.get("source_bytes") != actual_bytes
+            or not isinstance(expected_minimum, int)
+            or expected_minimum <= actual_bytes
+            or not isinstance(provenance.get("error"), str)
+            or not provenance["error"]
+        ):
+            raise LidarError("merged LiDAR evidence has invalid rejected-source provenance")
+        provenance_tiles.append(tile)
+    if (
+        rejected_sources != sorted(set(rejected_sources))
+        or gap_tiles != rejected_sources
+        or provenance_tiles != rejected_sources
+        or rejected_unique > sum(gap_intersections)
+        or (gap_intersections and rejected_unique < max(gap_intersections))
+    ):
         raise LidarError("merged LiDAR evidence rejected-source gaps do not match its tile list")
     if not partial and accounted_tiles != selected_tiles:
         raise LidarError("complete local LiDAR merge does not account for every selected tile")
@@ -1311,6 +1502,15 @@ def load_height_evidence(
             or metadata.get("inventory_building_sha256") != inventory.building_sha256
         ):
             raise LidarError("merged LiDAR evidence belongs to a different active inventory")
+        inventory_tiles = {tile.name: tile for tile in inventory.tiles}
+        for provenance in rejected_provenance:
+            tile = inventory_tiles.get(str(provenance["tile"]))
+            if (
+                tile is None
+                or provenance["source_url"] != tile.url
+                or provenance["source_bytes"] != tile.bytes
+            ):
+                raise LidarError("merged LiDAR rejection provenance differs from inventory")
     table = pq.read_table(
         path,
         columns=[
@@ -1349,19 +1549,22 @@ def load_height_evidence(
 def _summary(inventory: Inventory) -> str:
     selected = tuple(tile for tile in inventory.tiles if tile.selected)
     pending = pending_tiles(inventory)
-    rejected_sources = 0
+    rejected_sources: list[str] = []
     for tile in selected:
         try:
             metadata = validate_tile_artifact(tile, inventory)
         except LidarError:
             continue
         if metadata.get("result") == "rejected_source":
-            rejected_sources += 1
-    return (
+            rejected_sources.append(tile.name)
+    summary = (
         f"PASDA listed {len(inventory.tiles):,} tiles; selected {len(selected):,} "
         f"({sum(tile.bytes for tile in selected) / 1024**3:.2f} GiB); "
-        f"pending {len(pending):,}; rejected sources {rejected_sources:,}"
+        f"pending {len(pending):,}; rejected sources {len(rejected_sources):,}"
     )
+    if rejected_sources:
+        summary += "; rejected tiles " + ", ".join(sorted(rejected_sources))
+    return summary
 
 
 def main() -> None:
