@@ -58,6 +58,12 @@ lidar-plan = { cmd = "python -m isophilly_ingest.lidar plan", use_exec = true }
 lidar-next = { cmd = "python -m isophilly_ingest.lidar run --max-tiles 1 --discard-raw", use_exec = true }
 lidar-status = { cmd = "python -m isophilly_ingest.lidar status", use_exec = true }
 lidar-merge = { cmd = "python -m isophilly_ingest.lidar merge", use_exec = true }
+lidar-recheck-rejected = { cmd = "python -m isophilly_ingest.lidar recheck-rejected --discard-raw", use_exec = true }
+oblique-plan = { cmd = "python -m isophilly_ingest.coastal_obliques plan", use_exec = true }
+oblique-next = { cmd = "python -m isophilly_ingest.coastal_obliques fetch --max-frames 1", use_exec = true }
+oblique-status = { cmd = "python -m isophilly_ingest.coastal_obliques status", use_exec = true }
+oblique-review = { cmd = "bash -lc 'python -m isophilly_ingest.coastal_obliques metadata && python -m isophilly_ingest.coastal_obliques contact-sheet'", use_exec = true }
+oblique-sfm = { cmd = "python -m isophilly_ingest.coastal_obliques sfm-handoff", use_exec = true }
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
 static-export = { cmd = "python scripts/export_static.py", use_exec = true }

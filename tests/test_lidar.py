@@ -7,30 +7,37 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import geopandas as gpd
 import httpx
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from shapely.geometry import Polygon, box
 
 from isophilly_ingest.lidar import (
     EVIDENCE_SCHEMA,
+    PASDA_LAS_URL,
     Inventory,
     LidarError,
     Tile,
     derive_evidence,
     download_tile,
     inventory_dict,
+    iter_las_points,
     load_height_evidence,
     load_las_header,
     merge_evidence,
     parse_inventory,
     parse_listing,
     pending_tiles,
+    process_tile,
     read_las_header,
+    recheck_rejected_sources,
     select_city_tiles,
+    semantic_inventory_sha256,
 )
 
 
@@ -98,6 +105,45 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(LidarError):
             parse_inventory(value)
 
+    def _valid_value(self) -> dict[str, Any]:
+        tiles = parse_listing(
+            b'1/12/2026  100 <a href="26452E204072N.las">26452E204072N.las</a>\n'
+            b'1/12/2026  200 <a href="26479E201432N.las">26479E201432N.las</a>'
+        )
+        inventory = Inventory(2, PASDA_LAS_URL, "a" * 64, "now", "b" * 64, "c" * 64, tiles)
+        return json.loads(json.dumps(inventory_dict(inventory)))
+
+    def test_inventory_rejects_url_outside_exact_pasda_path(self) -> None:
+        value = self._valid_value()
+        value["tiles"][0]["url"] = "https://evil.test/26452E204072N.las"
+        with self.assertRaisesRegex(LidarError, "outside the audited"):
+            parse_inventory(value, require_audited=False)
+
+    def test_inventory_rejects_duplicates_and_reordering(self) -> None:
+        duplicate = self._valid_value()
+        duplicate["tiles"][1] = dict(duplicate["tiles"][0])
+        duplicate["counts"] = {"listed": 2, "selected": 0}
+        duplicate["bytes"] = {"listed": 200, "selected": 0}
+        with self.assertRaisesRegex(LidarError, "duplicate"):
+            parse_inventory(duplicate, require_audited=False)
+
+        reordered = self._valid_value()
+        reordered["tiles"].reverse()
+        with self.assertRaisesRegex(LidarError, "sorted"):
+            parse_inventory(reordered, require_audited=False)
+
+    def test_inventory_rejects_bad_hash_and_checked_in_pin_mismatch(self) -> None:
+        bad_hash = self._valid_value()
+        bad_hash["listing_sha256"] = "A" * 64
+        with self.assertRaisesRegex(LidarError, "lowercase SHA-256"):
+            parse_inventory(bad_hash, require_audited=False)
+
+        value = self._valid_value()
+        candidate = parse_inventory(value, require_audited=False)
+        self.assertEqual(len(semantic_inventory_sha256(candidate)), 64)
+        with self.assertRaisesRegex(LidarError, "checked-in"):
+            parse_inventory(value)
+
 
 class LasTests(unittest.TestCase):
     def test_reads_las_14_format_6_header(self) -> None:
@@ -140,11 +186,117 @@ class LasTests(unittest.TestCase):
         evidence = pq.read_table(output).to_pylist()[0]
         self.assertEqual(evidence["building_id"], "building-1")
         self.assertEqual(evidence["source_footprints_sha256"], "a" * 64)
-        self.assertGreater(evidence["height_p90_m"], 8.0)
+        roof = np.asarray([40 + x % 3 for x in range(2, 18)], dtype=np.float64)
+        expected_roof = np.quantile(roof, (0.1, 0.5, 0.9)) * 0.3048006096012192
+        expected_ground = 10 * 0.3048006096012192
+        self.assertAlmostEqual(evidence["roof_p10_m"], expected_roof[0], places=5)
+        self.assertAlmostEqual(evidence["roof_p50_m"], expected_roof[1], places=5)
+        self.assertAlmostEqual(evidence["roof_p90_m"], expected_roof[2], places=5)
+        self.assertAlmostEqual(
+            evidence["height_p90_m"], expected_roof[2] - expected_ground, places=5
+        )
         self.assertEqual(evidence["quality"], "usable")
+
+    def test_dense_footprint_is_not_rejected_by_an_in_memory_match_limit(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        points = [(x, 5, 10, 2) for x in range(5)]
+        points += [(x, 5, 40, 6) for x in range(10)]
+        points += [(100 + x, 5, 20, 2) for x in range(5)]
+        points += [(100 + x, 5, 60, 6) for x in range(10)]
+        las = root / "dense.las"
+        las.write_bytes(las_bytes(points))
+        buildings = gpd.GeoDataFrame(
+            {"building_id": ["one", "two"], "source_sha256": ["a" * 64, "a" * 64]},
+            geometry=[box(-1, -1, 11, 11), box(99, -1, 111, 11)],
+            crs=6565,
+        )
+        output = root / "evidence.parquet"
+        # Thirty total samples exceeded the former patched 20-value guard.
+        self.assertEqual(derive_evidence(las, buildings, output), 2)
+        rows = pq.read_table(output).to_pylist()
+        self.assertEqual({row["building_point_count"] for row in rows}, {10})
+
+    def test_many_buildings_scan_the_las_point_stream_once(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        points = [(x, 5, 10, 2) for x in range(5)]
+        points += [(x, 5, 40, 6) for x in range(10)]
+        points += [(100 + x, 5, 20, 2) for x in range(5)]
+        points += [(100 + x, 5, 60, 6) for x in range(10)]
+        las = root / "many.las"
+        las.write_bytes(las_bytes(points))
+        buildings = gpd.GeoDataFrame(
+            {"building_id": ["one", "two"], "source_sha256": ["a" * 64, "a" * 64]},
+            geometry=[box(-1, -1, 11, 11), box(99, -1, 111, 11)],
+            crs=6565,
+        )
+        with patch("isophilly_ingest.lidar.iter_las_points", wraps=iter_las_points) as iterator:
+            self.assertEqual(derive_evidence(las, buildings, root / "evidence.parquet"), 2)
+        self.assertEqual(iterator.call_count, 1)
+
+    def test_interrupted_spill_is_cleaned_and_restart_succeeds(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        points = [(x, 5, 10, 2) for x in range(5)]
+        points += [(x, 5, 40, 6) for x in range(10)]
+        las = root / "restart.las"
+        las.write_bytes(las_bytes(points))
+        buildings = gpd.GeoDataFrame(
+            {"building_id": ["one"], "source_sha256": ["a" * 64]},
+            geometry=[box(-1, -1, 11, 11)],
+            crs=6565,
+        )
+        output = root / "evidence.parquet"
+        stale = root / ".lidar-work" / las.name
+        stale.mkdir(parents=True)
+        (stale / "stale").write_text("old")
+
+        def interrupted(*args: object) -> object:
+            del args
+            raise RuntimeError("interrupted")
+
+        with (
+            patch("isophilly_ingest.lidar.iter_las_points", side_effect=interrupted),
+            self.assertRaisesRegex(RuntimeError, "interrupted"),
+        ):
+            derive_evidence(las, buildings, output)
+        self.assertFalse(stale.exists())
+
+        self.assertEqual(derive_evidence(las, buildings, output), 1)
+        self.assertFalse(stale.exists())
+        metadata = pq.read_metadata(output).metadata
+        assert metadata is not None
+        self.assertEqual(metadata[b"lidar_point_passes"], b"1")
+        self.assertGreater(int(metadata[b"lidar_spill_bytes"]), 0)
 
 
 class DownloadTests(unittest.TestCase):
+    def test_rejects_redirected_tile_response(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las", "https://example.test/tile.las", len(payload), (0, 0, 1, 1), True
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "example.test":
+                return httpx.Response(302, headers={"Location": "https://evil.test/tile.las"})
+            return httpx.Response(200, content=payload, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", root / "raw"),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True) as client,
+            self.assertRaisesRegex(LidarError, "redirected outside"),
+        ):
+            download_tile(tile, inventory_for(tile), client)
+
     def test_resumes_partial_download_and_records_checksum(self) -> None:
         payload = las_bytes([(10, 20, 30, 2)])
         tile = Tile(
@@ -278,6 +430,129 @@ class DownloadTests(unittest.TestCase):
 
         self.assertEqual(partial.read_bytes(), payload[:100])
 
+    def test_rejects_short_200_response_before_writing_source(self) -> None:
+        payload = las_bytes([(10, 20, 30, 2)])
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(payload),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        raw = root / "raw"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=payload[:-1], request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            self.assertRaisesRegex(LidarError, "Content-Length"),
+        ):
+            download_tile(tile, inventory_for(tile), client)
+
+        self.assertFalse((raw / tile.name).exists())
+        self.assertFalse((raw / f"{tile.name}.part").exists())
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][tile.name]["status"], "downloading")
+
+    def test_exact_pinned_response_is_not_downloaded_when_las_header_requires_more(self) -> None:
+        payload = bytearray(las_bytes([(10, 20, 30, 2)]))
+        struct.pack_into("<Q", payload, 247, 100)
+        source = bytes(payload)
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(source),
+            (0, 0, 1, 1),
+            True,
+        )
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        raw = root / "raw"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=source, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            self.assertRaisesRegex(LidarError, "point data is truncated"),
+        ):
+            download_tile(tile, inventory_for(tile), client)
+
+        self.assertFalse((raw / tile.name).exists())
+        self.assertEqual((raw / f"{tile.name}.part").read_bytes(), source)
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][tile.name]["status"], "downloading")
+
+    def test_cached_exact_but_truncated_source_becomes_terminal_rejection(self) -> None:
+        payload = bytearray(las_bytes([(10, 20, 30, 2)]))
+        struct.pack_into("<Q", payload, 247, 100)
+        source = bytes(payload)
+        tile = Tile(
+            "26452E204072N.las",
+            "https://example.test/tile.las",
+            len(source),
+            (0, 0, 1, 1),
+            True,
+        )
+        inventory = inventory_for(tile)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        raw = root / "raw"
+        derived = root / "derived"
+        raw.mkdir()
+        destination = raw / tile.name
+        destination.write_bytes(source)
+        digest = hashlib.sha256(source).hexdigest()
+        (root / "progress.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "inventory_listing_sha256": "a" * 64,
+                    "inventory_city_sha256": "b" * 64,
+                    "inventory_building_sha256": "c" * 64,
+                    "tiles": {
+                        tile.name: {
+                            "status": "downloaded",
+                            "expected_bytes": len(source),
+                            "bytes": len(source),
+                            "sha256": digest,
+                        }
+                    },
+                }
+            )
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.fail(f"cached pinned source should not be fetched again: {request.url}")
+
+        with (
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.PROGRESS_PATH", root / "progress.json"),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            process_tile(tile, inventory, client, discard_raw=True)
+            self.assertEqual(pending_tiles(inventory), ())
+
+        self.assertFalse(destination.exists())
+        metadata = json.loads((derived / f"{tile.name}.json").read_text())
+        self.assertEqual(metadata["result"], "rejected_source")
+        self.assertEqual(metadata["actual_bytes"], len(source))
+        self.assertEqual(metadata["expected_minimum_bytes"], 375 + 100 * 30)
+        self.assertEqual(metadata["source_sha256"], digest)
+        progress = json.loads((root / "progress.json").read_text())
+        self.assertEqual(progress["tiles"][tile.name]["status"], "rejected_source")
+
 
 class ArtifactTests(unittest.TestCase):
     def _row(
@@ -327,9 +602,93 @@ class ArtifactTests(unittest.TestCase):
             "output_bytes": output.stat().st_size,
             "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
             "rows": len(rows),
+            "las": {
+                "version": "1.4",
+                "point_format": 6,
+                "point_record_bytes": 30,
+                "point_count": 1,
+                "point_data_offset": 375,
+                "scales": [0.01, 0.01, 0.01],
+                "offsets": [0.0, 0.0, 0.0],
+                "bounds_ft": [0.0, 0.0, 10.0, 10.0],
+            },
         }
         (root / f"{tile.name}.json").write_text(json.dumps(metadata))
         return output
+
+    def _write_rejection(self, root: Path, tile: Tile, inventory: Inventory) -> None:
+        metadata = {
+            "result": "rejected_source",
+            "inventory_listing_sha256": inventory.listing_sha256,
+            "inventory_city_sha256": inventory.city_sha256,
+            "inventory_building_sha256": inventory.building_sha256,
+            "source_url": tile.url,
+            "source_bytes": tile.bytes,
+            "source_sha256": "e" * 64,
+            "actual_bytes": tile.bytes,
+            "expected_minimum_bytes": max(tile.bytes, 227) + 100,
+            "error": "LAS point data is truncated",
+            "las": {
+                "version": "1.4",
+                "point_format": 6,
+                "point_record_bytes": 20,
+                "point_count": 5,
+                "point_data_offset": max(tile.bytes, 227),
+                "scales": [0.01, 0.01, 0.01],
+                "offsets": [0.0, 0.0, 0.0],
+                "bounds_ft": [0.0, 0.0, 10.0, 10.0],
+            },
+        }
+        (root / f"{tile.name}.json").write_text(json.dumps(metadata))
+
+    def test_recheck_keeps_rejection_until_replacement_is_structurally_valid(self) -> None:
+        payload = bytearray(las_bytes([(10, 20, 30, 2)]))
+        struct.pack_into("<Q", payload, 247, 100)
+        source = bytes(payload)
+        tile = Tile(
+            "26452E204072N.las", "https://example.test/tile.las", len(source), (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(tile)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        derived = root / "derived"
+        raw = root / "raw"
+        derived.mkdir()
+        self._write_rejection(derived, tile, inventory)
+        rejection_path = derived / f"{tile.name}.json"
+        rejection = json.loads(rejection_path.read_text())
+        rejection["expected_minimum_bytes"] = 375 + 100 * 30
+        rejection["las"]["point_record_bytes"] = 30
+        rejection["las"]["point_count"] = 100
+        rejection["las"]["point_data_offset"] = 375
+        rejection_path.write_text(json.dumps(rejection))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=source, request=request)
+
+        with (
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.RAW_LAS_DIR", raw),
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        ):
+            self.assertEqual(recheck_rejected_sources(inventory, client, discard_raw=True), (1, 0))
+        self.assertTrue((derived / f"{tile.name}.json").exists())
+        self.assertFalse((raw / tile.name).exists())
+
+    def test_rejected_header_minimum_is_recomputed(self) -> None:
+        tile = Tile("26452E204072N.las", "https://example.test/tile.las", 500, (0, 0, 1, 1), True)
+        inventory = inventory_for(tile)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self._write_rejection(root, tile, inventory)
+        path = root / f"{tile.name}.json"
+        metadata = json.loads(path.read_text())
+        metadata["expected_minimum_bytes"] += 1
+        path.write_text(json.dumps(metadata))
+        with patch("isophilly_ingest.lidar.DERIVED_DIR", root):
+            self.assertEqual(pending_tiles(inventory), (tile,))
 
     def test_pending_audits_derived_checksum(self) -> None:
         tile = Tile("26452E204072N.las", "https://example.test/one.las", 100, (0, 0, 1, 1), True)
@@ -398,6 +757,52 @@ class ArtifactTests(unittest.TestCase):
         row = pq.read_table(merged).to_pylist()[0]
         self.assertEqual(row["tile"], second.name)
         self.assertFalse(json.loads(merged.with_suffix(".json").read_text())["partial"])
+
+    def test_merge_accounts_for_rejected_source_without_becoming_locally_partial(self) -> None:
+        usable = Tile(
+            "26452E204072N.las", "https://example.test/usable.las", 100, (0, 0, 1, 1), True
+        )
+        rejected = Tile(
+            "26479E201432N.las", "https://example.test/rejected.las", 200, (0, 0, 1, 1), True
+        )
+        inventory = inventory_for(usable, rejected)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        derived = root / "derived"
+        derived.mkdir()
+        merged = root / "building-evidence.parquet"
+        footprints = root / "footprints.parquet"
+        self._write_artifact(
+            derived,
+            usable,
+            inventory,
+            [self._row(usable, building_points=200, ground_points=100, height=10, spread=1)],
+        )
+        self._write_rejection(derived, rejected, inventory)
+        gpd.GeoDataFrame(
+            {"building_id": ["gap-building"], "source_sha256": [inventory.building_sha256]},
+            geometry=[box(1, 1, 2, 2)],
+            crs=6565,
+        ).to_parquet(footprints, write_covering_bbox=True)
+
+        with (
+            patch("isophilly_ingest.lidar.DERIVED_DIR", derived),
+            patch("isophilly_ingest.lidar.FOOTPRINTS_PATH", footprints),
+            patch("isophilly_ingest.lidar.MERGED_EVIDENCE_PATH", merged),
+        ):
+            self.assertEqual(merge_evidence(inventory), 1)
+
+        manifest = json.loads(merged.with_suffix(".json").read_text())
+        self.assertFalse(manifest["partial"])
+        self.assertFalse(manifest["source_coverage_complete"])
+        self.assertEqual(manifest["accounted_tiles"], 2)
+        self.assertEqual(manifest["rejected_source_tiles"], [rejected.name])
+        self.assertEqual(manifest["rejected_source_gaps"][0]["affected_footprints"], 1)
+        with patch("isophilly_ingest.lidar.INVENTORY_PATH", root / "missing-inventory.json"):
+            self.assertEqual(
+                load_height_evidence(merged, inventory.building_sha256), {"same-building": 10}
+            )
 
     def test_height_loader_rejects_complex_roof_spread(self) -> None:
         tile = Tile("26452E204072N.las", "https://example.test/one.las", 100, (0, 0, 1, 1), True)

@@ -80,11 +80,14 @@ After the first ingest, the usual development loop is only:
 uv run --locked poe serve
 ```
 
-Optional EagleView access is configured through one immutable Pydantic Settings
-model. Copy `.example.env` to `.env`, add credentials issued through the official
-developer API, and run `uv run --locked poe eagleview-smoke`. The smoke test is
-bounded to one City Hall cell and downloads at most one image. The normal ingest
-and prebuild commands do not read these credentials.
+The repository has an optional EagleView settings model and smoke test, but the
+project has no production credentials as of 2026-08-30. EagleView requires a
+sales contact, and a City/Pictometry data request is awaiting a reply. Do not
+extract browser cookies or reuse tokens from the public viewer. If authorized
+credentials are issued later, copy `.example.env` to `.env`, add them, and run
+`uv run --locked poe eagleview-smoke`. The smoke test is bounded to one City Hall
+cell and downloads at most one image. Normal ingest and prebuild do not read the
+credentials.
 
 ## Static hosting
 
@@ -113,9 +116,38 @@ and attribution notes](docs/DATA.md) before publishing a build.
 The [research record](docs/RESEARCH.md) also documents the audited April 2025
 PASDA LiDAR candidate and why Google's 3-D map products are viable only as a
 live, billed mode rather than as saved source pixels for this project.
+The full 664-tile City-intersection LiDAR evidence queue was explicitly
+authorized on 2026-08-30, but remains opt-in, resumable, and separate from
+normal ingest. It improves geometry rather than facades; rejected-source gaps
+are explicit in provenance. Locally partial evidence is never canonical,
+while a canonical locally complete merge may record upstream source gaps and
+retain City fallback heights there. See [the data record](docs/DATA.md) for the
+confirmed PASDA-truncated source and recovery gate.
 The dated [PASDA facade audit](docs/PASDA_AUDIT.md) is the canonical inventory
 of photographed-side sources, duplicate archives, and conditions for reopening
 that research.
+
+The audit's only new photographed-side candidate has a local, JPEG-only pilot:
+
+```sh
+uv run --locked poe oblique-plan
+uv run --locked poe oblique-next
+uv run --locked poe oblique-review
+uv run --locked poe oblique-sfm
+```
+
+This pins the official 2014 Schuylkill inventory, downloads one resumable frame,
+and produces labeled review artifacts with recorded hashes and tool versions
+without asserting georeferencing. The contact sheet decodes one full size JPEG
+at a time, saves a verified 320 by 240 thumbnail, and gives only the small
+thumbnails to ImageMagick montage. The cache key includes each source hash and
+the ImageMagick version, so an interrupted run resumes without accepting stale
+thumbnails. The SfM handoff requires at least 20 contiguous frames
+by default and records collection completeness; one smoke frame is intentionally
+insufficient.
+Nothing in this pilot is published or used by normal ingest. The source's
+derivative-distribution terms remain a release gate; read
+[the audit](docs/PASDA_AUDIT.md) before fetching more.
 
 ## Quality checks
 

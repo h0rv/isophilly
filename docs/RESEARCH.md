@@ -109,7 +109,7 @@ artifact meanwhile. PASDA/NOAA-hosted copies may have additional terms.
 | 1. Legacy downtown scene | [PASDA 2008 and 2009 downtown KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2010/kml00.zip) | 2,689 highest-detail models with photographed roofs and facades. It extends farther east, west, and south than the 2015 scene. | The smaller download is about 886 MB. Existing checkouts can reuse the retained 2.4 GB outer archive. | Import only `r0`, suppress overlap under the 2015 scene, and record the real 2008 and 2009 date. |
 | 1. Stadium scene | [PASDA 2008 stadium-area KML archive](https://www.pasda.psu.edu/download/philacity/data/3D_Models/2008/Stadium%20Area%20Processed%20w%20LiDAR-KML.zip) | 814 highest-detail KML/COLLADA components with measured geometry and JPEG material textures. The 2008 source includes the since-demolished Spectrum. | 647 MB nested archive; output keeps 808 current components, 126,181 textured triangles, and about 84 MB of JPEGs. | Render through the same textured-mesh path as Center City; exclude the six Spectrum components and record the historical capture date. |
 | 1. Aerial color/reference | [Aerial imagery catalog](https://opendataphilly.org/datasets/aerial-photography/); [2025 PASDA image service](https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer) | 2025 three-inch orthophotography exposed through an export API. | Fixed 1,536 metre exports preserve the 0.75 metre working grid while reducing first-build requests. A bounded shared disk cache makes repeats local. | Use one deterministic pixel treatment for ground, real roof pixels, and local wall color in the canonical z8 scene. Geometry remains authoritative City vectors. |
-| 2. Terrain/height | [2025 LiDAR full metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml); [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/) | Genuine citywide April 2025 classified LiDAR. LAS 1.4 point format 6 includes intensity but no RGB or NIR; one central sample measured about 62 returns/m². | 963 raw LAS files totaling 362.82 GiB. Full metadata lists access and use constraints as “None.” | Pilot only. Derive ground, surface, normalized height, roof planes, trees, and landmark geometry for three bounded areas before considering a bulk import. It cannot provide photographic facades. |
+| 2. Terrain/height | [2025 LiDAR full metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml); [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/) | Genuine citywide April 2025 classified LiDAR. LAS 1.4 point format 6 includes intensity but no RGB or NIR; one central sample measured about 62 returns/m². | 963 raw LAS files totaling 362.82 GiB. Full metadata lists access and use constraints as “None.” | The user explicitly authorized the opt-in 664-tile City-intersection evidence queue on 2026-08-30 after the bounded-pilot design review. Process resumably and discard validated raw tiles. It cannot provide photographic facades, and partial evidence never becomes canonical. |
 | 3. Street facade reference | [KartaView photo API](https://kartaview.org/doc/photos), [license FAQ](https://kartaview.org/doc/faq) | Public crowdsourced photos expose position, heading, time, and image URLs under CC BY-SA 4.0. A Rittenhouse test found only three images within 500 m, from different years. | Coverage and camera pose are uneven. Correctly projecting a photo onto a visible wall also requires occlusion and attribution handling. | Useful future opt-in source, not a citywide default. Audit coverage before downloading, and never smear a nearby photo across an unmatched facade. |
 
 ### Citywide texture expansion
@@ -151,7 +151,7 @@ exists, not permission to scrape or redistribute it.
 
 ### PASDA coverage audit
 
-The exhaustive, dated source matrix and reopening criteria live in
+The exhaustive, dated facade-source matrix and reopening criteria live in
 [`PASDA_AUDIT.md`](PASDA_AUDIT.md). PASDA has useful photographed models and
 geometry, but no current public citywide calibrated multi-angle facade source.
 The active ingest already uses the strongest published Center City, legacy
@@ -168,6 +168,13 @@ and register them to 2025 LiDAR before considering the 10.51 GiB TIFF delivery.
 The collection's unusual annual Penn State notification term and unclear public
 derivative rights remain a release gate.
 
+The complete 191-frame Schuylkill JPEG audit rules out a shared-camera model:
+EXIF contains 24 focal lengths and 43 exact focal/dimension/orientation groups,
+with a major timestamp break after frame 92. Use per-image EXIF-seeded
+`SIMPLE_RADIAL` intrinsics and CPU-bounded sequential matching. Do not project
+pixels unless the recovered cameras pass the registration and reprojection
+gates in `PASDA_AUDIT.md`.
+
 The decisive geometry find remains the
 [April 2025 Philadelphia LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and its [public LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/).
@@ -183,14 +190,26 @@ Art steps. It cannot create photographic wall textures. The current public
 PASDA holdings still do not provide a modern, citywide set of calibrated
 multi-angle images or textured meshes for facades.
 
-Do not download all 362.82 GiB by default. First run one repeatable pilot over
-three contrasting areas: Center City towers (about 1.5 by 1.5 km), the Museum
-of Art/steps/Waterworks (about 0.8 by 0.8 km), and Port Richmond rowhouses
-(about 1 by 1 km). For each, retain the exact LAS tile list and checksums, build
-ground and surface rasters plus normalized heights, fit roof planes within City
-footprints, render all four headings, and compare at least 30 buildings with the
-current result. Only a clear visual improvement should authorize a citywide
-download.
+The initial decision gate proposed three repeatable areas: Center City towers,
+the Museum of Art/steps/Waterworks, and Port Richmond rowhouses. That bounded
+design remains useful for visual comparisons, but it is no longer an authority
+limit. On 2026-08-30 the user explicitly authorized the full opt-in queue of 664
+City-intersecting source tiles (289.51 GiB pinned). The queue remains resumable,
+checksum-verified, raw-discarding, and separate from normal ingest.
+
+PASDA currently lists five selected objects at exactly 200,000,000 bytes:
+`27086E256872N.las`, `27086E259512N.las`, `27086E262152N.las`,
+`27086E264792N.las`, and `27086E267432N.las`. Only the first has been fetched
+and structurally confirmed source-truncated: its exact listed payload SHA-256 is
+`c495f1e4258093b0aa3f8f7a641450f53c18937b0415f5955380cff6ad72a859`, while
+its LAS header requires 458,597,265 bytes. The other four are suspicious by
+size but are not called corrupt without structural evidence. A rejected source
+is recorded durably and excluded from retries/evidence. After all 664 sources
+are accounted for, canonical merge may remain locally complete while recording
+`source_coverage_complete:false`, rejected-source details, gap bounds, and
+affected-footprint counts; City heights remain the fallback in those gaps.
+`--allow-partial` is reserved for unfinished local processing, not an upstream
+PASDA defect.
 
 The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
 downloads are alternate formats or lower LODs of the already-ingested 2,689
@@ -201,6 +220,15 @@ new wall pixels; reopen the audit only under the triggers in the decision
 record.
 
 #### EagleView/Pictometry access
+
+The operational status as of 2026-08-30 is blocked on authorized access. The
+project has no EagleView production credentials, and the available EagleView
+path requires a sales contact. The user emailed the City/Pictometry contact to
+request the Philadelphia data and publication rights, and is waiting for a
+reply. Do not retry browser cookie extraction, reuse Embedded Explorer tokens,
+or scrape the public viewer. Reopen the importer work only after the City or
+EagleView supplies written access terms and either production API credentials
+or an authorized bulk delivery.
 
 The viewer can be driven deterministically, but it is not a public image API.
 Philadelphia's Atlas and Pictometry front ends mount EagleView's credentialed

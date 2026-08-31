@@ -165,7 +165,7 @@ publication can continue serving its immutable old scene until it is restarted.
 
 ## Audited future sources
 
-The complete 2026-08-30 PASDA imagery and 3-D decision record is
+The 2026-08-30 PASDA photographed-facade source decision record is
 [`PASDA_AUDIT.md`](PASDA_AUDIT.md). The current clean snapshot contains 3,498
 accepted textured mesh components and identifies photographed coverage for
 11,909 of 545,672 buildings: 2.18% by building count and 6.12% by footprint
@@ -181,6 +181,50 @@ until registration and contact-sheet review succeed. Public derivative rights
 and the metadata's annual Penn State notification requirement are a release
 gate.
 
+The local-only JPEG pilot is reproducible and separate from normal ingest:
+
+```sh
+uv run --locked poe oblique-plan       # pin official names, URLs, sizes, listing hash
+uv run --locked poe oblique-next       # resume and verify exactly one JPEG
+uv run --locked poe oblique-status     # re-hash and audit completed frames
+uv run --locked poe oblique-review     # metadata and labeled/hash-pinned contact sheet
+uv run --locked poe oblique-sfm        # guarded contiguous-sequence SfM handoff
+```
+
+The review command has a fixed memory bound for source image decoding. It
+decodes and resizes exactly one full size JPEG at a time, then runs montage on
+the 320 by 240 thumbnails. Each cached thumbnail records the source hash,
+ImageMagick version, transform settings, output hash, and exact command. Labels
+use an explicitly resolved Noto Sans file with an audited SHA-256; the final
+sidecar records both its path and hash. A
+source or tool change causes a fresh thumbnail, and a successful run removes
+stale cache files. An interrupted run can reuse every thumbnail that still
+passes those checks.
+
+The same module supports `delaware-2014` and `little-tinicum-2014` through
+`--collection`. It never downloads TIFFs or DNGs, never invents camera poses or
+georeferencing, and does not feed the renderer. See `PASDA_AUDIT.md` for the
+exact source directories, the nested Little Tinicum directory trap,
+registration acceptance criteria, and rights warning.
+
+Acquisition requires a complete JPEG EOI marker and full ImageMagick decode.
+Exact complete `.part` or final files survive lost progress and are recovered
+after revalidation. Inventory refresh refuses a changed listing whenever cached
+pixels or review artifacts remain, and a clean plan also rejects any listing
+outside the three audited SHA-256 pins. `--refresh` does not override that gate;
+acceptance requires a reviewed code and documentation update. The contact-sheet
+sidecar records the exact ordered inputs, hashes, executable, ImageMagick
+version, pinned font path and hash, and command. It is reproducible on the same
+toolchain, not promised to be byte-identical across toolchain versions. SfM handoff requires at least 20
+contiguous frames by default; the manifest records whether the collection is
+partial and an explicit `--allow-incomplete` diagnostic never implies
+registration success. The handoff also records a per-image camera policy: the
+Schuylkill flight used a variable zoom (24 EXIF focal lengths and 43 exact
+focal/dimension/orientation groups), so shared-camera self-calibration is
+prohibited. Reconstruction must seed one `SIMPLE_RADIAL` camera per image,
+respect the frame 92/93 temporal break, and quarantine frame 191's aspect-ratio
+outlier for the first diagnostic.
+
 PASDA's [full April 2025 LiDAR metadata](https://www.pasda.psu.edu/uci/FullMetadataDisplay.aspx?file=Philadelphia_Lidar_2025.xml)
 and [LAS directory](https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/)
 confirm the citywide classified point cloud used by the opt-in queue below. The
@@ -192,11 +236,12 @@ It records intensity but no RGB or NIR; a sampled central tile measured about
 This is a candidate geometry source for terrain, roofs, heights, trees, and
 landmark detail such as the Philadelphia Museum of Art steps. It is not a
 photographic facade source. No current public PASDA collection supplies
-citywide calibrated multi-angle facade imagery. Before any bulk download,
-evaluate only three pinned areas: Center City, the Museum of Art/Waterworks,
-and Port Richmond. Record source tiles and checksums, derive ground/surface and
-normalized-height products, render four headings, and compare at least 30
-buildings per area with the current scene.
+citywide calibrated multi-angle facade imagery. The original bounded review
+areas were Center City, the Museum of Art/Waterworks, and Port Richmond. On
+2026-08-30 the user explicitly authorized processing the full 664-tile
+City-intersection evidence queue. That authorization does not make LiDAR part of
+normal ingest, does not authorize unrelated PASDA archives, and cannot create
+photographed facades.
 
 ### Resumable 2025 LiDAR ingest
 
@@ -218,23 +263,30 @@ Limits checksum, Building Footprints checksum, selected tile names, URLs, and
 conservative filename-derived bounds in `data/lidar-2025/inventory.json`. It
 also creates a content-linked
 GeoParquet footprint index in official NAD83(2011) Pennsylvania South US survey
-feet (EPSG:6565). Re-running the command uses that pin. Use `lidar-plan
---refresh` only when intentionally accepting a changed directory listing or
-footprint snapshot.
-
-An intentional refresh creates a new active inventory version. Existing
-progress entries and derived tiles are not trusted across a listing, City
-Limits, or Building Footprints checksum change. Planning resolves the same
-newest complete, content-addressed snapshots as normal ingest; it never selects
-a file merely because it is the largest matching file.
+feet (EPSG:6565). Re-running the command uses that pin. `lidar-plan --refresh`
+can re-fetch only when the result still matches the checked-in semantic audit
+pin. Use `python -m isophilly_ingest.lidar audit-candidate` to write a
+non-active candidate and print the proposed semantic digest. Accepting changed
+source or selection authority requires a reviewed constants-and-docs update.
 
 `lidar-next` is the smoke-test path. It resumes one `.las.part`, verifies the
 pinned byte count, computes SHA-256, validates the LAS header and true bounds,
 and emits one atomic Zstandard Parquet file plus a provenance JSON file. It
 uses building-class points inside each footprint and nearby ground-class
 points to record robust roof and ground quantiles. Raw LAS is deleted only
-after the derived Parquet checksum has been written and reverified. The
+after the derived Parquet checksum has been written and reverified, or after an
+exact pinned payload is structurally rejected and its terminal provenance has
+been atomically written and revalidated. The
 progress manifest is atomic, so the same commands resume after interruption.
+Each LAS point stream is decoded exactly once. Matching roof and buffered-ground
+Z integers are appended to per-building files in a tile-scoped `.lidar-work`
+directory through a 64-handle LRU. Quantiles then read one building at a time,
+so RAM is bounded by the point chunk plus the largest single-building sample,
+without a match-count rejection or approximate statistics. The Parquet schema
+metadata records the one-pass invariant, exact spill bytes, and little-endian
+int32 encoding. Temporary disk use is four bytes per matched building/sample
+association. A stale tile work directory is removed before restart, and the
+tile work directory is removed on success or failure.
 `lidar-status` audits every result against the active inventory, sibling
 provenance JSON, output size, SHA-256, and Parquet source fields. A progress
 flag without a valid artifact remains pending. Resumed HTTP responses must
@@ -251,13 +303,39 @@ The 2026-08-30 audit selected 664 of 963 files, totaling 289.51 GiB, and
 created a 102.1 MiB footprint index. The queue starts with the smallest file,
 so `lidar-next` is a bounded smoke test rather than an arbitrary 1.2 GiB pull.
 
-`lidar-merge` requires every selected tile to have a valid derived or
-outside-City result. A deliberate pilot can use `python -m
+Five selected PASDA objects are listed at exactly 200,000,000 bytes:
+`27086E256872N.las`, `27086E259512N.las`, `27086E262152N.las`,
+`27086E264792N.las`, and `27086E267432N.las`. The first is confirmed
+source-truncated: PASDA served the exact pinned 200,000,000 bytes with SHA-256
+`c495f1e4258093b0aa3f8f7a641450f53c18937b0415f5955380cff6ad72a859`, but its
+LAS header declares 15,286,563 30-byte records after a 375-byte header and thus
+requires 458,597,265 bytes. It is durably marked `rejected_source`; its raw file
+was removed only after the rejection record passed validation. The other four
+have not yet been structurally confirmed and must not be described as corrupt.
+The downloader requires exact pinned HTTP lengths/ranges and hashes, then the
+LAS structural minimum. An exact but structurally invalid object is terminal,
+excluded from retry and evidence, and retained through its URL, sizes, hash,
+parsed header, expected minimum, and error metadata.
+
+Run `uv run --locked poe lidar-recheck-rejected` to test whether PASDA repaired
+a terminal source without changing its directory entry. The old rejection stays
+authoritative while the replacement downloads separately. Only an exact-size,
+exact-URL response with a structurally complete LAS payload replaces it and
+resumes derivation; an unchanged truncation is discarded.
+
+`lidar-merge` requires every selected tile to be accounted for by a valid
+derived, outside-City, or validated terminal `rejected_source` result. A
+deliberate unfinished-local-state diagnostic can use `python -m
 isophilly_ingest.lidar merge --allow-partial`; its manifest records that it is
 partial. It writes `data/lidar-2025/building-evidence.partial.parquet` and its
 sibling JSON instead of the canonical artifact. Partial smoke merges are
-diagnostic only and normal `poe ingest` never discovers them; render input
-requires the complete 664-tile `building-evidence.parquet` merge. Merge
+diagnostic only and normal `poe ingest` never discovers them. Once all 664
+sources are accounted for, a canonical merge with upstream rejections is still
+locally `partial:false`, but records `source_coverage_complete:false`, the
+rejected-source list/count, gap bounds, and affected-footprint counts. Normal
+ingest may consume that canonical evidence and retains City fallback heights in
+rejected gaps. Canonical merge remains blocked by locally pending, missing, or
+invalid artifacts. Merge
 verifies every sibling manifest, source SHA-256 shape, active
 inventory membership, source URL and byte count, output checksum, and
 footprint provenance. For a boundary-spanning building it prefers an
@@ -271,6 +349,12 @@ When the artifact is absent, ingest behaves exactly as before. When present,
 the evidence refines fallback footprint heights; photographed meshes and
 explicit building parts retain their existing render priority. This pipeline
 does not invent or provide facade photography.
+
+The 2026-08-30 live diagnostic partial merge uses manifest schema 2 and records
+23 accounted sources: 22 evidence tiles, one rejected source, and 641 pending.
+It contains 273 evidence rows and reports 2,326 City footprints affected by the
+confirmed rejected-source gap. These figures describe unfinished local state,
+not a canonical artifact; regenerate rather than copy them after queue progress.
 
 The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
 archives are duplicate formats or lower LODs of the already-ingested 2,689

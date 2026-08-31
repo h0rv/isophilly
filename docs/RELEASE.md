@@ -43,6 +43,10 @@
 - Keep the City, OpenDataPhilly, and PASDA attribution visible.
   Re-check the current source terms because the code's MIT license does not
   cover source data or tiles.
+- Do not publish tiles that contain the 2015 City I3S texture atlases or the
+  2008 and 2009 downtown and stadium COLLADA textures until the City gives
+  written permission to redistribute the generated raster tiles. Archive the
+  permission with the release provenance.
 - Treat [`PASDA_AUDIT.md`](PASDA_AUDIT.md) as the facade-source decision record.
   Do not publish PA DEP coastal photographs or derived facade textures until
   Penn State/PA DEP confirms derivative-distribution rights and the annual

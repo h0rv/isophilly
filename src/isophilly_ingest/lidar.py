@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
+import shutil
 import struct
-from collections import defaultdict
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import geopandas as gpd
 import httpx
@@ -27,8 +30,15 @@ from .download import USER_AGENT, cached_snapshot
 from .geometry import footprint_id
 
 PASDA_LAS_URL = "https://www.pasda.psu.edu/download/phillyLiDAR/2025/LAS/"
+AUDITED_LISTING_SHA256 = "cbc710dacbf13902a168c6af262734e8a07d79565d15463faf4edf4d7a5f31b5"
+AUDITED_CITY_SHA256 = "b12d1e6e62ce72b5c409792e2535a3b90c6bcfa2d2d6c28455cd750f7db8c942"
+AUDITED_BUILDING_SHA256 = "9e1a96e6287d1253a0f4d92d6f8fb83931776a0c8c43df4525b46a3b1ceef352"
+# Canonical JSON of the authority fields and every ordered tile, excluding the
+# retrieval timestamp and redundant summaries. See semantic_inventory_sha256.
+AUDITED_INVENTORY_SHA256 = "0a04f12d90a4393c09152d2655947456c7b531b5c67c62b51c4b92bf5d9cec96"
 LIDAR_DIR = ROOT / "data" / "lidar-2025"
 INVENTORY_PATH = LIDAR_DIR / "inventory.json"
+AUDIT_CANDIDATE_PATH = LIDAR_DIR / "inventory.audit-candidate.json"
 PROGRESS_PATH = LIDAR_DIR / "progress.json"
 FOOTPRINTS_PATH = LIDAR_DIR / "footprints.parquet"
 RAW_LAS_DIR = LIDAR_DIR / "raw"
@@ -53,6 +63,7 @@ CITY_CRS_FEET = 6565
 US_SURVEY_FOOT_METERS = 0.3048006096012192
 DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 POINT_CHUNK_SIZE = 750_000
+MAX_OPEN_SPILL_FILES = 64
 
 
 class LidarError(RuntimeError):
@@ -80,6 +91,26 @@ class LasHeader:
     bounds_ft: tuple[float, float, float, float]
 
 
+class InvalidLasSourceError(LidarError):
+    """An exact pinned download whose LAS structure is physically invalid."""
+
+    def __init__(
+        self,
+        path: Path,
+        source_sha256: str,
+        reason: str,
+        *,
+        header: LasHeader | None = None,
+        expected_minimum_bytes: int | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.path = path
+        self.source_sha256 = source_sha256
+        self.actual_bytes = path.stat().st_size
+        self.header = header
+        self.expected_minimum_bytes = expected_minimum_bytes
+
+
 @dataclass(frozen=True, slots=True)
 class Inventory:
     schema_version: int
@@ -91,7 +122,14 @@ class Inventory:
     tiles: tuple[Tile, ...]
 
 
-type TileStatus = Literal["downloading", "downloaded", "derived", "released", "outside"]
+type TileStatus = Literal[
+    "downloading",
+    "downloaded",
+    "derived",
+    "released",
+    "outside",
+    "rejected_source",
+]
 
 
 def sha256_file(path: Path) -> str:
@@ -124,7 +162,31 @@ def _tile_from_name(name: str, url: str, size: int, selected: bool = False) -> T
     return Tile(name, url, size, bounds, selected)
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_tile_url(name: str, url: str) -> None:
+    parsed = urlsplit(url)
+    source = urlsplit(PASDA_LAS_URL)
+    if (
+        parsed.scheme != source.scheme
+        or parsed.netloc != source.netloc
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != f"{source.path}{name}"
+        or url != f"{PASDA_LAS_URL}{name}"
+    ):
+        raise LidarError(f"LiDAR tile URL is outside the audited PASDA LAS directory: {url}")
+
+
 def parse_listing(content: bytes, source_url: str = PASDA_LAS_URL) -> tuple[Tile, ...]:
+    if source_url != PASDA_LAS_URL:
+        raise LidarError(f"unexpected PASDA LAS listing URL: {source_url}")
     text = content.decode("utf-8", errors="strict")
     tiles: list[Tile] = []
     for match in LISTING_ROW.finditer(text):
@@ -135,7 +197,9 @@ def parse_listing(content: bytes, source_url: str = PASDA_LAS_URL) -> tuple[Tile
         size = int(match.group("size"))
         if size <= 0:
             raise LidarError(f"PASDA listing reports an empty LAS file: {label}")
-        tiles.append(_tile_from_name(label, urljoin(source_url, href), size))
+        url = urljoin(source_url, href)
+        _validate_tile_url(label, url)
+        tiles.append(_tile_from_name(label, url, size))
     tiles.sort(key=lambda tile: tile.name)
     if not tiles:
         raise LidarError("PASDA listing contained no LAS files")
@@ -187,7 +251,40 @@ def inventory_dict(inventory: Inventory) -> dict[str, object]:
     }
 
 
-def parse_inventory(value: object) -> Inventory:
+def semantic_inventory_sha256(inventory: Inventory) -> str:
+    value = {
+        "schema_version": inventory.schema_version,
+        "source_url": inventory.source_url,
+        "listing_sha256": inventory.listing_sha256,
+        "city_sha256": inventory.city_sha256,
+        "building_sha256": inventory.building_sha256,
+        "tiles": [asdict(tile) for tile in inventory.tiles],
+    }
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def validate_audited_inventory(inventory: Inventory) -> None:
+    expected_fields = (
+        ("source URL", inventory.source_url, PASDA_LAS_URL),
+        ("listing SHA-256", inventory.listing_sha256, AUDITED_LISTING_SHA256),
+        ("City SHA-256", inventory.city_sha256, AUDITED_CITY_SHA256),
+        ("building SHA-256", inventory.building_sha256, AUDITED_BUILDING_SHA256),
+        (
+            "semantic inventory SHA-256",
+            semantic_inventory_sha256(inventory),
+            AUDITED_INVENTORY_SHA256,
+        ),
+    )
+    for label, actual, expected in expected_fields:
+        if actual != expected:
+            raise LidarError(
+                f"LiDAR {label} is outside the checked-in 2026-08-30 audit pin: "
+                f"{actual!r} != {expected!r}; create and review an audit candidate"
+            )
+
+
+def parse_inventory(value: object, *, require_audited: bool = True) -> Inventory:
     if not isinstance(value, dict) or value.get("schema_version") != 2:
         raise LidarError("unsupported LiDAR inventory schema")
     raw_tiles = value.get("tiles")
@@ -208,6 +305,9 @@ def parse_inventory(value: object) -> Inventory:
             or not isinstance(selected, bool)
         ):
             raise LidarError("LiDAR inventory tile fields are invalid")
+        if size <= 0:
+            raise LidarError(f"LiDAR inventory size is invalid for {name}")
+        _validate_tile_url(name, url)
         parsed = _tile_from_name(name, url, size, selected)
         raw_bounds = raw.get("approximate_bounds_ft")
         if not isinstance(raw_bounds, list) or len(raw_bounds) != 4:
@@ -215,16 +315,25 @@ def parse_inventory(value: object) -> Inventory:
         if tuple(float(item) for item in raw_bounds) != parsed.approximate_bounds_ft:
             raise LidarError(f"LiDAR inventory bounds do not match filename for {name}")
         tiles.append(parsed)
-    fields = (
-        "source_url",
-        "listing_sha256",
-        "fetched_at",
-        "city_sha256",
-        "building_sha256",
-    )
-    if any(not isinstance(value.get(field), str) for field in fields):
+    if [tile.name for tile in tiles] != sorted(tile.name for tile in tiles):
+        raise LidarError("LiDAR inventory tiles are not deterministically sorted")
+    if len({tile.name for tile in tiles}) != len(tiles):
+        raise LidarError("LiDAR inventory contains duplicate tile names")
+    if value.get("source_url") != PASDA_LAS_URL:
+        raise LidarError("LiDAR inventory has an unexpected source URL")
+    if not isinstance(value.get("fetched_at"), str) or not value["fetched_at"]:
         raise LidarError("LiDAR inventory provenance is invalid")
-    return Inventory(
+    for field in ("listing_sha256", "city_sha256", "building_sha256"):
+        if not _is_sha256(value.get(field)):
+            raise LidarError(f"LiDAR inventory {field} is not a lowercase SHA-256")
+    expected_counts = {"listed": len(tiles), "selected": sum(tile.selected for tile in tiles)}
+    expected_bytes = {
+        "listed": sum(tile.bytes for tile in tiles),
+        "selected": sum(tile.bytes for tile in tiles if tile.selected),
+    }
+    if value.get("counts") != expected_counts or value.get("bytes") != expected_bytes:
+        raise LidarError("LiDAR inventory count or byte summaries do not match its tiles")
+    inventory = Inventory(
         2,
         str(value["source_url"]),
         str(value["listing_sha256"]),
@@ -233,6 +342,9 @@ def parse_inventory(value: object) -> Inventory:
         str(value["building_sha256"]),
         tuple(tiles),
     )
+    if require_audited:
+        validate_audited_inventory(inventory)
+    return inventory
 
 
 def load_inventory(path: Path = INVENTORY_PATH) -> Inventory:
@@ -263,6 +375,7 @@ def create_inventory(
     *,
     output_path: Path = INVENTORY_PATH,
     client: httpx.Client | None = None,
+    audit_candidate: bool = False,
 ) -> Inventory:
     owns_client = client is None
     if client is None:
@@ -272,6 +385,8 @@ def create_inventory(
     try:
         response = client.get(PASDA_LAS_URL)
         response.raise_for_status()
+        if str(response.url) != PASDA_LAS_URL:
+            raise LidarError(f"PASDA listing redirected outside its audited URL: {response.url}")
     finally:
         if owns_client:
             client.close()
@@ -286,6 +401,8 @@ def create_inventory(
         sha256_file(building_path),
         tiles,
     )
+    if not audit_candidate:
+        validate_audited_inventory(inventory)
     _write_json_atomic(output_path, inventory_dict(inventory))
     return inventory
 
@@ -351,6 +468,25 @@ def load_las_header(path: Path) -> LasHeader:
     return header
 
 
+def _validate_exact_las_source(path: Path, source_sha256: str) -> LasHeader:
+    try:
+        with path.open("rb") as file:
+            header = read_las_header(file)
+    except LidarError as error:
+        raise InvalidLasSourceError(path, source_sha256, str(error)) from error
+    minimum_size = header.point_data_offset + header.point_count * header.point_record_bytes
+    if path.stat().st_size < minimum_size:
+        reason = f"LAS point data is truncated: {path.stat().st_size:,} < {minimum_size:,} bytes"
+        raise InvalidLasSourceError(
+            path,
+            source_sha256,
+            reason,
+            header=header,
+            expected_minimum_bytes=minimum_size,
+        )
+    return header
+
+
 def _point_dtype(header: LasHeader) -> np.dtype:
     classification_offset = 16 if header.point_format >= 6 else 15
     if header.point_record_bytes <= classification_offset:
@@ -378,7 +514,7 @@ def iter_las_points(path: Path, header: LasHeader) -> Iterator[tuple[np.ndarray,
         yield (
             np.asarray(chunk["x"], dtype=np.float64) * header.scales[0] + header.offsets[0],
             np.asarray(chunk["y"], dtype=np.float64) * header.scales[1] + header.offsets[1],
-            np.asarray(chunk["z"], dtype=np.float64) * header.scales[2] + header.offsets[2],
+            np.asarray(chunk["z"], dtype=np.int32),
             np.asarray(chunk["classification"]),
         )
 
@@ -401,12 +537,54 @@ EVIDENCE_SCHEMA = pa.schema(
 )
 
 
-def _collect_matches(
+class _SampleSpool:
+    """Bounded-handle, exact int32 sample spill for one source tile."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.counts: dict[tuple[int, str], int] = {}
+        self.bytes_written = 0
+        self._handles: OrderedDict[Path, BinaryIO] = OrderedDict()
+
+    def _path(self, building_index: int, kind: str) -> Path:
+        return self.root / f"{building_index:08d}.{kind}.i32"
+
+    def append(self, building_index: int, kind: str, values: np.ndarray) -> None:
+        if not len(values):
+            return
+        path = self._path(building_index, kind)
+        handle = self._handles.pop(path, None)
+        if handle is None:
+            if len(self._handles) >= MAX_OPEN_SPILL_FILES:
+                _, oldest = self._handles.popitem(last=False)
+                oldest.close()
+            handle = path.open("ab")
+        self._handles[path] = handle
+        payload = np.asarray(values, dtype="<i4").tobytes()
+        handle.write(payload)
+        key = (building_index, kind)
+        self.counts[key] = self.counts.get(key, 0) + len(values)
+        self.bytes_written += len(payload)
+
+    def close(self) -> None:
+        for handle in self._handles.values():
+            handle.close()
+        self._handles.clear()
+
+    def values(self, building_index: int, kind: str) -> np.memmap | None:
+        count = self.counts.get((building_index, kind), 0)
+        if not count:
+            return None
+        return np.memmap(self._path(building_index, kind), dtype="<i4", mode="r", shape=(count,))
+
+
+def _spill_matches(
     tree: shapely.STRtree,
     x: np.ndarray,
     y: np.ndarray,
-    z: np.ndarray,
-    destination: dict[int, list[np.ndarray]],
+    raw_z: np.ndarray,
+    spool: _SampleSpool,
+    kind: str,
 ) -> None:
     if not len(x):
         return
@@ -420,7 +598,93 @@ def _collect_matches(
     boundaries = np.flatnonzero(np.diff(building_indices)) + 1
     for indices in np.split(np.arange(len(building_indices)), boundaries):
         building_index = int(building_indices[indices[0]])
-        destination[building_index].append(z[point_indices[indices]])
+        spool.append(building_index, kind, raw_z[point_indices[indices]])
+
+
+def _remove_spill_directory(path: Path) -> None:
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _spilled_rows(
+    las_path: Path,
+    header: LasHeader,
+    buildings: gpd.GeoDataFrame,
+    spool: _SampleSpool,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    identifiers = buildings["building_id"].tolist()
+    source_digests = buildings["source_sha256"].tolist()
+    for index, building_id in enumerate(identifiers):
+        roof = spool.values(index, "roof")
+        ground = spool.values(index, "ground")
+        roof_count = 0 if roof is None else len(roof)
+        ground_count = 0 if ground is None else len(ground)
+        if roof_count < 10 or ground_count < 5:
+            continue
+        roof_array = np.asarray(roof, dtype=np.int32)
+        ground_array = np.asarray(ground, dtype=np.int32)
+        raw_roof_quantiles = np.quantile(roof_array, np.asarray((0.1, 0.5, 0.9), dtype=np.float64))
+        raw_ground_quantile = float(np.quantile(ground_array, 0.25))
+        roof_quantiles = (
+            raw_roof_quantiles * header.scales[2] + header.offsets[2]
+        ) * US_SURVEY_FOOT_METERS
+        ground_m = (
+            raw_ground_quantile * header.scales[2] + header.offsets[2]
+        ) * US_SURVEY_FOOT_METERS
+        spread = float(roof_quantiles[2] - roof_quantiles[0])
+        rows.append(
+            {
+                "building_id": str(building_id),
+                "source_footprints_sha256": str(source_digests[index]),
+                "tile": las_path.name,
+                "building_point_count": roof_count,
+                "ground_point_count": ground_count,
+                "ground_elevation_m": float(ground_m),
+                "roof_p10_m": float(roof_quantiles[0]),
+                "roof_p50_m": float(roof_quantiles[1]),
+                "roof_p90_m": float(roof_quantiles[2]),
+                "height_p90_m": float(roof_quantiles[2] - ground_m),
+                "roof_spread_m": spread,
+                "quality": "high" if roof_count >= 100 and ground_count >= 20 else "usable",
+            }
+        )
+    return rows
+
+
+def _derive_spilled_rows(
+    las_path: Path, header: LasHeader, buildings: gpd.GeoDataFrame, work_path: Path
+) -> tuple[list[dict[str, object]], int]:
+    geometries = np.asarray(buildings.geometry.array, dtype=object)
+    roof_tree = shapely.STRtree(geometries)
+    ground_tree = shapely.STRtree(shapely.buffer(geometries, 12.0))
+    spool = _SampleSpool(work_path)
+    try:
+        for x, y, raw_z, classification in iter_las_points(las_path, header):
+            roof_mask = classification == 6
+            _spill_matches(
+                roof_tree,
+                x[roof_mask],
+                y[roof_mask],
+                raw_z[roof_mask],
+                spool,
+                "roof",
+            )
+            ground_mask = classification == 2
+            _spill_matches(
+                ground_tree,
+                x[ground_mask],
+                y[ground_mask],
+                raw_z[ground_mask],
+                spool,
+                "ground",
+            )
+        spool.close()
+        return _spilled_rows(las_path, header, buildings, spool), spool.bytes_written
+    finally:
+        spool.close()
 
 
 def derive_evidence(
@@ -432,51 +696,22 @@ def derive_evidence(
     if buildings.crs is None or buildings.crs.to_epsg() != CITY_CRS_FEET:
         raise LidarError(f"building evidence requires EPSG:{CITY_CRS_FEET} footprints")
     buildings = buildings.loc[buildings.geometry.intersects(box(*header.bounds_ft))].copy()
-    if buildings.empty:
-        table = pa.Table.from_pylist([], schema=EVIDENCE_SCHEMA)
-    else:
-        geometries = np.asarray(buildings.geometry.array, dtype=object)
-        roof_tree = shapely.STRtree(geometries)
-        ground_tree = shapely.STRtree(shapely.buffer(geometries, 12.0))
-        roof_values: dict[int, list[np.ndarray]] = defaultdict(list)
-        ground_values: dict[int, list[np.ndarray]] = defaultdict(list)
-        for x, y, z, classification in iter_las_points(las_path, header):
-            roof_mask = classification == 6
-            _collect_matches(roof_tree, x[roof_mask], y[roof_mask], z[roof_mask], roof_values)
-            ground_mask = classification == 2
-            _collect_matches(
-                ground_tree, x[ground_mask], y[ground_mask], z[ground_mask], ground_values
-            )
-        rows: list[dict[str, object]] = []
-        identifiers = buildings["building_id"].tolist()
-        source_digests = buildings["source_sha256"].tolist()
-        for index, building_id in enumerate(identifiers):
-            roof = np.concatenate(roof_values[index]) if roof_values[index] else np.array([])
-            ground = np.concatenate(ground_values[index]) if ground_values[index] else np.array([])
-            if len(roof) < 10 or len(ground) < 5:
-                continue
-            roof_quantiles = np.quantile(roof, (0.1, 0.5, 0.9)) * US_SURVEY_FOOT_METERS
-            ground_m = float(np.quantile(ground, 0.25) * US_SURVEY_FOOT_METERS)
-            spread = float(roof_quantiles[2] - roof_quantiles[0])
-            count = int(len(roof))
-            quality = "high" if count >= 100 and len(ground) >= 20 else "usable"
-            rows.append(
-                {
-                    "building_id": str(building_id),
-                    "source_footprints_sha256": str(source_digests[index]),
-                    "tile": las_path.name,
-                    "building_point_count": count,
-                    "ground_point_count": int(len(ground)),
-                    "ground_elevation_m": ground_m,
-                    "roof_p10_m": float(roof_quantiles[0]),
-                    "roof_p50_m": float(roof_quantiles[1]),
-                    "roof_p90_m": float(roof_quantiles[2]),
-                    "height_p90_m": float(roof_quantiles[2] - ground_m),
-                    "roof_spread_m": spread,
-                    "quality": quality,
-                }
-            )
-        table = pa.Table.from_pylist(rows, schema=EVIDENCE_SCHEMA)
+    work_parent = output_path.parent / ".lidar-work"
+    work_path = work_parent / las_path.name
+    _remove_spill_directory(work_path)
+    work_path.mkdir(parents=True)
+    try:
+        rows, spill_bytes = _derive_spilled_rows(las_path, header, buildings, work_path)
+        metadata = {
+            b"lidar_point_passes": b"1",
+            b"lidar_spill_bytes": str(spill_bytes).encode(),
+            b"lidar_spill_encoding": b"little-endian-int32-z",
+        }
+        table = pa.Table.from_pylist(rows, schema=EVIDENCE_SCHEMA).replace_schema_metadata(metadata)
+    finally:
+        _remove_spill_directory(work_path)
+        with suppress(OSError):
+            work_parent.rmdir()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(".parquet.part")
     pq.write_table(table, temporary, compression="zstd")
@@ -543,6 +778,7 @@ def download_tile(tile: Tile, inventory: Inventory, client: httpx.Client) -> tup
             and destination.stat().st_size == tile.bytes
             and entry.get("sha256", entry.get("source_sha256")) == digest
         ):
+            _validate_exact_las_source(destination, digest)
             return destination, digest
         destination.unlink()
     if partial.exists() and (
@@ -558,20 +794,36 @@ def download_tile(tile: Tile, inventory: Inventory, client: httpx.Client) -> tup
     headers = {"Range": f"bytes={offset}-"} if offset else {}
     with client.stream("GET", tile.url, headers=headers) as response:
         response.raise_for_status()
+        if str(response.url) != tile.url:
+            raise LidarError(f"LiDAR tile redirected outside its pinned URL: {response.url}")
+        content_length = response.headers.get("content-length", "")
         if offset and response.status_code == 206:
             content_range = response.headers.get("content-range", "")
             match = CONTENT_RANGE.fullmatch(content_range)
+            expected_response_bytes = tile.bytes - offset
             if (
                 match is None
                 or int(match.group("start")) != offset
-                or int(match.group("end")) < offset
+                or int(match.group("end")) != tile.bytes - 1
                 or int(match.group("total")) != tile.bytes
+                or content_length != str(expected_response_bytes)
             ):
                 raise LidarError(
-                    f"invalid Content-Range for resumed {tile.name}: {content_range!r}"
+                    f"invalid resumed response for {tile.name}: Content-Range "
+                    f"{content_range!r}, Content-Length {content_length!r}"
                 )
         elif offset:
             offset = 0
+            if response.status_code != 200 or content_length != str(tile.bytes):
+                raise LidarError(
+                    f"invalid replacement response for {tile.name}: status "
+                    f"{response.status_code}, Content-Length {content_length!r}"
+                )
+        elif response.status_code != 200 or content_length != str(tile.bytes):
+            raise LidarError(
+                f"invalid download response for {tile.name}: status {response.status_code}, "
+                f"Content-Length {content_length!r}; expected {tile.bytes}"
+            )
         mode = "ab" if offset else "wb"
         with partial.open(mode) as file:
             for chunk in response.iter_bytes(DOWNLOAD_CHUNK_BYTES):
@@ -582,23 +834,64 @@ def download_tile(tile: Tile, inventory: Inventory, client: httpx.Client) -> tup
             f"{partial.stat().st_size:,} of {tile.bytes:,} bytes"
         )
     sha256 = sha256_file(partial)
+    _validate_exact_las_source(partial, sha256)
     partial.replace(destination)
     _record_progress(inventory, tile, "downloaded", bytes=tile.bytes, sha256=sha256)
     return destination, sha256
+
+
+def recheck_rejected_sources(
+    inventory: Inventory, client: httpx.Client, *, discard_raw: bool
+) -> tuple[int, int]:
+    """Re-fetch terminal truncations without clearing their evidence first."""
+    checked = 0
+    repaired = 0
+    RAW_LAS_DIR.mkdir(parents=True, exist_ok=True)
+    for tile in inventory.tiles:
+        if not tile.selected:
+            continue
+        try:
+            metadata = validate_tile_artifact(tile, inventory)
+        except LidarError:
+            continue
+        if metadata.get("result") != "rejected_source":
+            continue
+        checked += 1
+        candidate = RAW_LAS_DIR / f"{tile.name}.recheck.part"
+        candidate.unlink(missing_ok=True)
+        with client.stream("GET", tile.url) as response:
+            response.raise_for_status()
+            if str(response.url) != tile.url:
+                raise LidarError(f"LiDAR recheck redirected outside its pinned URL: {response.url}")
+            if response.status_code != 200 or response.headers.get("content-length") != str(
+                tile.bytes
+            ):
+                raise LidarError(f"invalid recheck response for {tile.name}")
+            with candidate.open("wb") as file:
+                for chunk in response.iter_bytes(DOWNLOAD_CHUNK_BYTES):
+                    file.write(chunk)
+        if candidate.stat().st_size != tile.bytes:
+            candidate.unlink(missing_ok=True)
+            raise LidarError(f"incomplete recheck response for {tile.name}")
+        digest = sha256_file(candidate)
+        try:
+            _validate_exact_las_source(candidate, digest)
+        except InvalidLasSourceError:
+            candidate.unlink(missing_ok=True)
+            continue
+        destination = RAW_LAS_DIR / tile.name
+        candidate.replace(destination)
+        _record_progress(inventory, tile, "downloaded", bytes=tile.bytes, sha256=digest)
+        (DERIVED_DIR / f"{tile.name}.json").unlink()
+        process_tile(tile, inventory, client, discard_raw=discard_raw)
+        repaired += 1
+    return checked, repaired
 
 
 def _load_tile_buildings(header: LasHeader) -> gpd.GeoDataFrame:
     if not FOOTPRINTS_PATH.exists():
         raise LidarError(f"missing {FOOTPRINTS_PATH}; run `poe lidar-plan`")
     return gpd.read_parquet(FOOTPRINTS_PATH, bbox=header.bounds_ft)
-
-
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _artifact_metadata(tile: Tile) -> dict[str, object]:
@@ -610,6 +903,50 @@ def _artifact_metadata(tile: Tile) -> dict[str, object]:
     if not isinstance(value, dict):
         raise LidarError(f"invalid derived metadata for {tile.name}")
     return value
+
+
+def _parse_artifact_header(value: object, tile: Tile) -> LasHeader:
+    if not isinstance(value, dict):
+        raise LidarError(f"derived {tile.name} has no complete LAS header")
+    try:
+        version = value["version"]
+        point_format = value["point_format"]
+        point_record_bytes = value["point_record_bytes"]
+        point_count = value["point_count"]
+        point_data_offset = value["point_data_offset"]
+        scales = tuple(float(item) for item in value["scales"])
+        offsets = tuple(float(item) for item in value["offsets"])
+        bounds = tuple(float(item) for item in value["bounds_ft"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise LidarError(f"derived {tile.name} has an invalid LAS header") from error
+    integer_fields = (point_format, point_record_bytes, point_count, point_data_offset)
+    if (
+        not isinstance(version, str)
+        or re.fullmatch(r"\d+\.\d+", version) is None
+        or any(not isinstance(item, int) or isinstance(item, bool) for item in integer_fields)
+        or not 0 <= point_format <= 10
+        or point_record_bytes < 20
+        or point_count <= 0
+        or point_data_offset < 227
+        or len(scales) != 3
+        or len(offsets) != 3
+        or len(bounds) != 4
+        or not all(math.isfinite(item) for item in (*scales, *offsets, *bounds))
+        or not all(item > 0 for item in scales)
+        or bounds[0] > bounds[2]
+        or bounds[1] > bounds[3]
+    ):
+        raise LidarError(f"derived {tile.name} has an invalid LAS header")
+    return LasHeader(
+        version,
+        point_format,
+        point_record_bytes,
+        point_count,
+        point_data_offset,
+        scales,
+        offsets,
+        bounds,
+    )
 
 
 def validate_tile_artifact(tile: Tile, inventory: Inventory) -> dict[str, object]:
@@ -628,8 +965,28 @@ def validate_tile_artifact(tile: Tile, inventory: Inventory) -> dict[str, object
             raise LidarError(f"derived {tile.name} has stale or invalid {field}")
     if not _is_sha256(metadata.get("source_sha256")):
         raise LidarError(f"derived {tile.name} has no valid source SHA-256")
-    if metadata.get("result") == "outside":
+    header = _parse_artifact_header(metadata.get("las"), tile)
+    expected_minimum = header.point_data_offset + header.point_count * header.point_record_bytes
+    result = metadata.get("result")
+    if result == "rejected_source":
+        actual_bytes = metadata.get("actual_bytes")
+        if not isinstance(actual_bytes, int) or actual_bytes != tile.bytes:
+            raise LidarError(f"rejected {tile.name} does not match the pinned source size")
+        if not isinstance(metadata.get("error"), str) or not metadata["error"]:
+            raise LidarError(f"rejected {tile.name} has no structural error")
+        if (
+            metadata.get("expected_minimum_bytes") != expected_minimum
+            or expected_minimum <= actual_bytes
+        ):
+            raise LidarError(f"rejected {tile.name} has an invalid expected minimum size")
         return metadata
+    if result == "outside":
+        city = _city_geometry(_default_snapshot(SOURCES.city))
+        if city.intersects(box(*header.bounds_ft)):
+            raise LidarError(f"outside {tile.name} actually intersects the pinned City boundary")
+        return metadata
+    if result != "derived":
+        raise LidarError(f"derived {tile.name} has an unknown result")
     output = DERIVED_DIR / f"{tile.name}.parquet"
     if metadata.get("output_file") != output.name or not output.is_file():
         raise LidarError(f"derived Parquet is missing for {tile.name}")
@@ -656,19 +1013,49 @@ def process_tile(
 ) -> None:
     output = DERIVED_DIR / f"{tile.name}.parquet"
     metadata_path = DERIVED_DIR / f"{tile.name}.json"
-    if output.exists() and metadata_path.exists():
+    if metadata_path.exists():
         try:
             metadata = validate_tile_artifact(tile, inventory)
         except LidarError:
             pass
         else:
             raw = RAW_LAS_DIR / tile.name
-            if discard_raw and raw.exists():
+            result = metadata.get("result")
+            if (discard_raw or result == "rejected_source") and raw.exists():
                 raw.unlink()
-            status: TileStatus = "released" if discard_raw or not raw.exists() else "derived"
+            if result == "rejected_source":
+                status: TileStatus = "rejected_source"
+            elif result == "outside":
+                status = "outside"
+            else:
+                status = "released" if discard_raw or not raw.exists() else "derived"
             _record_progress(inventory, tile, status, **metadata)
             return
-    raw, source_sha256 = download_tile(tile, inventory, client)
+    try:
+        raw, source_sha256 = download_tile(tile, inventory, client)
+    except InvalidLasSourceError as error:
+        if error.header is None or error.expected_minimum_bytes is None:
+            # Only a self-consistent parsed header proves a stable upstream
+            # truncation. Other malformed responses remain retryable.
+            raise
+        metadata = {
+            "result": "rejected_source",
+            "inventory_listing_sha256": inventory.listing_sha256,
+            "inventory_city_sha256": inventory.city_sha256,
+            "inventory_building_sha256": inventory.building_sha256,
+            "source_url": tile.url,
+            "source_bytes": tile.bytes,
+            "source_sha256": error.source_sha256,
+            "actual_bytes": error.actual_bytes,
+            "expected_minimum_bytes": error.expected_minimum_bytes,
+            "error": str(error),
+            "las": asdict(error.header) if error.header is not None else None,
+        }
+        _write_json_atomic(metadata_path, metadata)
+        validate_tile_artifact(tile, inventory)
+        error.path.unlink()
+        _record_progress(inventory, tile, "rejected_source", **metadata)
+        return
     header = load_las_header(raw)
     city = _city_geometry(_default_snapshot(SOURCES.city))
     if not city.intersects(box(*header.bounds_ft)):
@@ -736,9 +1123,35 @@ def pending_tiles(inventory: Inventory) -> tuple[Tile, ...]:
     )
 
 
+def _rejected_source_gap(
+    tile: Tile, metadata: dict[str, object], inventory: Inventory
+) -> dict[str, object]:
+    las = metadata.get("las")
+    if not isinstance(las, dict):
+        raise LidarError(f"rejected source has no LAS bounds: {tile.name}")
+    raw_bounds = las.get("bounds_ft")
+    if not isinstance(raw_bounds, list) or len(raw_bounds) != 4:
+        raise LidarError(f"rejected source has invalid LAS bounds: {tile.name}")
+    bounds = tuple(float(value) for value in raw_bounds)
+    if not FOOTPRINTS_PATH.is_file():
+        raise LidarError(f"missing {FOOTPRINTS_PATH}; cannot audit rejected-source gap")
+    buildings = gpd.read_parquet(FOOTPRINTS_PATH, bbox=bounds)
+    if not buildings.empty:
+        sources = set(buildings["source_sha256"].tolist())
+        if sources != {inventory.building_sha256}:
+            raise LidarError(f"footprint index has invalid provenance for gap {tile.name}")
+        buildings = buildings.loc[buildings.geometry.intersects(box(*bounds))]
+    return {
+        "tile": tile.name,
+        "bounds_ft": list(bounds),
+        "affected_footprints": int(buildings["building_id"].nunique()),
+    }
+
+
 def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
     paths: list[Path] = []
     invalid: list[str] = []
+    rejected: list[str] = []
     for tile in inventory.tiles:
         if not tile.selected:
             continue
@@ -749,11 +1162,13 @@ def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
             continue
         if metadata.get("result") == "derived":
             paths.append(DERIVED_DIR / f"{tile.name}.parquet")
+        elif metadata.get("result") == "rejected_source":
+            rejected.append(tile.name)
     if invalid and not allow_partial:
         examples = "; ".join(invalid[:3])
         raise LidarError(
-            f"cannot merge an incomplete selection: {len(invalid):,} of "
-            f"{sum(tile.selected for tile in inventory.tiles):,} tiles are missing or invalid; "
+            f"cannot merge an incomplete selection: {len(invalid):,} missing or invalid of "
+            f"{sum(tile.selected for tile in inventory.tiles):,} selected tiles; "
             f"examples: {examples}; finish the queue or pass --allow-partial"
         )
     if not paths:
@@ -791,15 +1206,30 @@ def merge_evidence(inventory: Inventory, *, allow_partial: bool = False) -> int:
     temporary = destination.with_suffix(".parquet.part")
     pq.write_table(result, temporary, compression="zstd")
     temporary.replace(destination)
+    selected_tiles = sum(tile.selected for tile in inventory.tiles)
+    rejected_gaps = [
+        _rejected_source_gap(
+            tile,
+            validate_tile_artifact(tile, inventory),
+            inventory,
+        )
+        for tile in inventory.tiles
+        if tile.name in rejected
+    ]
     _write_json_atomic(
         destination.with_suffix(".json"),
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "inventory_listing_sha256": inventory.listing_sha256,
             "inventory_city_sha256": inventory.city_sha256,
             "inventory_building_sha256": inventory.building_sha256,
-            "selected_tiles": sum(tile.selected for tile in inventory.tiles),
-            "validated_tiles": sum(tile.selected for tile in inventory.tiles) - len(invalid),
+            "selected_tiles": selected_tiles,
+            "accounted_tiles": selected_tiles - len(invalid),
+            "evidence_tiles": len(paths),
+            "source_coverage_complete": not rejected,
+            "rejected_source_count": len(rejected),
+            "rejected_source_tiles": rejected,
+            "rejected_source_gaps": rejected_gaps,
             "partial": partial,
             "source_footprints_sha256": next(iter(footprints)),
             "output_file": destination.name,
@@ -821,6 +1251,7 @@ def load_height_evidence(
         raise LidarError(f"missing or corrupt merged LiDAR metadata for {path}") from error
     if (
         not isinstance(metadata, dict)
+        or metadata.get("schema_version") != 2
         or metadata.get("output_sha256") != sha256_file(path)
         or metadata.get("output_bytes") != path.stat().st_size
         or metadata.get("source_footprints_sha256") != expected_source_sha256
@@ -829,6 +1260,45 @@ def load_height_evidence(
     partial = metadata.get("partial")
     if not isinstance(partial, bool):
         raise LidarError("merged LiDAR evidence does not declare completeness")
+    source_coverage_complete = metadata.get("source_coverage_complete")
+    rejected_source_count = metadata.get("rejected_source_count")
+    rejected_sources = metadata.get("rejected_source_tiles")
+    rejected_gaps = metadata.get("rejected_source_gaps")
+    selected_tiles = metadata.get("selected_tiles")
+    accounted_tiles = metadata.get("accounted_tiles")
+    if (
+        not isinstance(source_coverage_complete, bool)
+        or not isinstance(rejected_source_count, int)
+        or not isinstance(rejected_sources, list)
+        or not all(isinstance(name, str) for name in rejected_sources)
+        or not isinstance(rejected_gaps, list)
+        or not isinstance(selected_tiles, int)
+        or not isinstance(accounted_tiles, int)
+        or source_coverage_complete != (len(rejected_sources) == 0)
+        or rejected_source_count != len(rejected_sources)
+    ):
+        raise LidarError("merged LiDAR evidence has invalid source-coverage metadata")
+    gap_tiles: list[str] = []
+    for gap in rejected_gaps:
+        if not isinstance(gap, dict):
+            raise LidarError("merged LiDAR evidence has invalid rejected-source gap")
+        tile = gap.get("tile")
+        bounds = gap.get("bounds_ft")
+        affected = gap.get("affected_footprints")
+        if (
+            not isinstance(tile, str)
+            or not isinstance(bounds, list)
+            or len(bounds) != 4
+            or not all(isinstance(value, int | float) for value in bounds)
+            or not isinstance(affected, int)
+            or affected < 0
+        ):
+            raise LidarError("merged LiDAR evidence has invalid rejected-source gap")
+        gap_tiles.append(tile)
+    if sorted(gap_tiles) != sorted(rejected_sources):
+        raise LidarError("merged LiDAR evidence rejected-source gaps do not match its tile list")
+    if not partial and accounted_tiles != selected_tiles:
+        raise LidarError("complete local LiDAR merge does not account for every selected tile")
     if partial and not allow_partial:
         raise LidarError(
             "normal ingest requires a complete LiDAR merge; partial evidence is diagnostic only"
@@ -879,10 +1349,18 @@ def load_height_evidence(
 def _summary(inventory: Inventory) -> str:
     selected = tuple(tile for tile in inventory.tiles if tile.selected)
     pending = pending_tiles(inventory)
+    rejected_sources = 0
+    for tile in selected:
+        try:
+            metadata = validate_tile_artifact(tile, inventory)
+        except LidarError:
+            continue
+        if metadata.get("result") == "rejected_source":
+            rejected_sources += 1
     return (
         f"PASDA listed {len(inventory.tiles):,} tiles; selected {len(selected):,} "
         f"({sum(tile.bytes for tile in selected) / 1024**3:.2f} GiB); "
-        f"pending {len(pending):,}"
+        f"pending {len(pending):,}; rejected sources {rejected_sources:,}"
     )
 
 
@@ -892,7 +1370,15 @@ def main() -> None:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan", help="pin the official inventory and prepare footprints")
-    plan.add_argument("--refresh", action="store_true", help="replace an existing inventory")
+    plan.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-fetch only if it still matches the checked-in audited pin",
+    )
+    commands.add_parser(
+        "audit-candidate",
+        help="write a non-active candidate and print the semantic pin for review",
+    )
     run = commands.add_parser("run", help="process selected tiles sequentially and resumably")
     limit = run.add_mutually_exclusive_group(required=True)
     limit.add_argument("--max-tiles", type=int)
@@ -905,6 +1391,10 @@ def main() -> None:
         action="store_true",
         help="explicitly merge only currently validated tiles",
     )
+    recheck = commands.add_parser(
+        "recheck-rejected", help="safely test whether PASDA repaired rejected source bytes"
+    )
+    recheck.add_argument("--discard-raw", action="store_true")
     arguments = parser.parse_args()
 
     if arguments.command == "plan":
@@ -918,6 +1408,17 @@ def main() -> None:
         if not FOOTPRINTS_PATH.exists() or arguments.refresh:
             prepare_footprints(building_path, city_path)
         print(_summary(inventory))
+    elif arguments.command == "audit-candidate":
+        city_path = _default_snapshot(SOURCES.city)
+        building_path = _default_snapshot(SOURCES.buildings)
+        inventory = create_inventory(
+            city_path,
+            building_path,
+            output_path=AUDIT_CANDIDATE_PATH,
+            audit_candidate=True,
+        )
+        print(f"wrote non-active audit candidate: {AUDIT_CANDIDATE_PATH}")
+        print(f"semantic inventory SHA-256: {semantic_inventory_sha256(inventory)}")
     elif arguments.command == "run":
         inventory = load_inventory()
         validate_active_sources(inventory)
@@ -945,6 +1446,16 @@ def main() -> None:
             f"{merge_evidence(inventory, allow_partial=arguments.allow_partial):,} "
             f"buildings"
         )
+    elif arguments.command == "recheck-rejected":
+        inventory = load_inventory()
+        validate_active_sources(inventory)
+        with httpx.Client(
+            headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=None
+        ) as client:
+            checked, repaired = recheck_rejected_sources(
+                inventory, client, discard_raw=arguments.discard_raw
+            )
+        print(f"rechecked {checked:,} rejected sources; repaired {repaired:,}")
 
 
 if __name__ == "__main__":
