@@ -12,6 +12,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
+    land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, TileInventory, tile_path},
     render::render_blank_tile,
@@ -117,9 +118,10 @@ pub fn prebuild(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
-    land_cover_sha256: Option<&[u8; 32]>,
+    land_cover: Option<&LandCoverMask>,
 ) -> io::Result<()> {
-    let base_version = base_tile_version(&world.world_sha256, land_cover_sha256);
+    let land_cover_sha256 = land_cover.map(LandCoverMask::artifact_sha256);
+    let base_version = base_tile_version(&world.world_sha256, land_cover_sha256.as_ref());
     let tile_root = PathBuf::from("data/tiles");
     std::fs::create_dir_all(&tile_root)?;
     let build_lock = OpenOptions::new()
@@ -137,7 +139,7 @@ pub fn prebuild(
         let tile_version = available_tile_version(&base_version)?;
         let tile_dir = tile_cache_dir(&tile_version);
         let staging = tile_root.join(format!(".{tile_version}.building"));
-        pyramid::build(world, aerial, mesh_textures, &staging)?;
+        pyramid::build(world, aerial, mesh_textures, land_cover, &staging)?;
         std::fs::rename(&staging, &tile_dir)?;
         tile_version
     };
@@ -151,13 +153,18 @@ pub fn prebuild(
             let rich_version = available_tile_version(&rich_base)?;
             let rich_dir = tile_cache_dir(&rich_version);
             let staging = tile_root.join(format!(".{rich_version}.building"));
-            pyramid::build_rich(world, aerial, mesh_textures, view, &staging)?;
+            pyramid::build_rich(world, aerial, mesh_textures, land_cover, view, &staging)?;
             std::fs::rename(&staging, &rich_dir)?;
             rich_version
         };
         rich_versions.push((view, rich_version));
     }
-    let scene = Scene::from_world(world, land_cover_sha256, tile_version, &rich_versions)?;
+    let scene = Scene::from_world(
+        world,
+        land_cover_sha256.as_ref(),
+        tile_version,
+        &rich_versions,
+    )?;
     scene.write_current()
 }
 

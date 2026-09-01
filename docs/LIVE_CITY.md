@@ -4,17 +4,25 @@ The map can show planning neighborhood outlines, separately styled local names, 
 deterministic local lighting. These overlays stay independent of the textured tile pyramid.
 Live transit is intentionally disabled while the visual map is being finished.
 
-## Water and parks
+## Water, parks, and land cover
 
 The ingest builds water and park masks from the City hydrology and PPR property sources. The tile
-builder uses the masks to color the aerial ground layer. Water has a small set of blue tones arranged
-in fixed diagonal bands. The bands use source coordinates, so they stay aligned across tile
-boundaries and camera views. Park grading applies only to aerial pixels that already look like
-vegetation, so courts, paths, and plazas keep their source color.
+builder combines them with the audited 2018 Philadelphia land cover mask. The raster classes come
+from 2018 LiDAR and 2017 NAIP imagery, while the displayed ground remains the 2025 aerial image.
+Tree canopy and grass or shrub classes receive different restrained green grading. Building, road,
+railroad, paved, and bare earth classes keep their aerial color.
+
+Water has a small set of blue tones arranged in fixed diagonal bands. Official City hydrology has
+priority, and the land cover water class fills areas outside that mask. The bands use source
+coordinates, so they stay aligned across tile boundaries and camera views. Park grading applies
+only where the land cover class is tree canopy or grass and shrub. Courts, paths, and plazas
+therefore keep their aerial color. If the optional mask is absent, the renderer keeps the earlier
+aerial-color vegetation test instead of failing a normal prebuild.
 
 These effects are baked into the tile images by `poe prebuild`. They add no browser timer, network
 request, or repeated repaint. There is no continuous motion, so people who prefer reduced motion see
-the same stable scene. Rebuild the tiles after changing the renderer to view the result.
+the same stable scene. The `v48-land-cover` tile identity includes the exact mask digest. Rebuild the
+tiles after changing the mask or renderer to view the result.
 
 ## Neighborhood names
 

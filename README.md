@@ -14,6 +14,14 @@ view stays inside the strongest Center City source and offers four prebuilt
 citywide illustrated overview without implying that its aerial-derived walls
 are photographed facades.
 
+The renderer also uses the audited 2018 Philadelphia land cover raster to
+identify tree canopy, grass and shrub, and water across the city. It grades the
+matching 2025 aerial pixels instead of replacing them. Official City hydrology
+has first priority, and park grading applies only where the land cover class is
+tree canopy or grass and shrub. The land cover source and generated tiles must
+remain local until the City and PASDA rights for derived raster publication are
+confirmed.
+
 The expensive geospatial import happens once in Python. A Rust prebuilder loads
 that result and renders lossless WebP tiles in parallel. The small HTTP service
 reads only a scene manifest and the finished tiles. The viewer is typed
@@ -78,6 +86,17 @@ cannot change the sampling phase. At most eight requests reach PASDA at once.
 Source cells are stored under `data/aerial/` with a hard 8 GiB limit.
 Each build removes obsolete cache formats, and an invalid cached image is
 fetched again once.
+
+Land cover conversion uses the pinned offline wrapper in
+`tools/land-cover/`. The wrapper runs GDAL 3.12.4 and PROJ 9.8.1 from the
+official OSGeo linux/amd64 image at
+`ghcr.io/osgeo/gdal@sha256:d834c2ffb3e7a2f3e35dae2a4cee35108b551db92b8349827f63ceda56979462`.
+It disables container networking, gives the container a read-only root, runs
+as the calling user, and limits temporary storage to 256 MB. The repository
+mount provides the reviewed input and explicit output paths. See
+[the data record](docs/DATA.md) for the exact source pin and commands. A mask
+digest is part of the `v48-land-cover` tile identity, so a mask change cannot
+reuse an older pyramid.
 
 After the first ingest, the usual development loop is only:
 

@@ -57,11 +57,11 @@ SOURCE_EXTENT_US_SURVEY_FEET = (
     307_894.0000000009,
 )
 SOURCE_IDENTITY_SHA256 = "72cdba0fd90b5a7e880e5ce51c3cb5cfba26382a1617efa2149ce612d791d5b8"
-# The 521 MB archive was not downloaded during this scaffolding change. Add its
-# reviewed lowercase SHA-256 here before a normal build or audit can succeed.
-AUDITED_SOURCE_ARCHIVE_SHA256: str | None = None
-AUDITED_GDB_ROOT: str | None = None
-AUDITED_RASTER_NAME: str | None = None
+AUDITED_SOURCE_ARCHIVE_SHA256: str | None = (
+    "555ab81428c239dd4d1a1f162fdd072f4ff1b0b2ab15a2e96a3f241e2823bb3f"
+)
+AUDITED_GDB_ROOT: str | None = "PPR_LandCover_2018.gdb"
+AUDITED_RASTER_NAME: str | None = "landcover_2018_philadelphia"
 DEFAULT_MASK_PATH = ROOT / "data" / "clean" / "land-cover-2018.isomask"
 DEFAULT_CONVERSION_ROOT = ROOT / "data" / "land-cover-2018" / "converted"
 DEFAULT_ARCHIVE_PATH = ROOT / "data" / "raw" / "PhiladelphiaLandCoverRaster2018.zip"
@@ -197,8 +197,95 @@ class ToolchainEvidence:
 
 # Keep typed evidence pins after their class declarations so replacing None with
 # executable constructor literals never depends on a forward declaration.
-AUDITED_RASTER_EVIDENCE: RasterEvidence | None = None
-AUDITED_TOOLCHAIN: ToolchainEvidence | None = None
+AUDITED_RASTER_EVIDENCE: RasterEvidence | None = RasterEvidence(
+    driver="OpenFileGDB",
+    description='OpenFileGDB:"/vsizip/{{archive}}/PPR_LandCover_2018.gdb":landcover_2018_philadelphia',
+    files=(
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000001.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000001.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000001.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000001.TablesByName.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000002.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000002.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000003.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000003.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000003.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.CatItemsByPhysicalName.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.CatItemsByType.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.FDO_UUID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000004.spx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.CatItemTypesByName.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.CatItemTypesByParentTypeID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.CatItemTypesByUUID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000005.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.CatRelsByDestinationID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.CatRelsByOriginID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.CatRelsByType.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.FDO_UUID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000006.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByBackwardLabel.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByDestItemTypeID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByForwardLabel.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByName.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByOriginItemTypeID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.CatRelTypesByUUID.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000007.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000009.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000009.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000009.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a00000009.spx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000a.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000a.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000a.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000b.freelist",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000b.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000b.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000b.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.band_index.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.blk_key_index.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.col_index.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000c.row_index.atx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000d.freelist",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000d.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000d.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000d.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000e.gdbindexes",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000e.gdbtable",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/a0000000e.gdbtablx",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/gdb",
+        "/vsizip/{{archive}}/PPR_LandCover_2018.gdb/timestamps",
+    ),
+    width=216480,
+    height=242880,
+    data_type="Byte",
+    nodata=None,
+    geotransform=(2645348, 0.5, 0, 307894, 0, -0.5),
+    crs_wkt_sha256="205e384cdb58874490456cf42a2425d7db7029e22ea99fdbc795da51d0f8c710",
+)
+AUDITED_TOOLCHAIN: ToolchainEvidence | None = ToolchainEvidence(
+    gdal_version="3.12.4",
+    gdalinfo_build_sha256="03a97d02b0b86b186c5acf98126ced74156c4816ebd3bc0c658a4712f64e99e8",
+    gdalinfo_formats_sha256="2329e21907b4a0856ae922989e3df864f9d06d2bc1bb95eeddc4e504a9d26360",
+    gdalinfo_help_sha256="d485909c92b1305def9f5a0dd6841f4019cef40e1e193031cd64623d793db7c6",
+    gdalinfo_version_sha256="8a07b4ef485a519447d24b0390092bcbee693cb206dbaf5068abcb271b3cedf2",
+    gdalwarp_build_sha256="03a97d02b0b86b186c5acf98126ced74156c4816ebd3bc0c658a4712f64e99e8",
+    gdalwarp_help_sha256="d485909c92b1305def9f5a0dd6841f4019cef40e1e193031cd64623d793db7c6",
+    gdalwarp_version_sha256="8a07b4ef485a519447d24b0390092bcbee693cb206dbaf5068abcb271b3cedf2",
+    proj_version="9.8.1",
+    proj_version_sha256="79d0d2e9855e38182014faa8cca6b736eb0641b0a8c591b19754aeef18c787b9",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1063,10 +1150,10 @@ def _command_output(command: list[str]) -> str:
 
 
 def _gdal_version(output: str, command: str) -> str:
-    prefix = "GDAL "
-    if not output.startswith(prefix):
+    match = re.match(r"^GDAL (?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|,|$)", output)
+    if match is None:
         raise LandCoverError(f"cannot parse {command} version: {output}")
-    version = output[len(prefix) :].split(",", maxsplit=1)[0]
+    version = match.group("version")
     if version != GDAL_VERSION:
         raise LandCoverError(f"{command} is GDAL {version}; reviewed version is {GDAL_VERSION}")
     return version

@@ -55,6 +55,13 @@ export function validateReleaseZooms(zooms, releaseMode) {
   }
 }
 
+/** @param {unknown} digest @param {boolean} releaseMode */
+export function validateLandCoverDigest(digest, releaseMode) {
+  if (releaseMode && (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest))) {
+    throw new Error("release visual QA requires a validated land-cover artifact digest");
+  }
+}
+
 /** @param {Promise<unknown>[]} tasks */
 export async function drainGrowingTasks(tasks) {
   let drained = 0;

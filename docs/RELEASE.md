@@ -9,6 +9,11 @@
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
   has a URL, retrieval time, byte count, and SHA-256 checksum.
+- Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
+  header and whole artifact SHA-256. Confirm that the scene uses the
+  `v48-land-cover` identity and the reviewed OSGeo image digest. Keep the land
+  cover source and derived tile pixels local unless written City and PASDA
+  publication terms have been recorded.
 - A release does not use LiDAR heights until all 664 selected sources are
   accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
   and JSON pair. Do not publish from a diagnostic partial merge. Archive the

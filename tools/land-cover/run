@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tool=${1:?usage: tools/land-cover/run TOOL [ARGS...]}
+shift
+case "$tool" in
+  gdalinfo|gdalwarp|proj) ;;
+  *) echo "unsupported land-cover tool: $tool" >&2; exit 64 ;;
+esac
+
+repo=$(git rev-parse --show-toplevel)
+image=$(tr -d '\r\n' < "$repo/tools/land-cover/IMAGE")
+case "$image" in
+  ghcr.io/osgeo/gdal@sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "invalid digest-pinned GDAL image" >&2; exit 65 ;;
+esac
+
+exec docker run --rm \
+  --network none \
+  --platform linux/amd64 \
+  --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e LC_ALL=C \
+  -v "$repo:$repo" \
+  -w "$PWD" \
+  --entrypoint "$tool" \
+  "$image" "$@"

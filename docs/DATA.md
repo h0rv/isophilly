@@ -92,22 +92,30 @@ instead of drawing flat replacement polygons.
 
 ## Land cover class mask
 
-The planned vegetation mask uses PASDA dataset 1587, Philadelphia Land Cover Raster 2018. The
+The active land cover mask uses PASDA dataset 1587, Philadelphia Land Cover Raster 2018. The
 source is layer 2 of the `PhillyLULC` MapServer. Its seven classes are tree canopy, grass and shrub,
 bare earth, water, building, road and railroad, and other paved surface. The source was made from
 2018 LiDAR and 2017 NAIP imagery, so it is a classification aid rather than current photography.
+The official archive is 521,373,667 bytes with SHA-256
+`555ab81428c239dd4d1a1f162fdd072f4ff1b0b2ab15a2e96a3f241e2823bb3f`.
+The audited File Geodatabase is `PPR_LandCover_2018.gdb`, and its exact raster
+is `landcover_2018_philadelphia`.
 
 The converter reads one exact File Geodatabase raster inside the audited PASDA ZIP. It builds the
 GDAL `OpenFileGDB` and `/vsizip` name itself from the pinned geodatabase root and a simple raster
 name. It rejects paths, connection strings, container results, subdatasets, and another GDAL
 driver. It also checks the source description and file list against the reviewed evidence.
 
-No reviewed reproducible GDAL and PROJ toolchain is pinned yet. The converter therefore fails
-closed on exact tool evidence. It requires GDAL 3.12.4, an OpenFileGDB build with raster and virtual
-file support, and the reviewed PROJ version. The evidence records the complete output digests for
-both GDAL version and build
-commands, the GDAL driver list, both general help commands, and `proj --version`. Reviewers must pin
-all of these values before the first conversion. The official driver syntax and virtual ZIP behavior are
+The reviewed converter uses GDAL 3.12.4, raster OpenFileGDB with virtual file
+support, and PROJ 9.8.1. The repository pins the official OSGeo linux/amd64
+small image as
+`ghcr.io/osgeo/gdal@sha256:d834c2ffb3e7a2f3e35dae2a4cee35108b551db92b8349827f63ceda56979462`.
+The scripts in `tools/land-cover/` run only `gdalinfo`, `gdalwarp`, and `proj`
+from that image. The wrapper disables networking, sets a read-only container
+root, uses the calling user, and limits temporary storage to 256 MB. Conversion
+checks complete output digests for both GDAL version and build commands, the
+GDAL driver list, both general help commands, and `proj --version`. The
+official driver syntax and virtual ZIP behavior are
 documented by [GDAL OpenFileGDB](https://gdal.org/en/stable/drivers/vector/openfilegdb.html) and
 [GDAL virtual file systems](https://gdal.org/en/stable/user/virtual_file_systems.html).
 
@@ -122,10 +130,7 @@ directory. The manifest records the source evidence, each member SHA-256, the Nu
 count for every class. A complete audit runs before one atomic `current.json` pointer change. A
 failed or concurrent conversion leaves the prior generation active.
 
-The large source archive was not downloaded while this code was added. The archive SHA-256,
-geodatabase root, raster name, complete raster evidence, and tool evidence pins are therefore empty.
-Conversion, build, and audit commands fail closed while any pin is empty. After obtaining the
-archive, fetch it with the exact pinned command:
+Fetch or verify the reviewed archive with the pinned command:
 
 ```text
 uv run --locked poe land-cover-fetch
@@ -141,12 +146,11 @@ Each flushed chunk updates an atomic checkpoint. A resumed request sends `Range`
 the response must have status 206, the exact content range and length, and the same strong ETag. A
 legacy partial without that validator is discarded. Redirects, weak or changed ETags, malformed
 ranges, and other validation errors fail without a retry. The complete partial is hashed and then
-renamed atomically. The command prints the SHA-256 as a review candidate and does not change
-`AUDITED_SOURCE_ARCHIVE_SHA256`.
+renamed atomically. The command reports the SHA-256 and never changes the
+checked-in audit pin.
 
-Before review, the fetch command returns the full-file SHA-256 only as a candidate. After
-`AUDITED_SOURCE_ARCHIVE_SHA256` is set, both a completed partial and an existing cached archive must
-match it before reuse or publication. A mismatch leaves an existing destination unchanged. The
+Both a completed partial and an existing cached archive must match the audited
+SHA-256 before reuse or publication. A mismatch leaves an existing destination unchanged. The
 fetch rejects symbolic links and nonregular destination, partial, checkpoint, and lock files. It
 opens cached archives, partial files, and checkpoints through file descriptors with the operating
 system's no-follow flag. It checks the opened device and inode against the pathname again after each
@@ -160,41 +164,43 @@ Second, confirm that the named process is not running on the named host. Third, 
 exact lock file, and rerun the command. The fetch never guesses that a lock is stale and never
 removes another process's lock.
 
-After the fetch, run the candidate command below. Review the archive, the exact internal raster, the City
-metadata, and every printed tool value before adding the pins to `land_cover.py`.
+The source candidate command below reproduces the reviewed archive, raster, and
+tool evidence. Pass the pinned wrappers explicitly so no host GDAL executable
+can satisfy the audit by accident.
 
 ```text
-python -m isophilly_ingest.land_cover source-candidate \
+uv run --locked python -m isophilly_ingest.land_cover source-candidate \
   --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip \
-  --gdb-root EXACT_ROOT.gdb \
-  --raster-name EXACT_RASTER_NAME
+  --gdb-root PPR_LandCover_2018.gdb \
+  --raster-name landcover_2018_philadelphia \
+  --gdalinfo tools/land-cover/gdalinfo \
+  --gdalwarp tools/land-cover/gdalwarp \
+  --proj tools/land-cover/proj
 ```
 
 The command hashes the archive and each member. It also opens the exact raster and records the full
-raster and tool evidence used by all five empty pins. It prints one canonical JSON object with
+raster and tool evidence used by the active pins. It prints one canonical JSON object with
 sorted keys and no optional formatting. Both names accept only ASCII letters, digits, periods,
 underscores, and hyphens, and each name must start with a letter or digit. The geodatabase root must
 end in `.gdb`.
 
-When adding the reviewed evidence to `land_cover.py`, keep the two typed pins below the
-`RasterEvidence` and `ToolchainEvidence` class declarations. Replace each `None` with its matching
-constructor call. Copy JSON scalar values exactly. Convert the `files` and `geotransform` JSON arrays
-to tuple literals, including the trailing comma for a one-item `files` tuple. Do not paste the JSON
-objects directly as Python dictionaries, because conversion audits compare the typed dataclasses and
-their tuples exactly. Import the module and run `tests.test_land_cover` after inserting the pins.
-Copy the same reviewed archive SHA-256 into `AUDITED_SOURCE_ARCHIVE_SHA256` in
-`src/land_cover.rs`; the optional Rust reader intentionally rejects a present artifact until that
-pin matches Python.
+The checked-in `RasterEvidence` and `ToolchainEvidence` values must match the
+candidate output exactly. The same reviewed archive SHA-256 is pinned in Python
+and Rust. A present artifact fails closed if either pin changes.
 
-First, convert the File Geodatabase raster after all review pins have been added. The raster name
-must be a simple exact name. The converter constructs the full GDAL connection string.
+Convert the File Geodatabase raster with the reviewed pins. The raster name
+must be the exact simple name below. The converter constructs the full GDAL
+connection string.
 
 ```text
-python -m isophilly_ingest.land_cover convert \
+uv run --locked python -m isophilly_ingest.land_cover convert \
   --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip \
-  --raster-name EXACT_PINNED_RASTER_NAME
+  --raster-name landcover_2018_philadelphia \
+  --gdalinfo tools/land-cover/gdalinfo \
+  --gdalwarp tools/land-cover/gdalwarp \
+  --proj tools/land-cover/proj
 
-python -m isophilly_ingest.land_cover build \
+uv run --locked python -m isophilly_ingest.land_cover build \
   --conversion data/land-cover-2018/converted/generations/REVIEWED_GENERATION \
   --source-archive data/raw/PhiladelphiaLandCoverRaster2018.zip
 ```
@@ -217,12 +223,15 @@ request. The artifact contains a 16 byte prefix, a JSON header, and one byte per
 sampler uses nearest neighbor lookup and clamps exact outer bounds with the next representable
 floating point value.
 
-The Rust prebuilder now reads the optional mask with the same strict schema, source, grid, payload,
-and digest checks. A present invalid mask fails closed. Its whole-artifact SHA-256 is recorded in the
-scene and tile identity, so adding or changing the mask cannot reuse an earlier tile pyramid. The
-classes do not affect current pixels yet. Planned grading will let a matching City hydrology polygon
-override the raster class and use tree canopy and grass classes for vegetation. No mask data is sent
-to the browser.
+The Rust prebuilder reads the optional mask with the same strict schema, source,
+grid, payload, and digest checks. A present invalid mask fails closed. Its whole
+artifact SHA-256 is part of the `v48-land-cover` scene and tile identity, so
+adding or changing the mask cannot reuse an earlier tile pyramid. Official City
+hydrology takes priority over every raster class. The raster water class uses
+the same stable water treatment outside those polygons. Park treatment applies
+only to tree canopy and grass or shrub classes. Elsewhere, canopy and grass use
+separate restrained grading, while building, road, railroad, paved, and bare
+earth pixels keep their aerial color. No mask data is sent to the browser.
 
 The City reserves rights in the dataset and provides it without a warranty. Confirm the current
 City and PASDA terms before publishing source pixels or raster tiles derived from them. Preserve the

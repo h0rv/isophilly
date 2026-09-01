@@ -22,14 +22,11 @@ const SOURCE_IDENTITY_SHA256: &str =
     "72cdba0fd90b5a7e880e5ce51c3cb5cfba26382a1617efa2149ce612d791d5b8";
 // Keep this identical to AUDITED_SOURCE_ARCHIVE_SHA256 in land_cover.py. A
 // present mask fails closed until both readers name the reviewed archive.
-const AUDITED_SOURCE_ARCHIVE_SHA256: Option<&str> = None;
+const AUDITED_SOURCE_ARCHIVE_SHA256: Option<&str> =
+    Some("555ab81428c239dd4d1a1f162fdd072f4ff1b0b2ab15a2e96a3f241e2823bb3f");
 const RIGHTS_NOTICE: &str = "The City reserves rights in this dataset and provides it as is. Confirm current City and PASDA terms before publishing source pixels or derived raster tiles.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "reserved for the later visual grading integration"
-)]
 pub enum LandCoverClass {
     TreeCanopy,
     GrassShrub,
@@ -70,9 +67,7 @@ const PRODUCTION_GRID: Grid = Grid {
 };
 
 pub struct LandCoverMask {
-    #[allow(dead_code, reason = "used by the staged sampler before visual grading")]
     grid: Grid,
-    #[allow(dead_code, reason = "used by the staged sampler before visual grading")]
     classes: Vec<u8>,
     artifact_sha256: [u8; 32],
 }
@@ -98,7 +93,6 @@ impl LandCoverMask {
         self.artifact_sha256
     }
 
-    #[allow(dead_code, reason = "strict sampler lands before visual grading")]
     pub fn sample(&self, x: f64, y: f64) -> Option<LandCoverClass> {
         if !x.is_finite()
             || !y.is_finite()

@@ -5,6 +5,7 @@ use tiny_skia::{Color, Pixmap};
 
 use crate::{
     building_render::{draw_city_building_parts, draw_city_buildings},
+    land_cover::{LandCoverClass, LandCoverMask},
     mesh_render::draw_textured_faces,
     mesh_texture::MeshTextureSource,
     projection::Projection,
@@ -20,6 +21,7 @@ pub fn render_tile(
     world: &World,
     aerial: &AerialTile,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     z: u8,
     x: u32,
     y: u32,
@@ -28,21 +30,19 @@ pub fn render_tile(
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
     let sampling_block = block_size(bounds);
-    draw_ground(
-        &mut pixmap,
-        world,
-        bounds,
-        scale,
-        sampling_block,
-        aerial,
-        View::SouthEast,
-    );
-
     let projection = Projection {
         bounds,
         scale,
         view: View::SouthEast,
     };
+    draw_ground(
+        &mut pixmap,
+        world,
+        &projection,
+        sampling_block,
+        aerial,
+        land_cover,
+    );
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let margin = 1.0 / scale;
     let query = AABB::from_corners(
@@ -105,26 +105,26 @@ pub fn render_rich_tile(
     world: &World,
     aerial: &AerialTile,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     view: View,
     bounds: Bounds,
 ) -> io::Result<Vec<u8>> {
     let scale = TILE_SIZE as f32 / bounds.width();
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
     let sampling_block = rich_block_size(bounds);
-    draw_ground(
-        &mut pixmap,
-        world,
-        bounds,
-        scale,
-        sampling_block,
-        aerial,
-        view,
-    );
     let projection = Projection {
         bounds,
         scale,
         view,
     };
+    draw_ground(
+        &mut pixmap,
+        world,
+        &projection,
+        sampling_block,
+        aerial,
+        land_cover,
+    );
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let query = bounds.source_envelope_for(world.max_height, view);
     draw_city_buildings(
@@ -193,12 +193,14 @@ fn ground() -> Color {
 fn draw_ground(
     pixmap: &mut Pixmap,
     world: &World,
-    bounds: Bounds,
-    scale: f32,
+    projection: &Projection,
     block_size: f32,
     aerial: &AerialTile,
-    view: View,
+    land_cover: Option<&LandCoverMask>,
 ) {
+    let bounds = projection.bounds;
+    let scale = projection.scale;
+    let view = projection.view;
     let fallback = [217_u8, 209, 195];
     let source_bounds = bounds.ground_source_bounds_for(view);
     let source_query = AABB::from_corners(
@@ -235,7 +237,10 @@ fn draw_ground(
                 } else {
                     mix_rgb(fallback, sampled.unwrap_or(fallback), 0.9)
                 };
-                grade_ground(aerial_color, sample_point, &water, &parks)
+                let land_cover_class = land_cover.and_then(|mask| {
+                    mask.sample(f64::from(sample_point.0), f64::from(sample_point.1))
+                });
+                grade_ground(aerial_color, sample_point, &water, &parks, land_cover_class)
             });
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
             pixmap.data_mut()[offset..offset + 4]
@@ -256,19 +261,35 @@ fn canonical_block_sample(point: (f32, f32), block_size: f32) -> ((i32, i32), (f
     (key, center)
 }
 
-fn grade_ground(color: [u8; 3], point: (f32, f32), water: &[&Ring], parks: &[&Ring]) -> [u8; 3] {
-    if water.iter().any(|ring| ring.contains(point)) {
+fn grade_ground(
+    color: [u8; 3],
+    point: (f32, f32),
+    water: &[&Ring],
+    parks: &[&Ring],
+    land_cover: Option<LandCoverClass>,
+) -> [u8; 3] {
+    if water.iter().any(|ring| ring.contains(point)) || land_cover == Some(LandCoverClass::Water) {
         return grade_water(color, point);
     }
-    let vegetation =
+    let aerial_vegetation =
         color[1].saturating_add(12) >= color[0] && color[1] > color[2].saturating_add(4);
+    let vegetation = match land_cover {
+        Some(class) => matches!(
+            class,
+            LandCoverClass::TreeCanopy | LandCoverClass::GrassShrub
+        ),
+        None => aerial_vegetation,
+    };
     if parks.iter().any(|ring| ring.contains(point)) && vegetation {
         return grade_park(color);
     }
-    if vegetation {
-        return mix_rgb(color, [72, 142, 68], 0.24);
+    match land_cover {
+        Some(LandCoverClass::TreeCanopy) => mix_rgb(color, [56, 126, 61], 0.32),
+        Some(LandCoverClass::GrassShrub) => mix_rgb(color, [86, 148, 73], 0.24),
+        Some(_) => color,
+        None if aerial_vegetation => mix_rgb(color, [72, 142, 68], 0.24),
+        None => color,
     }
-    color
 }
 
 fn grade_water(color: [u8; 3], point: (f32, f32)) -> [u8; 3] {
@@ -314,6 +335,7 @@ mod tests {
     use super::{
         TILE_SIZE, block_size, canonical_block_sample, grade_ground, grade_water, rich_block_size,
     };
+    use crate::land_cover::LandCoverClass;
     use crate::pyramid::ART_ZOOM;
     use crate::world::{Bounds, Ring, View};
 
@@ -346,7 +368,7 @@ mod tests {
     fn water_mask_shifts_aerial_color_toward_blue() {
         let water = square();
         let source = [112, 104, 88];
-        let result = grade_ground(source, (5.0, 5.0), &[&water], &[]);
+        let result = grade_ground(source, (5.0, 5.0), &[&water], &[], None);
 
         assert!(result[2] > source[2]);
         assert!(result[2] > result[0]);
@@ -357,8 +379,8 @@ mod tests {
         let water = square();
         let park = square();
         let source = [112, 112, 80];
-        let water_only = grade_ground(source, (5.0, 5.0), &[&water], &[]);
-        let overlap = grade_ground(source, (5.0, 5.0), &[&water], &[&park]);
+        let water_only = grade_ground(source, (5.0, 5.0), &[&water], &[], None);
+        let overlap = grade_ground(source, (5.0, 5.0), &[&water], &[&park], None);
 
         assert_eq!(overlap, water_only);
         assert!(overlap[2] > overlap[1]);
@@ -441,10 +463,94 @@ mod tests {
     #[test]
     fn park_mask_enriches_grass_without_painting_pavement() {
         let park = square();
-        let vegetation = grade_ground([112, 112, 80], (5.0, 5.0), &[], &[&park]);
-        let pavement = grade_ground([144, 128, 120], (5.0, 5.0), &[], &[&park]);
+        let vegetation = grade_ground([112, 112, 80], (5.0, 5.0), &[], &[&park], None);
+        let pavement = grade_ground([144, 128, 120], (5.0, 5.0), &[], &[&park], None);
 
         assert!(vegetation[1] > vegetation[0]);
         assert_eq!(pavement, [144, 128, 120]);
+        assert_eq!(vegetation, [90, 131, 73]);
+        assert_eq!(
+            grade_ground([112, 112, 80], (15.0, 15.0), &[], &[], None),
+            [102, 119, 77]
+        );
+    }
+
+    #[test]
+    fn classified_canopy_and_grass_preserve_distinct_aerial_detail() {
+        let source = [118, 112, 88];
+        let canopy = grade_ground(
+            source,
+            (5.0, 5.0),
+            &[],
+            &[],
+            Some(LandCoverClass::TreeCanopy),
+        );
+        let grass = grade_ground(
+            source,
+            (5.0, 5.0),
+            &[],
+            &[],
+            Some(LandCoverClass::GrassShrub),
+        );
+
+        assert_ne!(canopy, grass);
+        assert!(canopy[1] > canopy[0] && grass[1] > grass[0]);
+        assert_ne!(canopy, [56, 126, 61]);
+        assert_ne!(grass, [86, 148, 73]);
+    }
+
+    #[test]
+    fn classified_nonvegetation_prevents_false_green_park_pixels() {
+        let park = square();
+        let greenish_aerial = [112, 112, 80];
+        for class in [
+            LandCoverClass::BareEarth,
+            LandCoverClass::Building,
+            LandCoverClass::RoadRailroad,
+            LandCoverClass::OtherPaved,
+        ] {
+            assert_eq!(
+                grade_ground(greenish_aerial, (5.0, 5.0), &[], &[&park], Some(class),),
+                greenish_aerial
+            );
+        }
+    }
+
+    #[test]
+    fn hydrology_and_classified_water_take_water_precedence() {
+        let water = square();
+        let source = [112, 112, 80];
+        let expected = grade_ground(source, (5.0, 5.0), &[&water], &[], None);
+        assert_eq!(
+            grade_ground(
+                source,
+                (5.0, 5.0),
+                &[&water],
+                &[],
+                Some(LandCoverClass::TreeCanopy),
+            ),
+            expected
+        );
+        assert_eq!(
+            grade_ground(source, (5.0, 5.0), &[], &[], Some(LandCoverClass::Water),),
+            expected
+        );
+    }
+
+    #[test]
+    fn classified_grading_is_stable_in_every_view() {
+        let source = (819_514.0, 73_344.0);
+        let color = [118, 112, 88];
+        let expected = grade_ground(color, source, &[], &[], Some(LandCoverClass::TreeCanopy));
+        for view in View::ALL {
+            let projected = view.project(source.0, source.1, 0.0);
+            let recovered = view.inverse(projected.0, projected.1);
+            assert_eq!(
+                grade_ground(color, recovered, &[], &[], Some(LandCoverClass::TreeCanopy),),
+                expected,
+                "{}",
+                view.id()
+            );
+        }
     }
 }

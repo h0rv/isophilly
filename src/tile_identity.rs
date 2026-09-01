@@ -1,6 +1,6 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v47-street-trees";
+const PYRAMID_VERSION: &str = "v48-land-cover";
 
 pub(crate) fn base_tile_version(
     world_sha256: &[u8; 32],
@@ -59,7 +59,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v47-street-trees-1111111111111111"
+            "v48-land-cover-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),

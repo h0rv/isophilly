@@ -18,6 +18,7 @@ import {
   sha256File,
   stopChild,
   validateCitySectorTargets,
+  validateLandCoverDigest,
   validateReleaseZooms,
   validateTileResponseSnapshot,
   writeJsonAtomic,
@@ -887,6 +888,7 @@ try {
         `active tiles are stale: world ${worldSha256} != scene ${activeScene.world_sha256}; run prebuild`,
       );
     }
+    validateLandCoverDigest(activeScene.land_cover_sha256, true);
   }
   const meta = await waitForServer(activeScene.tile_version);
   tileZoomLimit = meta.max_tile_zoom;

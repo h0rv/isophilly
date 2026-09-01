@@ -457,9 +457,14 @@ class LandCoverArchiveFetchTests(unittest.TestCase):
 
 
 class LandCoverSourceTests(unittest.TestCase):
-    def test_unreviewed_typed_evidence_pins_import_and_fail_closed(self) -> None:
-        self.assertIsNone(AUDITED_RASTER_EVIDENCE)
-        self.assertIsNone(AUDITED_TOOLCHAIN)
+    def test_reviewed_typed_evidence_pins_are_complete(self) -> None:
+        self.assertIsInstance(AUDITED_RASTER_EVIDENCE, RasterEvidence)
+        self.assertIsInstance(AUDITED_TOOLCHAIN, ToolchainEvidence)
+        assert AUDITED_RASTER_EVIDENCE is not None
+        assert AUDITED_TOOLCHAIN is not None
+        self.assertEqual(AUDITED_RASTER_EVIDENCE.driver, "OpenFileGDB")
+        self.assertEqual(AUDITED_RASTER_EVIDENCE.data_type, "Byte")
+        self.assertEqual(AUDITED_TOOLCHAIN.gdal_version, "3.12.4")
 
     def test_reviewed_source_identity_digest_is_stable(self) -> None:
         self.assertEqual(canonical_sha256(source_identity()), SOURCE_IDENTITY_SHA256)
@@ -663,6 +668,7 @@ class LandCoverMaskTests(unittest.TestCase):
                 self.grid,
                 source_archive_sha256=SOURCE_SHA256,
                 source_archive_bytes=ARCHIVE_BYTES,
+                audited_source_sha256=None,
             )
 
     def test_hydrology_has_precedence_over_land_cover(self) -> None:
@@ -687,6 +693,12 @@ class LandCoverMaskTests(unittest.TestCase):
 
 
 class LandCoverConversionTests(unittest.TestCase):
+    def test_gdal_release_codename_does_not_change_numeric_version(self) -> None:
+        self.assertEqual(
+            land_cover._gdal_version('GDAL 3.12.4 "Chicoutimi", released 2026/04/22', "gdalinfo"),
+            "3.12.4",
+        )
+
     def setUp(self) -> None:
         self.grid = GridSpec(
             epsg=32129,

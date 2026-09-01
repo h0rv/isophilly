@@ -11,6 +11,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     render::{render_rich_tile, render_tile},
     texture::{AerialSource, AerialTile},
@@ -32,6 +33,7 @@ pub fn build(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     root: &Path,
 ) -> io::Result<()> {
     fs::create_dir_all(root)?;
@@ -42,7 +44,7 @@ pub fn build(
             Err(error)
         }
     })?;
-    let mut changed = render_leaves(world, aerial, mesh_textures, root)?;
+    let mut changed = render_leaves(world, aerial, mesh_textures, land_cover, root)?;
     for z in (0..ART_ZOOM).rev() {
         changed = derive_level(root, z, &changed)?;
         println!("built z{z} from z{}: {} written", z + 1, changed.len());
@@ -57,6 +59,7 @@ pub fn build_rich(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     view: View,
     root: &Path,
 ) -> io::Result<()> {
@@ -68,7 +71,7 @@ pub fn build_rich(
             Err(error)
         }
     })?;
-    let mut changed = render_rich_leaves(world, aerial, mesh_textures, view, root)?;
+    let mut changed = render_rich_leaves(world, aerial, mesh_textures, land_cover, view, root)?;
     for z in (0..RICH_ART_ZOOM).rev() {
         changed = derive_level(root, z, &changed)?;
         println!(
@@ -219,6 +222,7 @@ fn render_leaves(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     root: &Path,
 ) -> io::Result<Vec<u32>> {
     let count = 1_u32 << ART_ZOOM;
@@ -240,6 +244,7 @@ fn render_leaves(
         world,
         aerial,
         mesh_textures,
+        land_cover,
         root,
         count,
         rendered: &rendered,
@@ -269,6 +274,7 @@ fn render_rich_leaves(
     world: &World,
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
     view: View,
     root: &Path,
 ) -> io::Result<Vec<u32>> {
@@ -292,6 +298,7 @@ fn render_rich_leaves(
         world,
         aerial,
         mesh_textures,
+        land_cover,
         view,
         rich_bounds,
         root,
@@ -333,6 +340,7 @@ struct LeafBuilder<'a> {
     world: &'a World,
     aerial: &'a AerialSource,
     mesh_textures: &'a MeshTextureSource,
+    land_cover: Option<&'a LandCoverMask>,
     root: &'a Path,
     count: u32,
     rendered: &'a AtomicUsize,
@@ -352,7 +360,15 @@ impl LeafBuilder<'_> {
         let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
         let aerial =
             AerialTile::for_source_bounds(self.aerial, self.world.aerial_source_bounds(bounds))?;
-        let image = render_tile(self.world, &aerial, self.mesh_textures, ART_ZOOM, x, y)?;
+        let image = render_tile(
+            self.world,
+            &aerial,
+            self.mesh_textures,
+            self.land_cover,
+            ART_ZOOM,
+            x,
+            y,
+        )?;
         write_atomic(&path, &image)?;
         let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
         if done.is_multiple_of(128) {
@@ -370,6 +386,7 @@ struct RichLeafBuilder<'a> {
     world: &'a World,
     aerial: &'a AerialSource,
     mesh_textures: &'a MeshTextureSource,
+    land_cover: Option<&'a LandCoverMask>,
     view: View,
     rich_bounds: crate::world::Bounds,
     root: &'a Path,
@@ -391,7 +408,14 @@ impl RichLeafBuilder<'_> {
         let bounds = self.rich_bounds.tile(RICH_ART_ZOOM, x, y);
         let source_bounds = self.world.aerial_source_bounds_for(bounds, self.view);
         let aerial = AerialTile::for_source_bounds(self.aerial, source_bounds)?;
-        let image = render_rich_tile(self.world, &aerial, self.mesh_textures, self.view, bounds)?;
+        let image = render_rich_tile(
+            self.world,
+            &aerial,
+            self.mesh_textures,
+            self.land_cover,
+            self.view,
+            bounds,
+        )?;
         write_atomic(&path, &image)?;
         let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
         if done.is_multiple_of(128) {

@@ -21,6 +21,7 @@ import {
   safeRunComponent,
   stopChild,
   validateCitySectorTargets,
+  validateLandCoverDigest,
   validateReleaseZooms,
   validateTileResponseSnapshot,
   writeJsonAtomic,
@@ -74,6 +75,17 @@ test("release evidence requires the canonical zoom matrix", () => {
     () => validateReleaseZooms([3, 4, 5, 7, 10, 9], true),
     /requires canonical zooms/,
   );
+});
+
+test("release evidence requires a lowercase land-cover digest", () => {
+  assert.doesNotThrow(() => validateLandCoverDigest("a".repeat(64), true));
+  assert.doesNotThrow(() => validateLandCoverDigest(undefined, false));
+  for (const invalid of [undefined, "", "a".repeat(63), "A".repeat(64), "g".repeat(64)]) {
+    assert.throws(
+      () => validateLandCoverDigest(invalid, true),
+      /requires a validated land-cover artifact digest/,
+    );
+  }
 });
 
 test("growing response tasks drain through a stable fixed point", async () => {
