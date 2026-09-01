@@ -223,6 +223,17 @@ request. The artifact contains a 16 byte prefix, a JSON header, and one byte per
 sampler uses nearest neighbor lookup and clamps exact outer bounds with the next representable
 floating point value.
 
+The verified 2026-08-31 conversion generation is
+`65148c297d05f70e26246f28312cfbcf24bec9af528cfb41bad3fb7bfeb70918`. Its
+92,563,052 cells contain 51,486,312 unknown, 7,820,368 tree canopy, 9,023,799
+grass or shrub, 789,446 bare earth, 2,388,870 water, 7,482,856 building,
+4,973,515 road or railroad, and 8,597,886 other paved cells. The resulting
+mask SHA-256 is
+`217fdf2e5aeed51b7bbee3f798b1f136b7c016843385bd3af3202ecc22b35643`.
+The complete v48 local rebuild produced 9,214 citywide z8 tiles, every parent
+level, and all 1,024 z5 tiles plus parents for each of the four Center City
+orientations. A second `poe prebuild` confirmed the pyramid was complete.
+
 The Rust prebuilder reads the optional mask with the same strict schema, source,
 grid, payload, and digest checks. A present invalid mask fails closed. Its whole
 artifact SHA-256 is part of the `v48-land-cover` scene and tile identity, so
