@@ -11,7 +11,7 @@
   has a URL, retrieval time, byte count, and SHA-256 checksum.
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
-  `v48-land-cover` identity and the reviewed OSGeo image digest. Keep the land
+  `v49-mesh-coverage` identity and the reviewed OSGeo image digest. Keep the land
   cover source and derived tile pixels local unless written City and PASDA
   publication terms have been recorded.
 - A release does not use LiDAR heights until all 664 selected sources are

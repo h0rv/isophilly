@@ -95,7 +95,7 @@ It disables container networking, gives the container a read-only root, runs
 as the calling user, and limits temporary storage to 256 MB. The repository
 mount provides the reviewed input and explicit output paths. See
 [the data record](docs/DATA.md) for the exact source pin and commands. A mask
-digest is part of the `v48-land-cover` tile identity, so a mask change cannot
+digest is part of the `v49-mesh-coverage` tile identity, so a mask change cannot
 reuse an older pyramid.
 
 After the first ingest, the usual development loop is only:

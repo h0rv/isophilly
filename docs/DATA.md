@@ -236,7 +236,7 @@ orientations. A second `poe prebuild` confirmed the pyramid was complete.
 
 The Rust prebuilder reads the optional mask with the same strict schema, source,
 grid, payload, and digest checks. A present invalid mask fails closed. Its whole
-artifact SHA-256 is part of the `v48-land-cover` scene and tile identity, so
+artifact SHA-256 is part of the `v49-mesh-coverage` scene and tile identity, so
 adding or changing the mask cannot reuse an earlier tile pyramid. Official City
 hydrology takes priority over every raster class. The raster water class uses
 the same stable water treatment outside those polygons. Park treatment applies

@@ -21,7 +21,7 @@ aerial-color vegetation test instead of failing a normal prebuild.
 
 These effects are baked into the tile images by `poe prebuild`. They add no browser timer, network
 request, or repeated repaint. There is no continuous motion, so people who prefer reduced motion see
-the same stable scene. The `v48-land-cover` tile identity includes the exact mask digest. Rebuild the
+the same stable scene. The `v49-mesh-coverage` tile identity includes the exact mask digest. Rebuild the
 tiles after changing the mask or renderer to view the result.
 
 ## Neighborhood names

@@ -7,6 +7,7 @@ const MAGIC: &[u8; 8] = b"GEOPHILY";
 const EPSG: u32 = 32129;
 const MESH_FACE_BYTES: usize = 3 * 5 * size_of::<f32>();
 const MESH_COVERAGE_BUFFER_METERS: f32 = 12.0;
+const MIN_MESH_TO_FOOTPRINT_AREA_RATIO: f32 = 0.25;
 // The 2015 Center City source occupies the base texture namespace. Legacy
 // downtown and stadium meshes start at this boundary and stay out of rich mode.
 pub(crate) const PRIMARY_MESH_TEXTURE_LIMIT: u32 = 1_000_000;
@@ -852,6 +853,8 @@ fn mesh_covers_part(part: &BuildingPart, mesh: &BuildingMesh) -> bool {
 
 fn mesh_covers_ring(ring: &Ring, height: f32, mesh: &BuildingMesh) -> bool {
     mesh.height * 2.0 >= height
+        && ring_area(&mesh.footprint) >= ring_area(ring) * MIN_MESH_TO_FOOTPRINT_AREA_RATIO
+        && (ring.contains(mesh.center) || mesh.footprint.contains(ring.center()))
         && mesh.footprint.squared_distance_to_ring(ring) <= MESH_COVERAGE_BUFFER_METERS.powi(2)
 }
 
@@ -1363,6 +1366,56 @@ mod tests {
             footprint: square(10.0),
             center: (5.0, 5.0),
             highest_point: (5.0, 5.0, 49.0),
+        };
+
+        assert!(!mesh_covers_building(&building, &mesh));
+    }
+
+    #[test]
+    fn small_edge_mesh_does_not_hide_large_convention_center_footprint() {
+        let building = Building {
+            height: 45.7,
+            ring: super::Ring {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 400.0,
+                    max_y: 200.0,
+                },
+                points: vec![(0.0, 0.0), (400.0, 0.0), (400.0, 200.0), (0.0, 200.0)],
+            },
+        };
+        let mesh = BuildingMesh {
+            texture_id: 1,
+            height: 43.9,
+            footprint: square(50.0),
+            center: (25.0, 25.0),
+            highest_point: (25.0, 25.0, 43.9),
+        };
+
+        assert!(!mesh_covers_building(&building, &mesh));
+    }
+
+    #[test]
+    fn nearby_mesh_does_not_hide_an_adjacent_building() {
+        let building = Building {
+            height: 20.0,
+            ring: square(10.0),
+        };
+        let mesh = BuildingMesh {
+            texture_id: 1,
+            height: 20.0,
+            footprint: super::Ring {
+                bounds: Bounds {
+                    min_x: 12.0,
+                    min_y: 0.0,
+                    max_x: 22.0,
+                    max_y: 10.0,
+                },
+                points: vec![(12.0, 0.0), (22.0, 0.0), (22.0, 10.0), (12.0, 10.0)],
+            },
+            center: (17.0, 5.0),
+            highest_point: (17.0, 5.0, 20.0),
         };
 
         assert!(!mesh_covers_building(&building, &mesh));
