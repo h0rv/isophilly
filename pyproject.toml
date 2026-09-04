@@ -73,6 +73,9 @@ visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", 
 static-export = { cmd = "python scripts/export_static.py", use_exec = true }
 static-preview = { cmd = "bash -lc 'poe static-export && npx wrangler dev'", use_exec = true }
 static-dry-run = { cmd = "bash -lc 'poe static-export && npx wrangler deploy --dry-run'", use_exec = true }
+build = { cmd = "python scripts/export_static.py", use_exec = true }
+deploy-check = { cmd = "bash -lc 'poe build && npx wrangler deploy --dry-run'", use_exec = true }
+deploy = { cmd = "bash -lc 'poe build && npx wrangler deploy'", use_exec = true }
 
 [tool.poe.executor]
 type = "simple"

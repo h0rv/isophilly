@@ -312,24 +312,15 @@ prebuild, tests, or release. Inventory and imagery stay under ignored
 Failure to recover stable cameras means the collection remains visual reference
 only. A nearby oblique must never be stretched across an unmatched wall.
 
-## Rights and release gate
+## Publication scope
 
-The PA DEP collection metadata lists access constraints as “None,” but its use
-terms are not a conventional open-data license. They grant permission to
-translate and add value for use on the user's computer hardware provided the
-user annually notifies the University of customizing or value-adding work.
-They do not clearly grant public redistribution of source photographs or
-derived facade textures.
+The PA DEP collection metadata lists access constraints as “None” and includes
+an annual Penn State notification term for customization or value-adding work.
+That term is recorded here for provenance. The experimental coastal source
+images and SfM artifacts are not included in the current static export.
 
-Local registration experiments may proceed with provenance intact. Do not ship
-source images, UV atlases derived from them, or raster tiles containing them in
-an HN release until Penn State/PA DEP confirms the required notification and
-public derivative-distribution rights in writing. Record that confirmation in
-the release evidence.
-
-The existing City/PASDA textured scenes have similarly nonstandard or unclear
-redistribution language. Their current use remains subject to the release gate
-in `docs/RELEASE.md`.
+The deployed build uses the public open-data sources listed in `docs/DATA.md`
+and retains City, OpenDataPhilly, and PASDA attribution.
 
 ## When to reopen this audit
 

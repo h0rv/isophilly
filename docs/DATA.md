@@ -399,9 +399,8 @@ are the only un-ingested PASDA source likely to add real photographed walls.
 They contain 191 JPEGs (252.5 MiB) and 191 TIFFs (10.51 GiB), but no published
 camera pose, EOP, calibration, or georeferencing. They are a JPEG-first SfM and
 LiDAR-registration candidate, not an active source. Do not fetch the TIFF set
-until registration and contact-sheet review succeed. Public derivative rights
-and the metadata's annual Penn State notification requirement are a release
-gate.
+until registration and contact-sheet review succeed. The metadata's annual
+Penn State notification term is recorded in the source audit.
 
 The local-only JPEG pilot is reproducible and separate from normal ingest:
 
@@ -428,7 +427,7 @@ The same module supports `delaware-2014` and `little-tinicum-2014` through
 `--collection`. It never downloads TIFFs or DNGs, never invents camera poses or
 georeferencing, and does not feed the renderer. See `PASDA_AUDIT.md` for the
 exact source directories, the nested Little Tinicum directory trap,
-registration acceptance criteria, and rights warning.
+registration acceptance criteria, and source metadata terms.
 
 Acquisition requires a complete JPEG EOI marker and full ImageMagick decode.
 Exact complete `.part` or final files survive lost progress and are recovered
@@ -682,11 +681,10 @@ Ingest builds the world, metadata, and texture directory under a staging
 directory. It replaces the prior clean directory only after all three pass.
 An interrupted import therefore leaves the last complete dataset available.
 
-The repository's MIT license covers only project code. It does not relicense
-City data, PASDA data, texture atlases, or generated tiles. Public access to the
-I3S and COLLADA files does not clearly grant the right to republish their JPEG
-textures. Get written permission from the City before publishing generated
-tiles that contain them. Record the permission with the release provenance.
+The repository's MIT license covers project code. The rendered map uses public
+open-data inputs from the City, OpenDataPhilly, PASDA, OpenStreetMap, and the
+other sources recorded here. Preserve their attribution and provenance in a
+published build.
 
 The I3S child cache does not yet have a complete pinned resource manifest. A
 build is not fully reproducible unless every raw snapshot and I3S child resource

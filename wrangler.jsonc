@@ -5,5 +5,11 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "none"
-  }
+  },
+  "routes": [
+    {
+      "pattern": "isophilly.horv.co",
+      "custom_domain": true
+    }
+  ]
 }

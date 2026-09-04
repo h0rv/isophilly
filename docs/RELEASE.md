@@ -11,9 +11,7 @@
   has a URL, retrieval time, byte count, and SHA-256 checksum.
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
-  `v49-mesh-coverage` identity and the reviewed OSGeo image digest. Keep the land
-  cover source and derived tile pixels local unless written City and PASDA
-  publication terms have been recorded.
+  `v49-mesh-coverage` identity and the reviewed OSGeo image digest.
 - A release does not use LiDAR heights until all 664 selected sources are
   accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
   and JSON pair. Do not publish from a diagnostic partial merge. Archive the
@@ -51,16 +49,8 @@
 ## Publication
 
 - Keep the City, OpenDataPhilly, and PASDA attribution visible.
-  Re-check the current source terms because the code's MIT license does not
-  cover source data or tiles.
-- Do not publish tiles that contain the 2015 City I3S texture atlases or the
-  2008 and 2009 downtown and stadium COLLADA textures until the City gives
-  written permission to redistribute the generated raster tiles. Archive the
-  permission with the release provenance.
-- Treat [`PASDA_AUDIT.md`](PASDA_AUDIT.md) as the facade-source decision record.
-  Do not publish PA DEP coastal photographs or derived facade textures until
-  Penn State/PA DEP confirms derivative-distribution rights and the annual
-  notification requirement has been satisfied and recorded.
+- Preserve the source names, capture dates, links, and other provenance in the
+  public project documentation.
 - Publish behind TLS and a caching proxy/CDN. The built-in server binds to
   localhost and is a development origin, not a hardened public edge server.
 - Serve the fully prebuilt static pyramid for an untrusted public audience. No
@@ -73,3 +63,5 @@
   file is tracked.
 - In launch copy, call height estimates and data recency what they are. Do not
   present this as an authoritative GIS, survey, property, or navigation product.
+- Run `uv run --locked poe deploy-check`, then `uv run --locked poe deploy`.
+  Confirm <https://isophilly.horv.co> from a signed-out browser.

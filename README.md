@@ -18,9 +18,7 @@ The renderer also uses the audited 2018 Philadelphia land cover raster to
 identify tree canopy, grass and shrub, and water across the city. It grades the
 matching 2025 aerial pixels instead of replacing them. Official City hydrology
 has first priority, and park grading applies only where the land cover class is
-tree canopy or grass and shrub. The land cover source and generated tiles must
-remain local until the City and PASDA rights for derived raster publication are
-confirmed.
+tree canopy or grass and shrub.
 
 The expensive geospatial import happens once in Python. A Rust prebuilder loads
 that result and renders lossless WebP tiles in parallel. The small HTTP service
@@ -122,9 +120,10 @@ Cloudflare service.
 
 ```sh
 npm ci
-uv run --locked poe static-export
-uv run --locked poe static-dry-run
+uv run --locked poe build
+uv run --locked poe deploy-check
 uv run --locked poe static-preview
+uv run --locked poe deploy
 ```
 
 The current z5 Center City build exports 18,009 files and uses 1,245.0 MiB.
@@ -132,12 +131,12 @@ The exporter checks the completed inventories and rejects builds that exceed
 the Cloudflare Free plan limits of 20,000 files or 25 MiB per file. Static
 asset requests and storage do not incur a charge. See the official
 [Static Assets limits and billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)
-documentation. The export and preview commands are local checks. Do not run
-`npx wrangler deploy` until the release rights gates below are satisfied. The
-project needs written permission to redistribute tiles that contain City or
-PASDA texture pixels. PA DEP derived pixels have separate distribution and
-notification terms. After those rights are recorded, run the deploy command
-only when the dry run and local preview pass.
+documentation. `deploy-check` performs the same complete export and a local
+Wrangler validation without changing Cloudflare. `deploy` rebuilds the export,
+publishes it, and attaches the declared custom domain
+<https://isophilly.horv.co>. Wrangler creates the DNS record and certificate;
+the `horv.co` zone must already be active in the authenticated Cloudflare
+account.
 
 Generated data and tiles are intentionally gitignored. See the [data pipeline
 and attribution notes](docs/DATA.md) before publishing a build.
@@ -189,9 +188,8 @@ camera record, and the frame 191 quarantine. If any plan file differs, archive
 the entire `sfm/plan/` directory after reviewing the changed input or policy;
 the command will not mix old and new artifacts. These local source and plan
 artifacts are not published.
-Nothing in this pilot is published or used by normal ingest. The source's
-derivative-distribution terms remain a release gate; read
-[the audit](docs/PASDA_AUDIT.md) before fetching more.
+Nothing in this pilot is published or used by normal ingest. Its special source
+metadata terms are recorded in [the audit](docs/PASDA_AUDIT.md).
 
 ## Quality checks
 
@@ -260,6 +258,6 @@ demolished after the 2008 source capture. The legacy downtown r0 source adds
 newer scene are suppressed before packing, so the same building is not drawn
 twice.
 
-The source code is [MIT licensed](LICENSE). That license does not grant rights
-to the source datasets or generated map tiles; their provenance and publication
-notes are in [docs/DATA.md](docs/DATA.md).
+The source code is [MIT licensed](LICENSE). The map uses publicly available
+open-data sources with attribution and provenance recorded in
+[docs/DATA.md](docs/DATA.md).

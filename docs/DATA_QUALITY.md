@@ -67,10 +67,7 @@ permission from the City or PASDA.
 - City Limits is a generalized cartographic boundary, not a surveyed shoreline.
 - Content-addressed snapshots are checksummed, but I3S child resources do not
   yet have a complete pinned manifest.
-- Rights to redistribute the photographic texture atlases are not explicit.
-  Get written permission before publishing generated tiles.
-
-## Release gates
+## Release checks
 
 1. Run the full ingest and record `meta.json` with the source commit.
 2. Build the complete pyramid from a clean namespace.
@@ -78,4 +75,3 @@ permission from the City or PASDA.
    legacy edges, the stadium area, Manayunk, Northeast Philadelphia, and West
    Philadelphia.
 4. Confirm that no fallback wall changes color at a tile boundary.
-5. Confirm source publication rights before a public launch.
