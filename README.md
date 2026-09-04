@@ -9,10 +9,9 @@ building footprints and heights, the official 2015 Center City textured 3D
 scene, the legacy 2008/09 downtown and stadium-area textured models, and 2025
 City aerial photography. The official 2025 Philadelphia Parks & Recreation
 tree inventory adds depth-tested street-tree points across the city. The launch
-view stays inside the strongest Center City source and offers four prebuilt
-90-degree orientations. A toggle opens the
-citywide illustrated overview without implying that its aerial-derived walls
-are photographed facades.
+view is the vivid citywide illustrated scene. Center City benefits from the
+strongest photographed geometry available, while walls outside photographed
+coverage remain procedural rather than claimed as photographed facades.
 
 The renderer also uses the audited 2018 Philadelphia land cover raster to
 identify tree canopy, grass and shrub, and water across the city. It grades the
@@ -69,13 +68,11 @@ The server reads the finished citywide and Center City pyramids from
 view levels, the browser magnifies the canonical pixels with nearest-neighbor
 sampling.
 
-Center City has four separate z0 through z5 pyramids. At z5, one output pixel
-covers about 0.7 metre and uses one aerial sample. The 2015 textured meshes
-remain the first choice. City footprints and OpenStreetMap parts fill the space
-around them. Their roofs sample aerial imagery, and their walls are procedural.
-The browser permits one additional nearest-neighbor zoom level and caps there.
-Rotation switches immutable pyramids. It does not reproject raster tiles in the
-browser or claim continuous 360-degree motion.
+The build still retains four separate Center City z0 through z5 pyramids as
+derived artifacts, but the public viewer presents one consistent citywide
+scene. In that scene, the 2015 textured meshes remain the first choice. City
+footprints and OpenStreetMap parts fill the space around them. Their roofs
+sample aerial imagery, and their walls are procedural.
 
 Aerial crops come from the native three-inch 2025 PASDA service. The renderer
 divides EPSG:32129 into fixed 1,536 metre cells, and each cell contains 2,048 by 2,048
@@ -93,7 +90,7 @@ It disables container networking, gives the container a read-only root, runs
 as the calling user, and limits temporary storage to 256 MB. The repository
 mount provides the reviewed input and explicit output paths. See
 [the data record](docs/DATA.md) for the exact source pin and commands. A mask
-digest is part of the `v49-mesh-coverage` tile identity, so a mask change cannot
+digest is part of the `v50-citywide-polish` tile identity, so a mask change cannot
 reuse an older pyramid.
 
 After the first ingest, the usual development loop is only:
@@ -200,9 +197,10 @@ uv run --locked poe visual
 ```
 
 The visual task is the repeatable browser release gate. It starts the local
-server, captures the citywide audit views plus all four Center City
-orientations, verifies Rocky in every orientation, exercises rotation and
-keyboard navigation at a 390-pixel mobile viewport, checks tile settlement and
+server, captures City Hall, Rocky, the Reading Terminal and Convention Center
+vicinity, neighborhood overlays, and permanent outer-city sectors in the
+citywide scene. It exercises landmark shortcuts, keyboard navigation, and
+overlay controls at a 390-pixel mobile viewport, checks tile settlement and
 response policy, rejects a rebuilt scene unless it has exactly 151,371 packed
 trees, and writes screenshots plus a JSON timing report under
 `artifacts/visual/`.

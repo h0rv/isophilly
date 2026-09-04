@@ -138,7 +138,6 @@ let serverOutput = "";
 let serverSpawnError;
 let browser;
 let tileZoomLimit = 0;
-let richTileZoomLimit = 0;
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
 });
@@ -479,7 +478,7 @@ async function waitForServer(expectedTileVersion) {
 /**
  * @param {import("playwright-core").Page} page
  * @param {number} zoom
- * @param {{ name: string, center?: [number, number], mode?: "city" | "detailed", orientation?: "se" | "sw" | "nw" | "ne", planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string, expectedLandmark?: string, sector?: string }} view
+ * @param {{ name: string, center?: [number, number], planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string, expectedLandmark?: string, sector?: string }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
   const started = performance.now();
@@ -515,8 +514,6 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   };
   page.on("response", onResponse);
   const parameters = new URLSearchParams({ z: String(zoom), time: VISUAL_TIME });
-  if (view.mode !== "detailed") parameters.set("mode", "city");
-  else parameters.set("view", view.orientation ?? "se");
   if (view.center !== undefined) {
     parameters.set("cx", String(view.center[0]));
     parameters.set("cy", String(view.center[1]));
@@ -622,6 +619,11 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
   }
+  if (canvas.mode !== "city" || canvas.view !== "city") {
+    throw new Error(
+      `${view.name} did not use the public citywide scene: ${JSON.stringify(canvas)}`,
+    );
+  }
   if (view.planningAreas === true && canvas.planningAreas.length === 0) {
     throw new Error(`${view.name} did not paint planning boundaries`);
   }
@@ -658,10 +660,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   ) {
     throw new Error(`z${zoom} has a non-WebP or non-immutable tile response`);
   }
-  const expectedTileZoom = Math.min(
-    zoom,
-    view.mode === "detailed" ? richTileZoomLimit : tileZoomLimit,
-  );
+  const expectedTileZoom = Math.min(zoom, tileZoomLimit);
   if (canvas.tileZoom !== expectedTileZoom) {
     throw new Error(
       `z${zoom} used tile z${canvas.tileZoom}; expected canonical z${expectedTileZoom}`,
@@ -697,7 +696,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
  */
 async function interactions(browser, meta) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  await page.goto(`${origin}/?z=5&view=se&time=${encodeURIComponent(VISUAL_TIME)}`, {
+  await page.goto(`${origin}/?z=5&time=${encodeURIComponent(VISUAL_TIME)}`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
@@ -732,11 +731,6 @@ async function interactions(browser, meta) {
     () => document.documentElement.scrollWidth > window.innerWidth,
   );
   if (horizontalOverflow) throw new Error("mobile controls overflow the viewport");
-  await page.locator("#rotate-right").click();
-  await page.waitForSelector('canvas[data-mode="detailed"][data-view="sw"]');
-  await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
-    timeout: tileTimeout,
-  });
   const canvas = page.locator("#map");
   await canvas.focus();
   const cameraBefore = Number(await canvas.getAttribute("data-camera-x"));
@@ -748,13 +742,36 @@ async function interactions(browser, meta) {
   const cameraAfter = Number(await canvas.getAttribute("data-camera-x"));
   if (!(cameraAfter > cameraBefore)) throw new Error("keyboard pan did not move the camera");
   await canvas.focus();
+  await page.keyboard.press("r");
+  await page.waitForFunction(
+    () => {
+      const map = document.querySelector("#map");
+      const landmarks = JSON.parse(map?.getAttribute("data-landmarks") ?? "[]");
+      return map?.getAttribute("data-pending") === "0" && landmarks.includes("Rocky");
+    },
+    null,
+    { timeout: tileTimeout },
+  );
+  await canvas.focus();
   await page.keyboard.press("0");
+  const hall = /** @type {number[]} */ (meta.city_hall);
+  await page.waitForFunction(
+    ([x, y]) => {
+      const map = document.querySelector("#map");
+      return (
+        Number(map?.getAttribute("data-camera-x")) === x &&
+        Number(map?.getAttribute("data-camera-y")) === y
+      );
+    },
+    hall,
+    { timeout: tileTimeout },
+  );
   await page.locator("details").evaluate((element) => {
     element.open = true;
   });
   const screenshot = await screenshotEvidence(page, "mobile.png");
 
-  await page.goto(`${origin}/?mode=city&z=8&time=${encodeURIComponent(VISUAL_TIME)}`, {
+  await page.goto(`${origin}/?z=8&time=${encodeURIComponent(VISUAL_TIME)}`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
@@ -812,9 +829,10 @@ async function interactions(browser, meta) {
     viewport: [390, 844],
     controls,
     keyboardPan: true,
+    rockyShortcut: true,
+    cityHallShortcut: true,
     independentAreaToggles: true,
-    defaultMode: "detailed",
-    rotatedTo: "sw",
+    defaultMode: "city",
     prefetchedPanMs: Number(prefetchedPanMs.toFixed(1)),
     rocky: true,
     screenshot,
@@ -892,12 +910,8 @@ try {
   }
   const meta = await waitForServer(activeScene.tile_version);
   tileZoomLimit = meta.max_tile_zoom;
-  richTileZoomLimit = meta.rich?.max_tile_zoom;
   if (!Number.isInteger(tileZoomLimit) || tileZoomLimit < 0 || tileZoomLimit > meta.max_zoom) {
     throw new Error(`server has an invalid tile zoom limit: ${JSON.stringify(meta)}`);
-  }
-  if (!Number.isInteger(richTileZoomLimit) || richTileZoomLimit < 0) {
-    throw new Error(`server has an invalid rich tile zoom limit: ${JSON.stringify(meta.rich)}`);
   }
   if (!Number.isInteger(meta.counts?.buildings) || meta.counts.buildings < 1) {
     throw new Error(`server has no fallback buildings: ${JSON.stringify(meta.counts)}`);
@@ -912,16 +926,8 @@ try {
     throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
   }
   if (!Array.isArray(meta.landmarks)) throw new Error("server has no landmarks");
-  if (
-    !Array.isArray(meta.rich?.views) ||
-    meta.rich.views.length !== 4 ||
-    meta.rich.views.some(
-      (view) =>
-        !Array.isArray(view.landmarks) ||
-        !view.landmarks.some((landmark) => landmark.name === "Rocky"),
-    )
-  ) {
-    throw new Error("every detailed orientation must include Rocky");
+  if (!meta.landmarks.some((landmark) => landmark.name === "Rocky")) {
+    throw new Error("citywide landmarks must include Rocky");
   }
   const rendering = await profile(meta);
   browser = await chromium.launch({
@@ -938,31 +944,6 @@ try {
     results.push(await capture(page, zoom));
     await page.close();
   }
-  for (const orientation of ["se", "sw", "nw", "ne"]) {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    results.push(
-      await capture(page, 5, {
-        name: `center-city-${orientation}`,
-        mode: "detailed",
-        orientation,
-      }),
-    );
-    await page.close();
-    const richView = meta.rich.views.find((view) => view.id === orientation);
-    const richRocky = richView?.landmarks.find((landmark) => landmark.name === "Rocky");
-    if (richRocky === undefined) throw new Error(`${orientation} detailed view is missing Rocky`);
-    const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    results.push(
-      await capture(rockyPage, 5, {
-        name: `center-city-rocky-${orientation}`,
-        mode: "detailed",
-        orientation,
-        center: richRocky.point,
-        expectedLandmark: "Rocky",
-      }),
-    );
-    await rockyPage.close();
-  }
   if (secondaryEnabled) {
     const hall = /** @type {number[]} */ (meta.city_hall);
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
@@ -978,7 +959,13 @@ try {
     );
     if (rocky === undefined) throw new Error("Rocky landmark is missing");
     const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    results.push(await capture(rockyPage, 8, { name: "rocky", center: rocky.point }));
+    results.push(
+      await capture(rockyPage, 10, {
+        name: "rocky",
+        center: rocky.point,
+        expectedLandmark: "Rocky",
+      }),
+    );
     await rockyPage.close();
     const neighborhoods = [
       { name: "rittenhouse", center: [985167.68, 310418.65] },

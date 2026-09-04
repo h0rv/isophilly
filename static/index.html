@@ -12,8 +12,7 @@
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #d9d1c3; }
-    canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
-    canvas.vivid { filter: saturate(1.14) contrast(1.04); }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; filter: saturate(1.14) contrast(1.04); }
     canvas.dragging { cursor: grabbing; }
     canvas:focus-visible { outline: 3px solid #b8754f; outline-offset: -3px; }
     header { position: fixed; z-index: 1; background: #191714ed; color: #f6f0e6; backdrop-filter: blur(12px); }
@@ -39,7 +38,7 @@
     @media (max-width: 620px) {
       header { top: .4rem; left: .4rem; right: .4rem; gap: .35rem; padding: .35rem .4rem .35rem .65rem; }
       h1 { font-size: .95rem; }
-      #status, #sun-state, #color-toggle, #zoom-out, #zoom-in, #home, #rocky { display: none; }
+      #status, #sun-state, #zoom-out, #zoom-in, #home, #rocky { display: none; }
       #neighborhoods-toggle, #local-areas-toggle { font-size: 0; padding: .25rem; }
       #neighborhoods-toggle::after { content: "N"; font-size: .78rem; }
       #local-areas-toggle::after { content: "Local"; font-size: .72rem; }
@@ -61,10 +60,6 @@
     <nav class="controls" aria-label="Map controls">
       <button id="neighborhoods-toggle" aria-pressed="false" title="Loading planning neighborhood boundaries" disabled>Neighborhoods</button>
       <button id="local-areas-toggle" aria-pressed="false" title="Loading local cultural and commercial areas" disabled>Local areas</button>
-      <button id="color-toggle" aria-pressed="true" title="Toggle richer map colors">Vivid</button>
-      <button id="rich-toggle" aria-pressed="true" title="Toggle the fully textured Center City scene">Center City</button>
-      <button id="rotate-left" aria-label="Rotate view 90 degrees left" title="Rotate 90° left">↶</button>
-      <button id="rotate-right" aria-label="Rotate view 90 degrees right" title="Rotate 90° right">↷</button>
       <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
       <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
       <button id="home">City Hall</button>
@@ -78,8 +73,8 @@
         <div>Wheel, pinch, or use + and − to zoom.</div>
         <div>Press 0 to return to City Hall.</div>
         <div>Press R or choose Rocky to visit the Philadelphia Museum of Art steps.</div>
-        <div>Center City opens by default with four prebuilt 90° views. Toggle it off for the citywide illustrated overview.</div>
-        <div>Rocky is marked on the Philadelphia Museum of Art steps in every Center City view.</div>
+        <div>The citywide illustrated view combines aerial photography, building geometry, and open city data.</div>
+        <div>Rocky is marked on the Philadelphia Museum of Art steps.</div>
         <div>Neighborhoods shows the Planning Commission's general boundaries. Local areas separately highlights selected cultural and commercial districts at useful close zooms.</div>
         <div>Inventoried 2025 street trees are rendered from trunk locations; crown sizes are illustrative.</div>
         <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">planning neighborhoods: Philadelphia City Planning Commission</a></div>
@@ -90,8 +85,8 @@
       </div>
     </details>
   </header>
-  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Use the rotate controls for four Center City views. Press zero for City Hall or R for Rocky at the Philadelphia Museum of Art.</p>
-  <canvas id="map" class="vivid" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
+  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press zero for City Hall or R for Rocky at the Philadelphia Museum of Art.</p>
+  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>
   <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a> · <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></footer>

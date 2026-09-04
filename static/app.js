@@ -31,10 +31,6 @@ const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
 const localAreasElement = document.querySelector("#local-areas-toggle");
-const colorElement = document.querySelector("#color-toggle");
-const richElement = document.querySelector("#rich-toggle");
-const rotateLeftElement = document.querySelector("#rotate-left");
-const rotateRightElement = document.querySelector("#rotate-right");
 const orientationElement = document.querySelector("#orientation");
 const sunElement = document.querySelector("#sun-state");
 if (
@@ -47,10 +43,6 @@ if (
   !(retryElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
   !(localAreasElement instanceof HTMLButtonElement) ||
-  !(colorElement instanceof HTMLButtonElement) ||
-  !(richElement instanceof HTMLButtonElement) ||
-  !(rotateLeftElement instanceof HTMLButtonElement) ||
-  !(rotateRightElement instanceof HTMLButtonElement) ||
   !(orientationElement instanceof HTMLSpanElement) ||
   !(sunElement instanceof HTMLSpanElement)
 ) {
@@ -65,10 +57,6 @@ const zoomOut = zoomOutElement;
 const retry = retryElement;
 const neighborhoodsToggle = neighborhoodsElement;
 const localAreasToggle = localAreasElement;
-const colorToggle = colorElement;
-const richToggle = richElement;
-const rotateLeft = rotateLeftElement;
-const rotateRight = rotateRightElement;
 const orientation = orientationElement;
 const sunState = sunElement;
 const context = canvas.getContext("2d");
@@ -97,9 +85,7 @@ let neighborhoodData;
 const areaProjectionCache = new WeakMap();
 let showNeighborhoods = false;
 let showLocalAreas = false;
-let vividColors = true;
-let richMode = true;
-let richViewIndex = 0;
+const richMode = false;
 /** @type {Map<string, HTMLImageElement>} */
 const tiles = new Map();
 /** @type {Map<string, { attempts: number, retryAt: number, terminal: boolean }>} */
@@ -123,7 +109,7 @@ function city() {
 
 /** @returns {RichView | undefined} */
 function richView() {
-  return richMode ? city().rich.views[richViewIndex] : undefined;
+  return undefined;
 }
 
 /** @returns {[number, number, number, number]} */
@@ -849,46 +835,10 @@ localAreasToggle.addEventListener("click", () => {
   localAreasToggle.setAttribute("aria-pressed", String(showLocalAreas));
   draw();
 });
-colorToggle.addEventListener("click", () => {
-  vividColors = !vividColors;
-  canvas.classList.toggle("vivid", vividColors);
-  colorToggle.setAttribute("aria-pressed", String(vividColors));
-  draw();
-});
-richToggle.addEventListener("click", () => void setRichMode(!richMode));
-rotateLeft.addEventListener("click", () => void rotateRich(-1));
-rotateRight.addEventListener("click", () => void rotateRich(1));
-
-/** @param {boolean} enabled */
-async function setRichMode(enabled) {
-  if (meta === undefined || enabled === richMode) return;
-  richMode = enabled;
-  richToggle.setAttribute("aria-pressed", String(enabled));
-  rotateLeft.hidden = !enabled;
-  rotateRight.hidden = !enabled;
-  neighborhoodsToggle.disabled = enabled;
-  localAreasToggle.disabled = enabled;
-  syncSceneUrl();
-  await activateScene();
-}
-
-/** @param {number} direction */
-async function rotateRich(direction) {
-  if (!richMode || meta === undefined) return;
-  richViewIndex = (richViewIndex + direction + city().rich.views.length) % city().rich.views.length;
-  syncSceneUrl();
-  await activateScene();
-}
-
-function syncSceneUrl() {
+function normalizeSceneUrl() {
   const url = new URL(location.href);
-  if (richMode) {
-    url.searchParams.delete("mode");
-    url.searchParams.set("view", richView()?.id ?? "se");
-  } else {
-    url.searchParams.set("mode", "city");
-    url.searchParams.delete("view");
-  }
+  url.searchParams.delete("mode");
+  url.searchParams.delete("view");
   history.replaceState(null, "", url);
 }
 
@@ -900,9 +850,7 @@ async function activateScene(initial = false) {
   scheduledPrefetch = undefined;
   failures.clear();
   const view = richView();
-  const arrows = ["↗", "↘", "↙", "↖"];
-  orientation.textContent =
-    view === undefined ? "↗ N" : `${arrows[richViewIndex]} N · ${view.label}`;
+  orientation.textContent = "↗ N";
   statusText.textContent =
     view === undefined ? "loading city…" : `loading ${view.label.toLowerCase()} view…`;
   const url = view === undefined ? "/coverage.json" : `/rich/${view.id}/coverage.json`;
@@ -961,14 +909,7 @@ async function loadMeta() {
     const loaded = await response.json();
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
     meta = loaded;
-    const parameters = new URLSearchParams(location.search);
-    richMode = parameters.get("mode") !== "city";
-    const requestedView = parameters.get("view");
-    const requestedIndex = loaded.rich.views.findIndex((view) => view.id === requestedView);
-    richViewIndex = requestedIndex < 0 ? 0 : requestedIndex;
-    richToggle.setAttribute("aria-pressed", String(richMode));
-    rotateLeft.hidden = !richMode;
-    rotateRight.hidden = !richMode;
+    normalizeSceneUrl();
     neighborhoodsToggle.disabled = richMode;
     localAreasToggle.disabled = richMode;
     resize();

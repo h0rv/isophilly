@@ -39,22 +39,25 @@ canvases, invalid response policy, unsettled views, and regressions in the
 fixed z8 tile-detail metrics.
 
 The secondary matrix derives its centers from the checked-in neighborhood data.
-It covers representative Center City, River Wards, Northwest, West, far
-Northeast, North, Southwest, lower South, and stadium views. Cultural-area
-checks include Italian Market, East Passyunk, Manayunk, Africatown, Reading
-Terminal, and Fishtown. Planning-neighborhood and cultural-area controls are
-tested independently, with a fixed cap on duplicate or excessive labels.
+It covers City Hall, Rocky on the PMA steps, the Reading Terminal and
+Convention Center vicinity, River Wards, Northwest, West, far Northeast,
+North, Southwest, lower South, and stadium views in the public citywide scene.
+Cultural-area checks include Italian Market, East Passyunk, Manayunk,
+Africatown, Reading Terminal, and Fishtown. Planning-neighborhood and
+cultural-area controls are tested independently, with a fixed cap on duplicate
+or excessive labels.
 
-All four Center City orientations are captured twice: once at their normal
-focus and once centered on that orientation's Rocky coordinate. The canvas
-records which landmarks it actually painted, so a Rocky capture fails if the
-figure is missing or outside the viewport. This verifies rendering of the
-configured PMA-steps landmark; changes to the landmark's underlying geographic
-coordinate still require review.
+The dedicated Rocky capture requires the canvas to report that it painted the
+landmark. The mobile interaction pass exercises both the Rocky and City Hall
+keyboard shortcuts and verifies that City Hall restores the exact configured
+camera center. This verifies rendering and navigation to the configured
+PMA-steps landmark; changes to its underlying geographic coordinate still
+require review.
 
 The check also records photographed-building coverage and fixed city-tile seam,
-blankness, and detail metrics. Center City mesh-boundary quality is still a
-human screenshot review; there is not yet a dedicated mesh-edge pixel baseline.
+blankness, and detail metrics. Downtown mesh-boundary and Convention Center
+geometry quality still require human review of the citywide screenshots; there
+is not yet a dedicated mesh-edge pixel baseline.
 
 ## Evidence layout
 

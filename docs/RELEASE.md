@@ -11,7 +11,7 @@
   has a URL, retrieval time, byte count, and SHA-256 checksum.
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
-  `v49-mesh-coverage` identity and the reviewed OSGeo image digest.
+  `v50-citywide-polish` identity and the reviewed OSGeo image digest.
 - A release does not use LiDAR heights until all 664 selected sources are
   accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
   and JSON pair. Do not publish from a diagnostic partial merge. Archive the
@@ -23,9 +23,9 @@
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
   change.
-- Confirm that all four Center City pyramids include z0 through z5. The full
-  current static export contains 18,009 files and uses 1,245.0 MiB. The
-  exporter must keep the actual count below 20,000.
+- Confirm that the full static export contains the citywide pyramid and stays
+  below the host's 20,000-file limit. The current export contains 18,009 files
+  and uses 1,245.0 MiB.
 
 ## Visual smoke test
 
@@ -41,10 +41,11 @@
 - Run the visual check at City Hall and across the permanent neighborhood views
   so both official mesh and citywide footprint paths are tested. Confirm that
   the City and PASDA attribution remains present when the info panel is closed.
-- Rotate through all four Center City views and inspect the boundary of the
-  2015 mesh. Confirm that footprint and OpenStreetMap fallback buildings fill
-  surrounding gaps, share correct depth with textured buildings, and keep
-  their procedural walls visually distinct from photographed facades.
+- Inspect Rocky on the PMA steps and the Reading Terminal and Convention Center
+  vicinity in the citywide captures. Check the boundary of the 2015 mesh and
+  confirm that footprint and OpenStreetMap fallback buildings fill surrounding
+  gaps, share correct depth with textured buildings, and keep their procedural
+  walls visually distinct from photographed facades.
 
 ## Publication
 

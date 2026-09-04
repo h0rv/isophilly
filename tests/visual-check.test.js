@@ -27,6 +27,23 @@ import {
   writeJsonAtomic,
 } from "../scripts/visual-check-lib.mjs";
 
+test("the public UI always opens the vivid citywide scene", async () => {
+  const index = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const app = await readFile(new URL("../static/app.js", import.meta.url), "utf8");
+  const visualCheck = await readFile(
+    new URL("../scripts/visual-check.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(index, /id="(?:color|rich)-toggle"/);
+  assert.doesNotMatch(index, /id="rotate-(?:left|right)"/);
+  assert.match(index, /canvas \{[^}]*filter: saturate\(1\.14\) contrast\(1\.04\)/);
+  assert.match(app, /const richMode = false;/);
+  assert.doesNotMatch(app, /parameters\.get\("mode"\)|parameters\.get\("view"\)/);
+  assert.doesNotMatch(visualCheck, /#rotate-(?:left|right)|mode: "detailed"/);
+  assert.match(visualCheck, /defaultMode: "city"/);
+});
+
 test("integer settings use the fallback and reject ambiguous input", () => {
   assert.equal(integerSetting(undefined, 3107, "PORT", 1, 65_535), 3107);
   assert.equal(integerSetting("3108", 3107, "PORT", 1, 65_535), 3108);

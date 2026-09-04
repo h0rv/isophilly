@@ -8,6 +8,11 @@ const EPSG: u32 = 32129;
 const MESH_FACE_BYTES: usize = 3 * 5 * size_of::<f32>();
 const MESH_COVERAGE_BUFFER_METERS: f32 = 12.0;
 const MIN_MESH_TO_FOOTPRINT_AREA_RATIO: f32 = 0.25;
+// A single mesh can legitimately represent one tower on a shared small footprint,
+// but large campus footprints need nearly complete mesh coverage before their
+// current citywide extrusion can be hidden.
+const LARGE_BUILDING_AREA_SQUARE_METERS: f32 = 50_000.0;
+const MIN_LARGE_MESH_TO_FOOTPRINT_AREA_RATIO: f32 = 0.8;
 // The 2015 Center City source occupies the base texture namespace. Legacy
 // downtown and stadium meshes start at this boundary and stay out of rich mode.
 pub(crate) const PRIMARY_MESH_TEXTURE_LIMIT: u32 = 1_000_000;
@@ -852,8 +857,14 @@ fn mesh_covers_part(part: &BuildingPart, mesh: &BuildingMesh) -> bool {
 }
 
 fn mesh_covers_ring(ring: &Ring, height: f32, mesh: &BuildingMesh) -> bool {
+    let footprint_area = ring_area(ring);
+    let minimum_area_ratio = if footprint_area >= LARGE_BUILDING_AREA_SQUARE_METERS {
+        MIN_LARGE_MESH_TO_FOOTPRINT_AREA_RATIO
+    } else {
+        MIN_MESH_TO_FOOTPRINT_AREA_RATIO
+    };
     mesh.height * 2.0 >= height
-        && ring_area(&mesh.footprint) >= ring_area(ring) * MIN_MESH_TO_FOOTPRINT_AREA_RATIO
+        && ring_area(&mesh.footprint) >= footprint_area * minimum_area_ratio
         && (ring.contains(mesh.center) || mesh.footprint.contains(ring.center()))
         && mesh.footprint.squared_distance_to_ring(ring) <= MESH_COVERAGE_BUFFER_METERS.powi(2)
 }
@@ -1394,6 +1405,72 @@ mod tests {
         };
 
         assert!(!mesh_covers_building(&building, &mesh));
+    }
+
+    #[test]
+    fn incomplete_legacy_mesh_does_not_hide_convention_center_footprint() {
+        let building = Building {
+            height: 45.72,
+            ring: super::Ring {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 441.0,
+                    max_y: 205.0,
+                },
+                points: vec![(0.0, 0.0), (441.0, 0.0), (441.0, 205.0), (0.0, 205.0)],
+            },
+        };
+        let mesh = BuildingMesh {
+            texture_id: PRIMARY_MESH_TEXTURE_LIMIT,
+            height: 40.35,
+            footprint: super::Ring {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 346.0,
+                    max_y: 205.0,
+                },
+                points: vec![(0.0, 0.0), (346.0, 0.0), (346.0, 205.0), (0.0, 205.0)],
+            },
+            center: (173.0, 102.5),
+            highest_point: (173.0, 102.5, 40.35),
+        };
+
+        assert!(!mesh_covers_building(&building, &mesh));
+    }
+
+    #[test]
+    fn substantially_complete_mesh_still_covers_a_large_building() {
+        let building = Building {
+            height: 45.72,
+            ring: super::Ring {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 400.0,
+                    max_y: 200.0,
+                },
+                points: vec![(0.0, 0.0), (400.0, 0.0), (400.0, 200.0), (0.0, 200.0)],
+            },
+        };
+        let mesh = BuildingMesh {
+            texture_id: PRIMARY_MESH_TEXTURE_LIMIT,
+            height: 45.0,
+            footprint: super::Ring {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 320.0,
+                    max_y: 200.0,
+                },
+                points: vec![(0.0, 0.0), (320.0, 0.0), (320.0, 200.0), (0.0, 200.0)],
+            },
+            center: (160.0, 100.0),
+            highest_point: (160.0, 100.0, 45.0),
+        };
+
+        assert!(mesh_covers_building(&building, &mesh));
     }
 
     #[test]

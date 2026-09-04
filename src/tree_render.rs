@@ -6,6 +6,7 @@ const TILE_SIZE: usize = 256;
 const MIN_CROWN_RADIUS_PIXELS: f32 = 0.55;
 const SQRT_2: f32 = std::f32::consts::SQRT_2;
 const SQRT_1_5: f32 = 1.224_744_9;
+const TRUNK_COLOR: [u8; 3] = [76, 61, 43];
 
 pub fn draw_street_trees<'a>(
     pixmap: &mut Pixmap,
@@ -32,14 +33,16 @@ struct TreeRasterizer<'a, 'b> {
 impl TreeRasterizer<'_, '_> {
     fn draw(&mut self, tree: &StreetTree) {
         let crown_radius = tree.crown_radius();
+        let style = crown_style(tree.point);
+        let crown_radius = crown_radius * style.radius_scale;
         let radius_px = crown_radius * self.projection.scale;
         if radius_px < MIN_CROWN_RADIUS_PIXELS {
             return;
         }
         let height = tree.height();
-        let crown_center_height = height - crown_radius * 0.72;
+        let crown_center_height = height - crown_radius * 0.64;
         let center = self.projection.point(tree.point, crown_center_height);
-        self.draw_trunk(tree, crown_center_height - crown_radius * 0.72);
+        self.draw_trunk(tree, crown_center_height - crown_radius * 0.8);
         let extent_x = radius_px * SQRT_2;
         let extent_y = radius_px * SQRT_1_5;
         let min_x = (center.0 - extent_x).floor().max(0.0) as usize;
@@ -59,7 +62,9 @@ impl TreeRasterizer<'_, '_> {
                 // offset from the crown center. Substitution into
                 // e²+n²+t²=r² gives this quadratic. The larger root is the
                 // camera-facing surface and its depth offset is s+2t.
-                let Some(surface) = sphere_surface(projected_x, projected_y, crown_radius) else {
+                let shaped_radius = crown_radius
+                    * crown_radius_modifier(projected_x, projected_y, crown_radius, style);
+                let Some(surface) = sphere_surface(projected_x, projected_y, shaped_radius) else {
                     continue;
                 };
                 let pixel_depth =
@@ -69,10 +74,13 @@ impl TreeRasterizer<'_, '_> {
                     continue;
                 }
                 self.depth[offset] = pixel_depth;
-                let light = (0.82 + 0.17 * surface.vertical / crown_radius
-                    - 0.06 * surface.east / crown_radius
-                    + 0.04 * surface.north / crown_radius)
-                    .clamp(0.65, 1.08);
+                let light = (0.8 + 0.15 * surface.vertical / shaped_radius
+                    - 0.05 * surface.east / shaped_radius
+                    + 0.03 * surface.north / shaped_radius)
+                    .clamp(0.66, 1.02);
+                // A few broad tone steps read as foliage at isometric scale;
+                // a smooth sphere reads as a green balloon.
+                let light = (light * 8.0).round() / 8.0;
                 self.set_pixel(offset, palette.map(|channel| shade(channel, light)));
             }
         }
@@ -84,7 +92,7 @@ impl TreeRasterizer<'_, '_> {
         }
         let ground = self.projection.point(tree.point, 0.0);
         let trunk_top = self.projection.point(tree.point, top);
-        let half_width = (tree.diameter * self.projection.scale * 0.5).max(0.55);
+        let half_width = (tree.diameter * self.projection.scale * 0.45).max(0.51);
         let min_x = (ground.0 - half_width).floor().max(0.0) as usize;
         let max_x = (ground.0 + half_width).ceil().min((TILE_SIZE - 1) as f32) as usize;
         let min_y = trunk_top.1.floor().max(0.0) as usize;
@@ -107,7 +115,7 @@ impl TreeRasterizer<'_, '_> {
                     continue;
                 }
                 self.depth[offset] = pixel_depth;
-                self.set_pixel(offset, [92, 66, 43]);
+                self.set_pixel(offset, TRUNK_COLOR);
             }
         }
     }
@@ -117,6 +125,42 @@ impl TreeRasterizer<'_, '_> {
         self.pixmap.data_mut()[start..start + 4]
             .copy_from_slice(&[color[0], color[1], color[2], 255]);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CrownStyle {
+    radius_scale: f32,
+    lean_x: f32,
+    lean_y: f32,
+    broadness: f32,
+    diagonal: f32,
+}
+
+fn crown_style(point: (f32, f32)) -> CrownStyle {
+    let hash = tree_hash(point);
+    let signed = |shift: u32| ((hash >> shift & 0xff) as f32 / 127.5) - 1.0;
+    CrownStyle {
+        // The inventory diameter is useful, but drawing its full inferred crown
+        // made dense blocks overwhelm streets and parks.
+        radius_scale: 0.82 + ((hash & 0xff) as f32 / 255.0) * 0.1,
+        lean_x: signed(8) * 0.055,
+        lean_y: signed(16) * 0.045,
+        broadness: signed(24) * 0.045,
+        diagonal: signed(32) * 0.035,
+    }
+}
+
+fn crown_radius_modifier(x: f32, y: f32, radius: f32, style: CrownStyle) -> f32 {
+    let u = (x / (radius * SQRT_2)).clamp(-1.0, 1.0);
+    let v = (y / (radius * SQRT_1_5)).clamp(-1.0, 1.0);
+    // Low-order terms make a restrained, asymmetric silhouette without random
+    // per-pixel speckle. Because they depend only on the tree and world-space
+    // projection, adjacent tiles render the same edge.
+    (1.0 + style.lean_x * u
+        + style.lean_y * v
+        + style.broadness * (u * u - v * v)
+        + style.diagonal * u * v)
+        .clamp(0.88, 1.08)
 }
 
 #[derive(Clone, Copy)]
@@ -146,14 +190,21 @@ fn sphere_surface(projected_x: f32, projected_y: f32, radius: f32) -> Option<Sph
 }
 
 fn tree_palette(point: (f32, f32)) -> [u8; 3] {
+    match tree_hash(point) % 4 {
+        0 => [48, 99, 49],
+        1 => [55, 108, 52],
+        2 => [61, 113, 55],
+        _ => [44, 93, 47],
+    }
+}
+
+fn tree_hash(point: (f32, f32)) -> u64 {
     let x = point.0.round() as i64 as u64;
     let y = point.1.round() as i64 as u64;
-    match (x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca77)) % 4 {
-        0 => [54, 112, 51],
-        1 => [63, 126, 56],
-        2 => [70, 132, 60],
-        _ => [49, 105, 48],
-    }
+    let mut hash = x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca77);
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^ (hash >> 27)
 }
 
 fn shade(channel: u8, light: f32) -> u8 {
@@ -165,7 +216,8 @@ mod tests {
     use tiny_skia::Pixmap;
 
     use super::{
-        MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, draw_street_trees, sphere_surface, tree_palette,
+        MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, TRUNK_COLOR, crown_style, draw_street_trees,
+        sphere_surface, tree_palette,
     };
     use crate::{
         projection::Projection,
@@ -196,6 +248,24 @@ mod tests {
             .flat_map(|x| (0..8).map(move |y| tree_palette((x as f32, y as f32))))
             .collect();
         assert_eq!(colors.len(), 4);
+    }
+
+    #[test]
+    fn crown_shape_is_stable_and_varies_by_location() {
+        assert_eq!(crown_style((123.0, 456.0)), crown_style((123.0, 456.0)));
+        let shapes: std::collections::BTreeSet<_> = (0..8)
+            .flat_map(|x| {
+                (0..8).map(move |y| {
+                    let style = crown_style((x as f32, y as f32));
+                    (
+                        style.radius_scale.to_bits(),
+                        style.lean_x.to_bits(),
+                        style.lean_y.to_bits(),
+                    )
+                })
+            })
+            .collect();
+        assert!(shapes.len() > 32);
     }
 
     #[test]
@@ -416,7 +486,7 @@ mod tests {
             pixmap
                 .data()
                 .chunks_exact(4)
-                .any(|pixel| pixel == [92, 66, 43, 255])
+                .any(|pixel| pixel == [TRUNK_COLOR[0], TRUNK_COLOR[1], TRUNK_COLOR[2], 255])
         );
         Ok(())
     }
