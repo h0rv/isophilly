@@ -11,7 +11,7 @@
   has a URL, retrieval time, byte count, and SHA-256 checksum.
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
-  `v50-citywide-polish` identity and the reviewed OSGeo image digest.
+  current renderer identity and the reviewed OSGeo image digest.
 - A release does not use LiDAR heights until all 664 selected sources are
   accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
   and JSON pair. Do not publish from a diagnostic partial merge. Archive the
@@ -65,4 +65,6 @@
 - In launch copy, call height estimates and data recency what they are. Do not
   present this as an authoritative GIS, survey, property, or navigation product.
 - Run `uv run --locked poe deploy-check`, then `uv run --locked poe deploy`.
-  Confirm <https://isophilly.horv.co> from a signed-out browser.
+  Run `uv run --locked poe deploy-smoke` to compare the public manifest and a
+  fixed production tile byte-for-byte with the active local pyramid. Confirm
+  <https://isophilly.horv.co> from a signed-out browser.

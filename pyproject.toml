@@ -77,6 +77,7 @@ static-dry-run = { cmd = "bash -lc 'poe static-export && npx wrangler deploy --d
 build = { cmd = "python scripts/export_static.py", use_exec = true }
 deploy-check = { cmd = "bash -lc 'poe build && npx wrangler deploy --dry-run'", use_exec = true }
 deploy = { cmd = "bash -lc 'poe build && npx wrangler deploy'", use_exec = true }
+deploy-smoke = { cmd = "bash scripts/deploy-smoke.sh", use_exec = true }
 
 [tool.poe.executor]
 type = "simple"
