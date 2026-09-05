@@ -7,6 +7,7 @@ mod pyramid;
 mod render;
 mod scene;
 mod server;
+mod shadow_render;
 mod texture;
 mod tile_codec;
 mod tile_identity;
@@ -23,7 +24,7 @@ use crate::{
     mesh_texture::MeshTextureSource,
     server::{prebuild, prebuild_is_complete, serve},
     texture::AerialSource,
-    world::{load_world, world_digest},
+    world::{BuildingKind, World, load_world, world_digest},
 };
 
 #[derive(Parser)]
@@ -68,6 +69,7 @@ async fn main() -> io::Result<()> {
                 return Ok(());
             }
             let world = load_world(world_path)?;
+            validate_building_contexts(&world)?;
             let aerial = AerialSource::open("data/aerial")?;
             let mesh_textures = MeshTextureSource::open(
                 "data/clean/mesh-textures",
@@ -85,9 +87,147 @@ async fn main() -> io::Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BuildingContextCounts {
+    rowhouses: usize,
+    rowhouse_like: usize,
+    twins: usize,
+    detached: usize,
+    warehouses: usize,
+    generic: usize,
+}
+
+impl BuildingContextCounts {
+    fn from_world(world: &World) -> Self {
+        let count = |kind| {
+            world
+                .building_contexts
+                .iter()
+                .filter(|context| context.kind == kind)
+                .count()
+        };
+        Self {
+            rowhouses: count(BuildingKind::Rowhouse),
+            rowhouse_like: count(BuildingKind::RowhouseLike),
+            twins: count(BuildingKind::Twin),
+            detached: count(BuildingKind::Detached),
+            warehouses: count(BuildingKind::Warehouse),
+            generic: count(BuildingKind::Generic),
+        }
+    }
+
+    fn total(self) -> usize {
+        self.rowhouses
+            + self.rowhouse_like
+            + self.twins
+            + self.detached
+            + self.warehouses
+            + self.generic
+    }
+
+    fn inferred_residential(self) -> usize {
+        self.rowhouses + self.rowhouse_like + self.twins
+    }
+
+    fn validate(self, building_count: usize) -> io::Result<()> {
+        if self.total() != building_count {
+            return Err(io::Error::other(format!(
+                "building context count {} does not match {building_count} buildings",
+                self.total()
+            )));
+        }
+
+        // These intentionally broad bounds are not a claim about land use. They
+        // are a production tripwire for interpreting EPSG:32129 horizontal feet
+        // as metres: that regression classified most of Philadelphia as large
+        // warehouses and almost no narrow residential footprints.
+        if building_count >= 100_000
+            && (self.warehouses > building_count / 4
+                || self.inferred_residential() < building_count / 400)
+        {
+            return Err(io::Error::other(format!(
+                "implausible building context distribution: {} warehouses and {} inferred narrow residential footprints out of {building_count}; check horizontal units",
+                self.warehouses,
+                self.inferred_residential()
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_building_contexts(world: &World) -> io::Result<()> {
+    let counts = BuildingContextCounts::from_world(world);
+    counts.validate(world.buildings.len())?;
+    println!(
+        "building contexts: {} attached rowhouses, {} rowhouse-like, {} twins, {} detached, {} warehouses, {} generic",
+        counts.rowhouses,
+        counts.rowhouse_like,
+        counts.twins,
+        counts.detached,
+        counts.warehouses,
+        counts.generic,
+    );
+    Ok(())
+}
+
 fn default_jobs() -> u8 {
     std::thread::available_parallelism()
         .ok()
         .map(|jobs| jobs.get().min(16) as u8)
         .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildingContextCounts;
+
+    #[test]
+    fn building_context_sanity_guard_accepts_a_broad_plausible_distribution() {
+        let counts = BuildingContextCounts {
+            rowhouses: 5_000,
+            rowhouse_like: 30_000,
+            twins: 1_000,
+            detached: 75_000,
+            warehouses: 20_000,
+            generic: 369_000,
+        };
+
+        assert!(counts.validate(500_000).is_ok());
+    }
+
+    #[test]
+    fn building_context_sanity_guard_rejects_horizontal_unit_regression() {
+        let counts = BuildingContextCounts {
+            rowhouses: 40,
+            rowhouse_like: 1_000,
+            twins: 200,
+            detached: 12_000,
+            warehouses: 386_760,
+            generic: 100_000,
+        };
+
+        assert!(
+            counts
+                .validate(500_000)
+                .is_err_and(|error| error.to_string().contains("check horizontal units"))
+        );
+    }
+
+    #[test]
+    fn building_context_sanity_guard_checks_count_completeness() {
+        let counts = BuildingContextCounts {
+            rowhouses: 1,
+            rowhouse_like: 1,
+            twins: 1,
+            detached: 1,
+            warehouses: 1,
+            generic: 1,
+        };
+
+        assert!(
+            counts
+                .validate(7)
+                .is_err_and(|error| error.to_string().contains("does not match"))
+        );
+    }
 }

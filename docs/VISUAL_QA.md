@@ -13,6 +13,19 @@ For release evidence, use the explicit strict mode:
 ISOPHILLY_VISUAL_RELEASE=1 uv run --locked poe visual
 ```
 
+If Chromium cannot launch because the developer machine is resource constrained,
+assemble the exact active z8 production tiles without a browser:
+
+```sh
+uv run --locked poe tile-smoke
+```
+
+This creates fixed 1536 by 1280 mosaics for Rittenhouse, Point Breeze, Italian
+Market, and East Passyunk under `artifacts/visual/tile-smoke-<tile-version>/`.
+It fails on a missing tile or incomplete active pyramid and prints each PNG's
+dimensions and SHA-256. It is a visual fallback, not a replacement for the
+interaction, overlay, mobile, and network checks in the Playwright matrix.
+
 Strict mode rejects a dirty worktree, noncanonical zooms, a disabled secondary
 city audit, and an active tile manifest whose world SHA-256 differs from
 `data/clean/philly.bin`. The release and secondary flags accept only `0` or

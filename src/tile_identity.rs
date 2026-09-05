@@ -1,6 +1,10 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v50-citywide-polish";
+const PYRAMID_VERSION: &str = "v52-contextual-roofs";
+// The multi-angle mesh viewer is hidden from the launch UI and did not change
+// with the citywide procedural renderer. Keep its immutable v50 atlas so a
+// citywide art revision does not rebuild 4,096 expensive, unused mesh tiles.
+const RICH_PYRAMID_VERSION: &str = "v50-citywide-polish";
 
 pub(crate) fn base_tile_version(
     world_sha256: &[u8; 32],
@@ -21,8 +25,12 @@ pub(crate) fn base_tile_version_hex(world_sha256: &str, land_cover_sha256: Optio
 }
 
 pub(crate) fn rich_tile_version(tile_version: &str, view: View) -> String {
+    let rich_source = tile_version
+        .strip_prefix(PYRAMID_VERSION)
+        .map(|suffix| format!("{RICH_PYRAMID_VERSION}{suffix}"))
+        .unwrap_or_else(|| tile_version.to_owned());
     format!(
-        "{tile_version}-rich-{}-z{}-full",
+        "{rich_source}-rich-{}-z{}-full",
         view.id(),
         crate::pyramid::RICH_ART_ZOOM
     )
@@ -59,7 +67,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v50-citywide-polish-1111111111111111"
+            "v52-contextual-roofs-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),
@@ -79,6 +87,11 @@ mod tests {
         assert_eq!(
             rich_tile_version("v1-abc", View::NorthWest),
             "v1-abc-rich-nw-z5-full"
+        );
+        let citywide = base_tile_version(&[0x11; 32], Some(&[0x22; 32]));
+        assert!(
+            rich_tile_version(&citywide, View::SouthEast)
+                .starts_with("v50-citywide-polish-1111111111111111-lc-")
         );
     }
 }

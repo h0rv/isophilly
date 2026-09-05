@@ -933,7 +933,15 @@ try {
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
     headless: true,
-    args: ["--no-sandbox", "--disable-gpu"],
+    // Keep the deterministic audit viable on developer machines that already
+    // have a large interactive Chromium session. The audit opens pages
+    // sequentially, so extra renderer processes only waste memory/resources.
+    args: [
+      "--no-sandbox",
+      "--disable-gpu",
+      "--renderer-process-limit=2",
+      "--disable-background-networking",
+    ],
   });
   const browserVersion = browser.version();
   const pyramidAudit = await auditPyramid(browser, meta);

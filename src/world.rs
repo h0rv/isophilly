@@ -355,6 +355,33 @@ pub struct Building {
     pub height: f32,
     pub ring: Ring,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildingKind {
+    /// A narrow footprint in a connected run of at least three compatible
+    /// attached buildings.
+    Rowhouse,
+    /// A narrow rowhouse-shaped footprint without enough reliable neighboring
+    /// footprint continuity to call it part of an attached run.
+    RowhouseLike,
+    Twin,
+    Detached,
+    Warehouse,
+    Generic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuildingContext {
+    pub kind: BuildingKind,
+    /// Stable for every member of a detected attached run. Other buildings,
+    /// including `RowhouseLike`, receive a seed derived from their own geometry.
+    pub material_group_seed: u64,
+    /// Bit `n` identifies ring edge `n` as adjoining another footprint. The
+    /// procedural renderer only supports the first 64 edges; rowhouses have
+    /// far fewer in practice.
+    pub party_edge_mask: u64,
+}
+
 #[derive(Clone, Copy)]
 pub struct StreetTree {
     pub point: (f32, f32),
@@ -440,6 +467,7 @@ impl RTreeObject for Indexed {
 
 pub struct World {
     pub buildings: Vec<Building>,
+    pub building_contexts: Vec<BuildingContext>,
     pub building_parts: Vec<BuildingPart>,
     pub building_meshes: Vec<BuildingMesh>,
     pub mesh_faces: Vec<TexturedFace>,
@@ -706,6 +734,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         .fold(0.0, f32::max);
     let building_iso_tree = index_buildings(&buildings);
     let building_source_tree = index_source_buildings(&buildings);
+    let building_contexts = derive_building_contexts(&buildings, &building_source_tree);
     let building_part_iso_tree = index_building_parts(&building_parts);
     let building_part_source_tree = index_source_building_parts(&building_parts);
     let building_mesh_tree = index_building_meshes(&building_meshes);
@@ -762,6 +791,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         street_tree_iso_tree,
         street_tree_source_tree,
         buildings,
+        building_contexts,
         building_parts,
         building_meshes,
         mesh_faces,
@@ -871,6 +901,243 @@ fn mesh_covers_ring(ring: &Ring, height: f32, mesh: &BuildingMesh) -> bool {
 
 fn squared_distance(left: (f32, f32), right: (f32, f32)) -> f32 {
     (left.0 - right.0).powi(2) + (left.1 - right.1).powi(2)
+}
+
+// EPSG:32129 stores horizontal coordinates in US survey feet. Heights are
+// normalized separately by ingest and remain metres.
+const PARTY_EDGE_GAP_FEET: f32 = 2.7;
+const MIN_PARTY_EDGE_OVERLAP_FEET: f32 = 8.0;
+const PARALLEL_EDGE_DOT: f32 = 0.984_807_7; // cos(10 degrees)
+
+#[derive(Clone, Copy)]
+struct FootprintProfile {
+    area: f32,
+    depth: f32,
+    rowhouse_candidate: bool,
+}
+
+#[derive(Clone, Copy)]
+struct FootprintEdge {
+    start: (f32, f32),
+    unit: (f32, f32),
+    length: f32,
+}
+
+fn derive_building_contexts(
+    buildings: &[Building],
+    building_tree: &RTree<Indexed>,
+) -> Vec<BuildingContext> {
+    let profiles: Vec<_> = buildings.iter().map(footprint_profile).collect();
+    let edges: Vec<Vec<_>> = buildings
+        .iter()
+        .map(|building| footprint_edges(&building.ring))
+        .collect();
+    let mut party_edge_masks = vec![0_u64; buildings.len()];
+    let mut attached = vec![Vec::new(); buildings.len()];
+
+    for (left_index, left) in buildings.iter().enumerate() {
+        let bounds = left.ring.bounds.pad(PARTY_EDGE_GAP_FEET);
+        let query = AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
+        for item in building_tree.locate_in_envelope_intersecting(query) {
+            let right_index = item.index;
+            if right_index <= left_index {
+                continue;
+            }
+            let mut joins_row_run = false;
+            for (left_edge_index, left_edge) in edges[left_index].iter().enumerate() {
+                for (right_edge_index, right_edge) in edges[right_index].iter().enumerate() {
+                    let Some(overlap) = parallel_edge_overlap(*left_edge, *right_edge) else {
+                        continue;
+                    };
+                    if overlap < MIN_PARTY_EDGE_OVERLAP_FEET
+                        || overlap < left_edge.length.min(right_edge.length) * 0.6
+                    {
+                        continue;
+                    }
+                    if left_edge_index < u64::BITS as usize {
+                        party_edge_masks[left_index] |= 1_u64 << left_edge_index;
+                    }
+                    if right_edge_index < u64::BITS as usize {
+                        party_edge_masks[right_index] |= 1_u64 << right_edge_index;
+                    }
+                    let left_profile = profiles[left_index];
+                    let right_profile = profiles[right_index];
+                    joins_row_run |= left_profile.rowhouse_candidate
+                        && right_profile.rowhouse_candidate
+                        && left_edge.length >= left_profile.depth * 0.6
+                        && right_edge.length >= right_profile.depth * 0.6
+                        && compatible_rowhouse_heights(left.height, buildings[right_index].height);
+                }
+            }
+            if joins_row_run {
+                attached[left_index].push(right_index);
+                attached[right_index].push(left_index);
+            }
+        }
+    }
+
+    let own_seeds: Vec<_> = buildings.iter().map(building_geometry_seed).collect();
+    let mut component_ids = vec![usize::MAX; buildings.len()];
+    let mut components = Vec::<Vec<usize>>::new();
+    for start in 0..buildings.len() {
+        if component_ids[start] != usize::MAX {
+            continue;
+        }
+        let component_id = components.len();
+        let mut members = Vec::new();
+        let mut pending = vec![start];
+        component_ids[start] = component_id;
+        while let Some(index) = pending.pop() {
+            members.push(index);
+            for &neighbor in &attached[index] {
+                if component_ids[neighbor] == usize::MAX {
+                    component_ids[neighbor] = component_id;
+                    pending.push(neighbor);
+                }
+            }
+        }
+        components.push(members);
+    }
+    let component_seeds: Vec<_> = components
+        .iter()
+        .map(|members| {
+            let mut member_seeds: Vec<_> = members.iter().map(|&index| own_seeds[index]).collect();
+            member_seeds.sort_unstable();
+            member_seeds
+                .into_iter()
+                .fold(0x6a09_e667_f3bc_c909, mix_seed)
+        })
+        .collect();
+
+    buildings
+        .iter()
+        .enumerate()
+        .map(|(index, building)| {
+            let component = &components[component_ids[index]];
+            let profile = profiles[index];
+            let kind = if profile.rowhouse_candidate && component.len() >= 3 {
+                BuildingKind::Rowhouse
+            } else if profile.rowhouse_candidate && component.len() == 2 {
+                BuildingKind::Twin
+            } else if profile.rowhouse_candidate {
+                BuildingKind::RowhouseLike
+            } else if profile.area >= 4_840.0 && building.height <= 20.0 {
+                BuildingKind::Warehouse
+            } else if party_edge_masks[index] == 0
+                && profile.area <= 4_840.0
+                && building.height < 18.0
+            {
+                BuildingKind::Detached
+            } else {
+                BuildingKind::Generic
+            };
+            let material_group_seed = if component.len() >= 2 {
+                component_seeds[component_ids[index]]
+            } else {
+                own_seeds[index]
+            };
+            BuildingContext {
+                kind,
+                material_group_seed,
+                party_edge_mask: party_edge_masks[index],
+            }
+        })
+        .collect()
+}
+
+fn footprint_profile(building: &Building) -> FootprintProfile {
+    let area = ring_area(&building.ring);
+    let depth = footprint_edges(&building.ring)
+        .iter()
+        .map(|edge| edge.length)
+        .fold(0.0, f32::max);
+    let width = if depth > f32::EPSILON {
+        area / depth
+    } else {
+        0.0
+    };
+    FootprintProfile {
+        area,
+        depth,
+        rowhouse_candidate: (320.0..=2_370.0).contains(&area)
+            && (10.0..=30.0).contains(&width)
+            && (26.0..=105.0).contains(&depth)
+            && (5.5..=16.0).contains(&building.height),
+    }
+}
+
+fn footprint_edges(ring: &Ring) -> Vec<FootprintEdge> {
+    ring.points
+        .iter()
+        .copied()
+        .zip(ring.points.iter().copied().cycle().skip(1))
+        .take(ring.points.len())
+        .filter_map(|(start, end)| {
+            let vector = (end.0 - start.0, end.1 - start.1);
+            let length = vector.0.hypot(vector.1);
+            (length > f32::EPSILON).then_some(FootprintEdge {
+                start,
+                unit: (vector.0 / length, vector.1 / length),
+                length,
+            })
+        })
+        .collect()
+}
+
+fn parallel_edge_overlap(left: FootprintEdge, right: FootprintEdge) -> Option<f32> {
+    let dot = left
+        .unit
+        .0
+        .mul_add(right.unit.0, left.unit.1 * right.unit.1);
+    if dot.abs() < PARALLEL_EDGE_DOT {
+        return None;
+    }
+    let right_end = (
+        right.start.0 + right.unit.0 * right.length,
+        right.start.1 + right.unit.1 * right.length,
+    );
+    let perpendicular_distance = |point: (f32, f32)| {
+        let offset = (point.0 - left.start.0, point.1 - left.start.1);
+        offset.0.mul_add(-left.unit.1, offset.1 * left.unit.0).abs()
+    };
+    if perpendicular_distance(right.start) > PARTY_EDGE_GAP_FEET
+        || perpendicular_distance(right_end) > PARTY_EDGE_GAP_FEET
+    {
+        return None;
+    }
+    let project = |point: (f32, f32)| {
+        (point.0 - left.start.0).mul_add(left.unit.0, (point.1 - left.start.1) * left.unit.1)
+    };
+    let right_start = project(right.start);
+    let right_end = project(right_end);
+    let overlap =
+        left.length.min(right_start.max(right_end)) - 0.0_f32.max(right_start.min(right_end));
+    (overlap > 0.0).then_some(overlap)
+}
+
+fn compatible_rowhouse_heights(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 4.5 || left.min(right) >= left.max(right) * 0.7
+}
+
+fn building_geometry_seed(building: &Building) -> u64 {
+    let quantize = |value: f32| (value * 4.0).round() as i64 as u64;
+    let center = building.ring.center();
+    [
+        quantize(center.0),
+        quantize(center.1),
+        quantize(ring_area(&building.ring)),
+        quantize(building.height),
+    ]
+    .into_iter()
+    .fold(0x510e_527f_ade6_82d1, mix_seed)
+}
+
+fn mix_seed(seed: u64, value: u64) -> u64 {
+    let mut mixed = seed ^ value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mixed ^= mixed >> 30;
+    mixed = mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed ^= mixed >> 27;
+    mixed.wrapping_mul(0x94d0_49bb_1331_11eb) ^ (mixed >> 31)
 }
 
 fn index_buildings(buildings: &[Building]) -> RTree<Indexed> {
@@ -1212,10 +1479,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingMesh, BuildingPart, Cursor,
-        MESH_FACE_BYTES, MeshCoverage, PRIMARY_MESH_TEXTURE_LIMIT, Ring, RoofShape, View,
-        building_mesh_coverage, detailed_buildings, index_building_meshes, index_source_buildings,
-        isometric, mesh_covers_building, mesh_covers_part, parse_world, part_mesh_coverage,
+        BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingKind, BuildingMesh,
+        BuildingPart, Cursor, MESH_FACE_BYTES, MeshCoverage, PRIMARY_MESH_TEXTURE_LIMIT, Ring,
+        RoofShape, View, building_mesh_coverage, derive_building_contexts, detailed_buildings,
+        index_building_meshes, index_source_buildings, isometric, mesh_covers_building,
+        mesh_covers_part, parse_world, part_mesh_coverage,
     };
 
     fn square(size: f32) -> Ring {
@@ -1228,6 +1496,123 @@ mod tests {
             },
             points: vec![(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)],
         }
+    }
+
+    fn rectangle(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Ring {
+        Ring {
+            bounds: Bounds {
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            },
+            points: vec![
+                (min_x, min_y),
+                (max_x, min_y),
+                (max_x, max_y),
+                (min_x, max_y),
+            ],
+        }
+    }
+
+    fn contextualize(buildings: &[Building]) -> Vec<super::BuildingContext> {
+        derive_building_contexts(buildings, &index_source_buildings(buildings))
+    }
+
+    #[test]
+    fn five_attached_narrow_buildings_form_a_rowhouse_run() {
+        let buildings: Vec<_> = (0..5)
+            .map(|index| Building {
+                height: 9.3,
+                ring: rectangle(index as f32 * 16.5, 0.0, (index + 1) as f32 * 16.5, 52.5),
+            })
+            .collect();
+
+        let contexts = contextualize(&buildings);
+
+        assert!(
+            contexts
+                .iter()
+                .all(|context| context.kind == BuildingKind::Rowhouse)
+        );
+        assert!(
+            contexts
+                .iter()
+                .all(|context| context.material_group_seed == contexts[0].material_group_seed)
+        );
+        assert_eq!(contexts[0].party_edge_mask, 1 << 1);
+        assert_eq!(contexts[2].party_edge_mask, (1 << 1) | (1 << 3));
+        assert_eq!(contexts[4].party_edge_mask, 1 << 3);
+    }
+
+    #[test]
+    fn isolated_narrow_footprint_is_rowhouse_like() {
+        let buildings = vec![Building {
+            height: 9.0,
+            ring: rectangle(0.0, 0.0, 16.5, 52.5),
+        }];
+
+        let contexts = contextualize(&buildings);
+
+        assert_eq!(contexts[0].kind, BuildingKind::RowhouseLike);
+        assert_eq!(contexts[0].party_edge_mask, 0);
+    }
+
+    #[test]
+    fn twins_detached_buildings_and_warehouses_are_not_rowhouses() {
+        let buildings = vec![
+            Building {
+                height: 9.0,
+                ring: rectangle(0.0, 0.0, 16.5, 52.5),
+            },
+            Building {
+                height: 9.0,
+                ring: rectangle(16.5, 0.0, 33.0, 52.5),
+            },
+            Building {
+                height: 8.0,
+                ring: rectangle(100.0, 0.0, 135.0, 35.0),
+            },
+            Building {
+                height: 12.0,
+                ring: rectangle(200.0, 0.0, 365.0, 66.0),
+            },
+        ];
+
+        let contexts = contextualize(&buildings);
+
+        assert_eq!(contexts[0].kind, BuildingKind::Twin);
+        assert_eq!(contexts[1].kind, BuildingKind::Twin);
+        assert_eq!(contexts[2].kind, BuildingKind::Detached);
+        assert_eq!(contexts[3].kind, BuildingKind::Warehouse);
+    }
+
+    #[test]
+    fn building_contexts_are_stable_when_input_order_changes() {
+        let buildings: Vec<_> = (0..5)
+            .map(|index| Building {
+                height: 8.8 + index as f32 * 0.2,
+                ring: rectangle(index as f32 * 16.5, 0.0, (index + 1) as f32 * 16.5, 52.5),
+            })
+            .collect();
+        let forward = contextualize(&buildings);
+        let mut reversed_buildings = buildings.clone();
+        reversed_buildings.reverse();
+        let reversed = contextualize(&reversed_buildings);
+        let summarize = |items: &[Building], contexts: &[super::BuildingContext]| {
+            let mut values: Vec<_> = items
+                .iter()
+                .zip(contexts)
+                .map(|(building, context)| (building.ring.center().0 as i32, *context))
+                .collect();
+            values.sort_unstable_by_key(|(x, _)| *x);
+            values
+        };
+
+        assert_eq!(
+            summarize(&buildings, &forward),
+            summarize(&reversed_buildings, &reversed)
+        );
     }
 
     fn golden_world() -> std::io::Result<Vec<u8>> {
@@ -1655,6 +2040,8 @@ mod tests {
         let world = parse_world(&bytes, digest)?;
 
         assert_eq!(world.buildings.len(), 1);
+        assert_eq!(world.building_contexts.len(), 1);
+        assert_eq!(world.building_contexts[0].kind, BuildingKind::Detached);
         assert_eq!(world.building_parts.len(), 1);
         assert_eq!(world.building_parts[0].osm_id, 42);
         assert_eq!(world.building_parts[0].roof_shape, RoofShape::Pyramidal);

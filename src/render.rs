@@ -9,6 +9,7 @@ use crate::{
     mesh_render::draw_textured_faces,
     mesh_texture::MeshTextureSource,
     projection::Projection,
+    shadow_render::draw_cast_shadows,
     texture::AerialTile,
     tile_codec::encode_rgba,
     tree_render::draw_street_trees,
@@ -16,6 +17,7 @@ use crate::{
 };
 
 const TILE_SIZE: u32 = 256;
+const PROCEDURAL_ROOF_MARGIN_METERS: f32 = 8.0;
 
 pub fn render_tile(
     world: &World,
@@ -44,10 +46,34 @@ pub fn render_tile(
         land_cover,
     );
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
-    let margin = 1.0 / scale;
+    let margin = PROCEDURAL_ROOF_MARGIN_METERS + 1.0 / scale;
     let query = AABB::from_corners(
         [bounds.min_x - margin, bounds.min_y - margin],
         [bounds.max_x + margin, bounds.max_y + margin],
+    );
+    let shadow_margin = world.max_height * 1.5;
+    let shadow_query = AABB::from_corners(
+        [bounds.min_x - shadow_margin, bounds.min_y - shadow_margin],
+        [bounds.max_x + shadow_margin, bounds.max_y + shadow_margin],
+    );
+    draw_cast_shadows(
+        &mut pixmap,
+        world
+            .building_iso_tree
+            .locate_in_envelope_intersecting(shadow_query)
+            .filter_map(|item| {
+                (!world.building_detailed_by_parts[item.index])
+                    .then_some(&world.buildings[item.index])
+            }),
+        world
+            .building_part_iso_tree
+            .locate_in_envelope_intersecting(shadow_query)
+            .map(|item| &world.building_parts[item.index]),
+        world
+            .street_tree_iso_tree
+            .locate_in_envelope_intersecting(shadow_query)
+            .map(|item| &world.street_trees[item.index]),
+        &projection,
     );
     draw_city_buildings(
         &mut pixmap,
@@ -58,7 +84,7 @@ pub fn render_tile(
                 let building = &world.buildings[item.index];
                 (!world.building_covered_by_mesh[item.index]
                     && !world.building_detailed_by_parts[item.index])
-                    .then_some(building)
+                    .then_some((building, &world.building_contexts[item.index]))
             }),
         &projection,
         aerial,
@@ -136,7 +162,7 @@ pub fn render_rich_tile(
                 let building = &world.buildings[item.index];
                 (!world.building_covered_by_primary_mesh[item.index]
                     && !world.building_detailed_by_parts[item.index])
-                    .then_some(building)
+                    .then_some((building, &world.building_contexts[item.index]))
             }),
         &projection,
         aerial,

@@ -7,6 +7,7 @@ const MIN_CROWN_RADIUS_PIXELS: f32 = 0.55;
 const SQRT_2: f32 = std::f32::consts::SQRT_2;
 const SQRT_1_5: f32 = 1.224_744_9;
 const TRUNK_COLOR: [u8; 3] = [76, 61, 43];
+const CROWN_LOBE_COUNT: usize = 4;
 
 pub fn draw_street_trees<'a>(
     pixmap: &mut Pixmap,
@@ -40,47 +41,71 @@ impl TreeRasterizer<'_, '_> {
             return;
         }
         let height = tree.height();
-        let crown_center_height = height - crown_radius * 0.64;
-        let center = self.projection.point(tree.point, crown_center_height);
-        self.draw_trunk(tree, crown_center_height - crown_radius * 0.8);
-        let extent_x = radius_px * SQRT_2;
-        let extent_y = radius_px * SQRT_1_5;
-        let min_x = (center.0 - extent_x).floor().max(0.0) as usize;
-        let max_x = (center.0 + extent_x).ceil().min((TILE_SIZE - 1) as f32) as usize;
-        let min_y = (center.1 - extent_y).floor().max(0.0) as usize;
-        let max_y = (center.1 + extent_y).ceil().min((TILE_SIZE - 1) as f32) as usize;
+        let crown_center_height = height - crown_radius * 0.75;
+        let lobes = crown_lobes(tree.point, crown_center_height, crown_radius, style);
+        let projected_lobes = lobes.map(|lobe| ProjectedCrownLobe {
+            center: self.projection.point(lobe.point, lobe.height),
+            base_depth: self.projection.depth(lobe.point, lobe.height),
+            radius: lobe.radius,
+            tone: lobe.tone,
+        });
+        self.draw_trunk(tree, crown_center_height - crown_radius * 0.52);
+        let (min_x, max_x, min_y, max_y) = projected_lobes.iter().fold(
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), lobe| {
+                let radius_px = lobe.radius * self.projection.scale;
+                (
+                    min_x.min(lobe.center.0 - radius_px * SQRT_2),
+                    max_x.max(lobe.center.0 + radius_px * SQRT_2),
+                    min_y.min(lobe.center.1 - radius_px * SQRT_1_5),
+                    max_y.max(lobe.center.1 + radius_px * SQRT_1_5),
+                )
+            },
+        );
+        let min_x = min_x.floor().max(0.0) as usize;
+        let max_x = max_x.ceil().min((TILE_SIZE - 1) as f32) as usize;
+        let min_y = min_y.floor().max(0.0) as usize;
+        let max_y = max_y.ceil().min((TILE_SIZE - 1) as f32) as usize;
         if min_x > max_x || min_y > max_y {
             return;
         }
         let palette = tree_palette(tree.point);
         for y in min_y..=max_y {
             for x in min_x..=max_x {
-                let projected_x = (x as f32 + 0.5 - center.0) / self.projection.scale;
-                let projected_y = (y as f32 + 0.5 - center.1) / self.projection.scale;
-                // In view space p=e+n and q=(e-n)/2. A sphere point projected
-                // at screen offset (p, s) has q=s+t, where t is its vertical
-                // offset from the crown center. Substitution into
-                // e²+n²+t²=r² gives this quadratic. The larger root is the
-                // camera-facing surface and its depth offset is s+2t.
-                let shaped_radius = crown_radius
-                    * crown_radius_modifier(projected_x, projected_y, crown_radius, style);
-                let Some(surface) = sphere_surface(projected_x, projected_y, shaped_radius) else {
+                let mut closest = None;
+                for lobe in projected_lobes {
+                    let projected_x = (x as f32 + 0.5 - lobe.center.0) / self.projection.scale;
+                    let projected_y = (y as f32 + 0.5 - lobe.center.1) / self.projection.scale;
+                    let Some(surface) = sphere_surface(projected_x, projected_y, lobe.radius)
+                    else {
+                        continue;
+                    };
+                    let pixel_depth = lobe.base_depth + surface.depth_offset;
+                    if closest.is_none_or(|(depth, _, _, _)| pixel_depth > depth) {
+                        closest = Some((pixel_depth, surface, lobe.radius, lobe.tone));
+                    }
+                }
+                let Some((pixel_depth, surface, surface_radius, tone)) = closest else {
                     continue;
                 };
-                let pixel_depth =
-                    self.projection.depth(tree.point, crown_center_height) + surface.depth_offset;
                 let offset = y * TILE_SIZE + x;
                 if pixel_depth <= self.depth[offset] {
                     continue;
                 }
                 self.depth[offset] = pixel_depth;
-                let light = (0.8 + 0.15 * surface.vertical / shaped_radius
-                    - 0.05 * surface.east / shaped_radius
-                    + 0.03 * surface.north / shaped_radius)
+                let light = (0.8 + 0.15 * surface.vertical / surface_radius
+                    - 0.05 * surface.east / surface_radius
+                    + 0.03 * surface.north / surface_radius)
                     .clamp(0.66, 1.02);
                 // A few broad tone steps read as foliage at isometric scale;
-                // a smooth sphere reads as a green balloon.
-                let light = (light * 8.0).round() / 8.0;
+                // separate overlapping lobes keep the crown from reading as a
+                // green balloon while avoiding noisy per-pixel stippling.
+                let light = ((light * tone) * 8.0).round() / 8.0;
                 self.set_pixel(offset, palette.map(|channel| shade(channel, light)));
             }
         }
@@ -136,6 +161,22 @@ struct CrownStyle {
     diagonal: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CrownLobe {
+    point: (f32, f32),
+    height: f32,
+    radius: f32,
+    tone: f32,
+}
+
+#[derive(Clone, Copy)]
+struct ProjectedCrownLobe {
+    center: (f32, f32),
+    base_depth: f32,
+    radius: f32,
+    tone: f32,
+}
+
 fn crown_style(point: (f32, f32)) -> CrownStyle {
     let hash = tree_hash(point);
     let signed = |shift: u32| ((hash >> shift & 0xff) as f32 / 127.5) - 1.0;
@@ -150,17 +191,56 @@ fn crown_style(point: (f32, f32)) -> CrownStyle {
     }
 }
 
-fn crown_radius_modifier(x: f32, y: f32, radius: f32, style: CrownStyle) -> f32 {
-    let u = (x / (radius * SQRT_2)).clamp(-1.0, 1.0);
-    let v = (y / (radius * SQRT_1_5)).clamp(-1.0, 1.0);
-    // Low-order terms make a restrained, asymmetric silhouette without random
-    // per-pixel speckle. Because they depend only on the tree and world-space
-    // projection, adjacent tiles render the same edge.
-    (1.0 + style.lean_x * u
-        + style.lean_y * v
-        + style.broadness * (u * u - v * v)
-        + style.diagonal * u * v)
-        .clamp(0.88, 1.08)
+fn crown_lobes(
+    point: (f32, f32),
+    height: f32,
+    radius: f32,
+    style: CrownStyle,
+) -> [CrownLobe; CROWN_LOBE_COUNT] {
+    let turn = (tree_hash(point) >> 40) as u16;
+    let angle = f32::from(turn) / f32::from(u16::MAX) * std::f32::consts::TAU;
+    let direction = |offset: f32, distance: f32| {
+        let angle = angle + offset;
+        (angle.cos() * distance, angle.sin() * distance)
+    };
+    let offset = |(x, y): (f32, f32)| {
+        (
+            point.0 + x + style.lean_x * radius,
+            point.1 + y + style.lean_y * radius,
+        )
+    };
+    let broad = style.broadness * radius;
+    let diagonal = style.diagonal * radius;
+    let first = direction(0.0, radius * 0.27);
+    let second = direction(2.12, radius * 0.28);
+    let third = direction(4.24, radius * 0.26);
+
+    [
+        CrownLobe {
+            point: offset((broad, diagonal)),
+            height: height + radius * 0.08,
+            radius: radius * 0.66,
+            tone: 1.03,
+        },
+        CrownLobe {
+            point: offset(first),
+            height: height + radius * 0.14,
+            radius: radius * 0.58,
+            tone: 1.08,
+        },
+        CrownLobe {
+            point: offset(second),
+            height: height - radius * 0.12,
+            radius: radius * 0.62,
+            tone: 0.92,
+        },
+        CrownLobe {
+            point: offset(third),
+            height: height - radius * 0.04,
+            radius: radius * 0.6,
+            tone: 0.98,
+        },
+    ]
 }
 
 #[derive(Clone, Copy)]
@@ -216,8 +296,8 @@ mod tests {
     use tiny_skia::Pixmap;
 
     use super::{
-        MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, TRUNK_COLOR, crown_style, draw_street_trees,
-        sphere_surface, tree_palette,
+        CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, TRUNK_COLOR, crown_lobes,
+        crown_style, draw_street_trees, sphere_surface, tree_palette,
     };
     use crate::{
         projection::Projection,
@@ -266,6 +346,30 @@ mod tests {
             })
             .collect();
         assert!(shapes.len() > 32);
+    }
+
+    #[test]
+    fn clustered_crown_is_stable_varied_and_inside_inventory_extent() {
+        let point = (123.0, 456.0);
+        let inventory_radius = 4.0;
+        let style = crown_style(point);
+        let radius = inventory_radius * style.radius_scale;
+        let first = crown_lobes(point, 10.0, radius, style);
+        let second = crown_lobes(point, 10.0, radius, style);
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), CROWN_LOBE_COUNT);
+        assert!(first.windows(2).any(|lobes| lobes[0].tone != lobes[1].tone));
+        assert!(
+            first
+                .windows(2)
+                .any(|lobes| lobes[0].point != lobes[1].point)
+        );
+        for lobe in first {
+            let offset = (lobe.point.0 - point.0).hypot(lobe.point.1 - point.1);
+            assert!(offset + lobe.radius <= inventory_radius);
+            assert!(lobe.height + lobe.radius <= 10.0 + radius * 0.75 + f32::EPSILON);
+        }
     }
 
     #[test]

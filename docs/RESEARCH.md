@@ -1,6 +1,6 @@
 # Research: deterministic isometric Philadelphia
 
-Research updated: 2026-08-31. This is deliberately a **data-and-rendering**
+Research updated: 2026-09-04. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
@@ -89,6 +89,57 @@ reusable ideas are architectural:
   OpenSeadragon, static CDN files, browser caching/prefetching, and 25–35% smaller
   WebP tiles than PNG. Keep a small metadata file mapping the pixel space to the
   city projection/bounds for callouts and search.
+
+## Reference comparison: transferable lessons and rendering order
+
+[Isopolis](https://sf.isopolis.city/) and Isometric NYC are useful visual
+references, but not source-pipeline templates. Isopolis documents a Google
+Photorealistic 3D Tiles capture followed by curated AI image pairs, LoRA/infill
+generation, manual repair, and water stamping; its report also records residual
+seams. Isometric NYC documents a similar generated-quadrant workflow. Those
+approaches can create a strong, unified illustration, but they make individual
+pixels hard to trace, require subjective seam review, and conflict with this
+project's saved-pixel, open-data, deterministic-rendering requirements. Google
+tile policy also rules out retaining or analysing its 3-D tile imagery for this
+offline artifact. Do not import their rasters, training workflow, or Google
+capture path.
+
+The transferable lessons are narrower and practical: a fixed citywide
+isometric camera; one coherent palette and water treatment; clear road, rail,
+vegetation, and landmark cues; static pyramids with nearest-neighbour deep zoom;
+and annotations or tours stored as geographic data rather than painted into
+imagery. IsoPhilly already has the fixed projection, prebuilt pyramid, and
+data-backed overlays. The recommended route is to add deterministic vector and
+procedural layers to the existing official-I3S/City-footprint/PASDA-aerial
+stack, keeping every source snapshot, rule, and output reproducible.
+
+Priority order for that work:
+
+1. Restore typed street, rail, bridge, and major-infrastructure linework above
+   aerial ground. The current renderer intentionally removes street centerlines;
+   this is the largest citywide legibility gap. Use City centerlines and, where
+   needed, OpenStreetMap tags to derive scale-aware road widths, rails, bridge
+   decks, curbs, medians, and restrained markings.
+2. Apply one deterministic, material-aware palette/quantization pass across
+   ground, aerial roofs, procedural walls, trees, water, and textured meshes.
+   This should replace browser-only saturation/contrast styling, while retaining
+   enough texture colors for the photographed Center City mesh to remain legible.
+3. Upgrade hydrology from blue-tinted aerial pixels to a data-derived water
+   surface: shallow/deep bands and a narrow quantized shoreline treatment from
+   the existing hydrology and land-cover masks. It must remain static and
+   world-anchored so adjacent tiles agree.
+4. Add canopy masses beyond inventoried street-tree points. First use
+   deterministic, building- and road-rejecting procedural clusters inside the
+   reviewed canopy class; consider the audited canopy polygons only after their
+   stated validity and height gates pass.
+5. Extend the authorized LiDAR-derived geometry cautiously: terrain around
+   rivers and slopes, then confidence-gated roof planes/ridges and landmark
+   forms. Keep flat/height-only fallbacks in source gaps and do not represent
+   this as photographed facade information.
+6. Add sparse procedural street furniture and data-backed landmark/tour
+   annotations. Reuse existing detailed mesh geometry where available; otherwise
+   use clearly illustrative sprites or silhouettes rather than invented building
+   reconstructions.
 
 ## Philadelphia source stack
 
