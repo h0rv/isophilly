@@ -33,7 +33,9 @@ height. Party walls and lower-confidence rowhouse-like footprints do not receive
 When the v12 world stores an exact address and street range match, the openings and cornice use only
 that selected front edge. A selected edge can also receive a two tier stoop aligned with the drawn
 door. The stoop projects no more than 0.70 metres and reaches 0.36 metres above the ground. Unknown
-frontages keep the earlier exposed short edge rule and do not receive a stoop. The result is
+frontages keep the earlier exposed short edge rule and do not receive a stoop. The first two upper
+floors on a selected frontage can also receive painted stone toned surrounds aligned with the
+generated window openings. Unknown frontages do not receive the added surrounds. The result is
 illustrative geometry derived from the footprint, street record, and neighbor context. It is not a
 facade or entrance survey.
 

@@ -1,6 +1,6 @@
 # Research: deterministic isometric Philadelphia
 
-Research updated: 2026-09-04. This is deliberately a **data-and-rendering**
+Research updated: 2026-09-05. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 
 ## 80/20 recommendation
@@ -112,6 +112,37 @@ imagery. IsoPhilly already has the fixed projection, prebuilt pyramid, and
 data-backed overlays. The recommended route is to add deterministic vector and
 procedural layers to the existing official-I3S/City-footprint/PASDA-aerial
 stack, keeping every source snapshot, rule, and output reproducible.
+
+### Philadelphia rowhouse extrapolation limits
+
+The Philadelphia City Planning Commission's [Rowhouse
+Manual](https://www.phila.gov/media/20190521124726/Philadelphia_Rowhouse_Manual.pdf)
+describes rowhouses as a building type with many sizes, periods, and exterior
+forms. The manual says brick is widespread, while stone often appears at the
+base and around windows and doors. It also describes porch and bay window forms
+in several parts of the city, but it warns that its neighborhood examples are
+not exclusive style rules.
+
+The [Strawberry Mansion neighborhood conservation
+rules](https://codelibrary.amlegal.com/codes/philadelphia/latest/philadelphia_pa/0-0-0-290844)
+provide a useful evidence standard even though they do not apply citywide. The
+rules require new porches and bay windows to follow nearby buildings on the same
+block face. IsoPhilly therefore does not add a porch or bay from height,
+neighborhood name, or a random seed. The packed world has no observed block
+face type, sidewalk setback, or porch dimensions.
+
+The current citywide LiDAR artifact cannot supply the missing facade evidence.
+It retains building and ground point counts, roof and ground height quantiles,
+and roof spread. It does not retain the spatial facade returns needed to detect
+a bay or porch, and the validated raw LAS files were deleted after the bounded
+evidence pass. A future bay or porch rule needs a reviewed block face source or
+a new evidence artifact built for this purpose.
+
+The accepted conservative treatment is shallow trim aligned with openings
+that the renderer already generates. Exact named rowhouse frontages can receive
+a shallow entrance stoop, cornice, and painted upper window surrounds. Unknown
+frontages keep the earlier flat treatment. These features are illustrative and do not
+claim an observed facade, entrance, or historical style.
 
 Priority order for that work:
 

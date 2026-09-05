@@ -46,6 +46,8 @@ const ROWHOUSE_STOOP_LOWER_WIDTH_METERS: f32 = 1.25;
 const ROWHOUSE_STOOP_UPPER_WIDTH_METERS: f32 = 1.0;
 const ROWHOUSE_STOOP_SIDE_CLEARANCE_METERS: f32 = 0.45;
 const ROWHOUSE_STOOP_MINIMUM_WIDTH_METERS: f32 = 0.85;
+const ROWHOUSE_WINDOW_TRIM_WIDTH_METERS: f32 = 0.24;
+const ROWHOUSE_WINDOW_TRIM_STORIES: std::ops::RangeInclusive<usize> = 1..=2;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -269,7 +271,7 @@ impl Rasterizer<'_, '_> {
             top,
             left,
             right,
-            seed: building.seed ^ facade_seed(((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)),
+            seed: wall_seed(building.seed, left, right),
             entry,
         };
         self.draw_wall_triangle([ground_left, ground_right, roof_right], style);
@@ -1254,6 +1256,14 @@ fn facade_seed(center: (f32, f32)) -> u64 {
     (center.0.round() as u64).wrapping_mul(0x9e37_79b9) ^ (center.1.round() as u64).rotate_left(23)
 }
 
+fn wall_seed(building_seed: u64, left: (f32, f32), right: (f32, f32)) -> u64 {
+    building_seed ^ facade_seed(((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5))
+}
+
+fn rowhouse_floor_height(seed: u64) -> f32 {
+    2.85 + f32::from(((seed >> 7) & 3) as u8) * 0.1
+}
+
 fn classify_building(ring: &Ring, height: f32) -> FacadeKind {
     let width = ring.bounds.width().abs();
     let depth = ring.bounds.height().abs();
@@ -1581,7 +1591,7 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if height - relative_z < 0.42 {
         return style.facade.map(|channel| scale_channel(channel, 0.7));
     }
-    let floor_height = 2.85 + f32::from(((style.seed >> 7) & 3) as u8) * 0.1;
+    let floor_height = rowhouse_floor_height(style.seed);
     let floor = relative_z.rem_euclid(floor_height);
     if floor < 0.11 {
         return style.facade.map(|channel| scale_channel(channel, 0.84));
@@ -1606,9 +1616,18 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     let column = along.rem_euclid(bay_width);
     let window_left = bay_width * 0.22;
     let window_right = bay_width * 0.78;
+    let story = (relative_z / floor_height).floor() as usize;
     let upper_window = (0.76..=2.22).contains(&floor)
         && (window_left..=window_right).contains(&column)
         && relative_z >= floor_height * 0.72;
+    let upper_window_trim = style.entry.is_some()
+        && ROWHOUSE_WINDOW_TRIM_STORIES.contains(&story)
+        && (0.76 - ROWHOUSE_WINDOW_TRIM_WIDTH_METERS..=2.22 + ROWHOUSE_WINDOW_TRIM_WIDTH_METERS)
+            .contains(&floor)
+        && (window_left - ROWHOUSE_WINDOW_TRIM_WIDTH_METERS
+            ..=window_right + ROWHOUSE_WINDOW_TRIM_WIDTH_METERS)
+            .contains(&column)
+        && !upper_window;
     let ground_window = (0.92..=2.3).contains(&relative_z)
         && along >= bay_width * 1.12
         && (window_left..=window_right).contains(&column);
@@ -1628,6 +1647,9 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         };
         return palette::mix(style.facade, glass, 0.58);
     }
+    if upper_window_trim {
+        return palette::mix(style.facade, [190, 181, 165], 0.52);
+    }
     style.facade
 }
 
@@ -1635,16 +1657,18 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
 mod tests {
     use super::{
         FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
-        ROWHOUSE_CORNICE_OUTSET_METERS, WallStyle, block_seed, classify_building, facade_detail,
-        infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, rowhouse_cornice_segment,
-        rowhouse_cornice_segments, rowhouse_entry_layout, rowhouse_entry_stoop,
-        rowhouse_frontage_edge, shade, wall_light, wall_material, wall_surface_light,
+        ROWHOUSE_CORNICE_OUTSET_METERS, ROWHOUSE_WINDOW_TRIM_WIDTH_METERS, WallStyle, block_seed,
+        classify_building, facade_detail, infer_pitched_roof, palette, point_in_polygon,
+        polygon_area, roof_feature, rowhouse_cornice_segment, rowhouse_cornice_segments,
+        rowhouse_entry_layout, rowhouse_entry_stoop, rowhouse_floor_height, rowhouse_frontage_edge,
+        shade, wall_light, wall_material, wall_seed, wall_surface_light,
     };
     use crate::{
         projection::Projection,
         texture::AerialTile,
         world::{Bounds, Building, BuildingContext, BuildingKind, Ring, View},
     };
+    use sha2::{Digest, Sha256};
     use tiny_skia::Pixmap;
 
     fn ring(width: f32, depth: f32) -> Ring {
@@ -1859,6 +1883,71 @@ mod tests {
             ),
             base
         );
+    }
+
+    #[test]
+    fn known_rowhouse_frontages_get_trim_on_two_upper_stories_only() -> Result<(), &'static str> {
+        let mut house = building(5.0, 16.0, 12.0);
+        house.frontage_edge = Some(0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let building_style = entry_style(&house, &context);
+        let entry = rowhouse_entry_layout(&house, &context, building_style).ok_or("entry")?;
+        let edge_end = (
+            entry.origin.0 + entry.unit.0 * entry.length,
+            entry.origin.1 + entry.unit.1 * entry.length,
+        );
+        let seed = wall_seed(building_style.seed, entry.origin, edge_end);
+        let floor_height = rowhouse_floor_height(seed);
+        let trim_along = entry.bay_width * 0.22 - ROWHOUSE_WINDOW_TRIM_WIDTH_METERS * 0.5;
+        let trim_point = (
+            entry.origin.0 + entry.unit.0 * trim_along,
+            entry.origin.1 + entry.unit.1 * trim_along,
+        );
+        let style = WallStyle {
+            facade: building_style.facade,
+            kind: FacadeKind::Rowhouse,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: house.height,
+            left: entry.origin,
+            right: edge_end,
+            seed,
+            entry: Some(entry),
+        };
+        let trim = palette::mix(style.facade, [190, 181, 165], 0.52);
+
+        assert_eq!(facade_detail(trim_point, floor_height + 1.0, style), trim);
+        assert_eq!(
+            facade_detail(trim_point, floor_height * 2.0 + 1.0, style),
+            trim
+        );
+        assert_eq!(
+            facade_detail(trim_point, floor_height * 3.0 + 1.0, style),
+            style.facade
+        );
+        assert_eq!(
+            facade_detail(
+                trim_point,
+                floor_height + 1.0,
+                WallStyle {
+                    entry: None,
+                    ..style
+                }
+            ),
+            style.facade
+        );
+
+        let glass_along = entry.bay_width * 0.5;
+        let glass_point = (
+            entry.origin.0 + entry.unit.0 * glass_along,
+            entry.origin.1 + entry.unit.1 * glass_along,
+        );
+        assert_ne!(facade_detail(glass_point, floor_height + 1.0, style), trim);
+        Ok(())
     }
 
     #[test]
@@ -2211,6 +2300,61 @@ mod tests {
                 first_depth.iter().any(|depth| depth.is_finite()),
                 "{view:?}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_rowhouse_frontage_keeps_the_frozen_v62_raster_in_all_views()
+    -> Result<(), &'static str> {
+        let house = building(5.0, 16.0, 9.0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+        let expected = [
+            [
+                24, 252, 24, 29, 52, 90, 174, 131, 130, 161, 129, 254, 51, 26, 54, 185, 13, 114,
+                104, 255, 254, 187, 219, 26, 145, 33, 130, 127, 97, 98, 46, 100,
+            ],
+            [
+                36, 211, 187, 82, 162, 149, 185, 187, 222, 50, 191, 114, 222, 124, 215, 64, 107,
+                68, 55, 136, 253, 238, 12, 112, 74, 68, 204, 97, 93, 226, 16, 189,
+            ],
+            [
+                218, 14, 142, 243, 91, 60, 240, 129, 168, 19, 254, 141, 241, 100, 110, 82, 224,
+                185, 129, 78, 151, 237, 120, 192, 114, 30, 209, 50, 222, 87, 239, 163,
+            ],
+            [
+                119, 141, 191, 110, 85, 172, 211, 208, 82, 253, 209, 190, 127, 7, 186, 9, 10, 173,
+                105, 150, 167, 152, 231, 85, 229, 108, 247, 73, 192, 103, 75, 83,
+            ],
+        ];
+
+        for (view, expected) in View::ALL.into_iter().zip(expected) {
+            let bounds = house.ring.bounds.projected(house.height, view).pad(3.0);
+            let projection = Projection {
+                bounds,
+                scale: 256.0 / bounds.width().max(bounds.height()),
+                view,
+            };
+            let mut pixmap = Pixmap::new(256, 256).ok_or("pixmap")?;
+            let mut depth = vec![f32::NEG_INFINITY; 256 * 256];
+            super::draw_city_buildings(
+                &mut pixmap,
+                [(&house, &context)],
+                &projection,
+                &aerial,
+                1.0,
+                &mut depth,
+            );
+            let mut digest = Sha256::new();
+            digest.update(pixmap.data());
+            for value in depth {
+                digest.update(value.to_bits().to_le_bytes());
+            }
+            assert_eq!(<[u8; 32]>::from(digest.finalize()), expected, "{view:?}");
         }
         Ok(())
     }

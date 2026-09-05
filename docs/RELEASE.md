@@ -60,12 +60,14 @@
   its own treatment, and the rich Center City mesh views should not show any
   terrain shading at all.
 - Inspect attached rowhouse blocks in Italian Market, East Passyunk, Point
-  Breeze, and Port Richmond. Cornice ledges and entrance stoops should appear
-  only on exposed selected front edges where v12 has a named frontage. Stoops
+  Breeze, and Port Richmond. Cornice ledges, upper window surrounds, and
+  entrance stoops should appear only on exposed selected front edges where v12 has a named frontage. Stoops
   should align with the painted door and project away from the footprint. The
-  cornice should stay below the recorded roof line. Both features should remain
-  aligned across tile boundaries. Twins, warehouses, unknown frontages, and
-  broad side walls are negative controls.
+  surrounds should align with the painted upper windows and stay below the
+  cornice. The cornice should stay below the recorded roof line. All three features should remain
+  aligned across tile boundaries. Twins, warehouses, and broad side walls are
+  negative controls. Unknown frontages are negative controls for stoops and
+  window surrounds, but they retain the earlier eligible cornice rule.
 - Check inventoried trees in several dense and sparse neighborhoods. Default
   crowns must match the prior renderer, explicit conifer, columnar, weeping,
   and shrub forms must stay within the old crown extent, and no crown may clip

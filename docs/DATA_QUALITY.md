@@ -133,7 +133,9 @@ and depth buffer as flat roofs, and never receive synthetic roof furniture.
 The current packed world has 438,804 known frontages and 106,868 unknown frontages. The renderer
 uses 257,183 known frontages among 286,338 high confidence attached rowhouses. The remaining 29,155
 attached rowhouses keep the earlier exposed short wall rule. The street match does not claim that
-the drawn doors, windows, cornice, or stoop were observed.
+the drawn doors, windows, window surrounds, cornice, or stoop were observed. On known frontages, the
+first two upper floors can receive painted stone toned surrounds aligned with the generated window
+openings. The surround is 0.24 metres wide and adds no geometry outside the footprint.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly
@@ -145,8 +147,8 @@ high-confidence attached rowhouses, 51,849 rowhouse-like footprints, and
 139,080 two-building/twin cases. These are rendering classes, not land-use or
 architectural survey labels.
 
-The added facade, cornice, stoop, and roof detail is synthesis. It does not report the
-real number of floors, window positions, door positions, wall material,
+The added facade, window surround, cornice, stoop, and roof detail is synthesis. It does not report
+the real number of floors, window positions, door positions, wall material,
 building use, or condition. It also does not report real chimney or
 mechanical-unit locations. The exposed rowhouse frontage, cornice, and stoop are
 inferred from footprint proportions and attached edges rather than an address,

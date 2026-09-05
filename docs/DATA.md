@@ -133,8 +133,10 @@ is `e029dc4644556cb4f28128eef149ffa97a45b177a968e6cb91224e7add94d20b`. A byte va
 unknown. Edges that cannot fit in the byte also remain unknown. The Rust renderer uses a known edge
 only for high confidence attached rowhouses and only when the edge is not a party wall. The selected
 edge controls the painted openings and cornice. It can also place a small two tier entrance stoop
-when the edge passes the existing short face rule. The stoop is illustrative and is not an observed
-entrance. Every other building keeps the earlier rendering rule. The current Rust context classifier uses 257,183 named
+when the edge passes the existing short face rule. The first two upper floors can receive painted
+stone toned surrounds that share the exact generated window layout. The stoop and surrounds are
+illustrative. They are not observed entrances or facade geometry. Every other building keeps the
+earlier rendering rule. The current Rust context classifier uses 257,183 named
 frontages among 286,338 high confidence attached rowhouses. The v12 world is 98,044,662 bytes with
 SHA-256 `800628be026c3d7e7ab6e908b5fbc8588d6f747122140eb24f6f5a6639419661`.
 
