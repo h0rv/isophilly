@@ -388,6 +388,36 @@ pub struct StreetTree {
     pub diameter: f32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportKind {
+    Expressway,
+    Arterial,
+    Connector,
+}
+
+impl TryFrom<u8> for TransportKind {
+    type Error = io::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Expressway),
+            2 => Ok(Self::Arterial),
+            3 => Ok(Self::Connector),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported transport class",
+            )),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TransportLine {
+    pub kind: TransportKind,
+    pub points: Vec<(f32, f32)>,
+    pub bounds: Bounds,
+}
+
 impl StreetTree {
     pub fn height(self) -> f32 {
         (self.diameter * 8.0 + 3.0).clamp(3.5, 15.0)
@@ -477,6 +507,7 @@ pub struct World {
     pub water: Vec<Ring>,
     pub parks: Vec<Ring>,
     pub street_trees: Vec<StreetTree>,
+    pub transport: Vec<TransportLine>,
     pub building_iso_tree: RTree<Indexed>,
     pub building_source_tree: RTree<Indexed>,
     pub building_covered_by_mesh: Vec<bool>,
@@ -493,6 +524,8 @@ pub struct World {
     pub park_tree: RTree<Indexed>,
     pub street_tree_iso_tree: RTree<Indexed>,
     pub street_tree_source_tree: RTree<Indexed>,
+    pub transport_iso_tree: RTree<Indexed>,
+    pub transport_source_tree: RTree<Indexed>,
     pub iso_bounds: Bounds,
     pub rich_source_bounds: Option<Bounds>,
     pub max_height: f32,
@@ -589,7 +622,8 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
             "not isophilly data",
         ));
     }
-    if cursor.u32()? != 9 {
+    let version = cursor.u32()?;
+    if !(9..=10).contains(&version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -608,6 +642,11 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let water_count = cursor.u32()? as usize;
     let park_count = cursor.u32()? as usize;
     let street_tree_count = cursor.u32()? as usize;
+    let transport_count = if version >= 10 {
+        cursor.u32()? as usize
+    } else {
+        0
+    };
     let texture_sha256 = cursor
         .take(32)?
         .try_into()
@@ -720,6 +759,44 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         }
         street_trees.push(StreetTree { point, diameter });
     }
+    let mut transport = Vec::with_capacity(transport_count);
+    for _ in 0..transport_count {
+        let kind = TransportKind::try_from(cursor.u8()?)?;
+        let point_count = cursor.u32()? as usize;
+        if !(2..=100_000).contains(&point_count) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transport line has unsupported point count",
+            ));
+        }
+        cursor.ensure_items(point_count, 2 * size_of::<f32>())?;
+        let mut bounds = Bounds {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+        };
+        let mut points = Vec::with_capacity(point_count);
+        for _ in 0..point_count {
+            let point = (cursor.f32()?, cursor.f32()?);
+            if !point.0.is_finite() || !point.1.is_finite() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transport line has non-finite coordinate",
+                ));
+            }
+            bounds.min_x = bounds.min_x.min(point.0);
+            bounds.min_y = bounds.min_y.min(point.1);
+            bounds.max_x = bounds.max_x.max(point.0);
+            bounds.max_y = bounds.max_y.max(point.1);
+            points.push(point);
+        }
+        transport.push(TransportLine {
+            kind,
+            points,
+            bounds,
+        });
+    }
     if cursor.remaining() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -770,6 +847,8 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         detailed_buildings(&buildings, &building_source_tree, &building_parts);
     let street_tree_iso_tree = index_street_trees(&street_trees, View::SouthEast);
     let street_tree_source_tree = index_source_street_trees(&street_trees);
+    let transport_iso_tree = index_transport(&transport, View::SouthEast);
+    let transport_source_tree = index_source_transport(&transport);
     let mut texture_ids: Vec<_> = building_meshes.iter().map(|mesh| mesh.texture_id).collect();
     texture_ids.sort_unstable();
     texture_ids.dedup();
@@ -790,6 +869,8 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         park_tree: index_rings(&parks),
         street_tree_iso_tree,
         street_tree_source_tree,
+        transport_iso_tree,
+        transport_source_tree,
         buildings,
         building_contexts,
         building_parts,
@@ -801,6 +882,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         water,
         parks,
         street_trees,
+        transport,
         iso_bounds: bounds.isometric(max_height),
         rich_source_bounds,
         max_height,
@@ -1347,6 +1429,24 @@ fn index_source_street_trees(trees: &[StreetTree]) -> RTree<Indexed> {
                     },
                 )
             })
+            .collect(),
+    )
+}
+fn index_transport(lines: &[TransportLine], view: View) -> RTree<Indexed> {
+    RTree::bulk_load(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| indexed(index, line.bounds.projected(0.0, view)))
+            .collect(),
+    )
+}
+fn index_source_transport(lines: &[TransportLine]) -> RTree<Indexed> {
+    RTree::bulk_load(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| indexed(index, line.bounds))
             .collect(),
     )
 }

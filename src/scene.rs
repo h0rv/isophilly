@@ -62,6 +62,8 @@ struct Counts {
     building_meshes: usize,
     #[serde(default)]
     street_trees: usize,
+    #[serde(default)]
+    transport_lines: usize,
 }
 
 impl Scene {
@@ -93,6 +95,7 @@ impl Scene {
                 buildings: world.buildings.len(),
                 building_meshes: world.building_meshes.len(),
                 street_trees: world.street_trees.len(),
+                transport_lines: world.transport.len(),
             },
             tile_version,
             max_tile_zoom: ART_ZOOM,
@@ -295,6 +298,7 @@ mod tests {
                 buildings: 1,
                 building_meshes: 1,
                 street_trees: 1,
+                transport_lines: 0,
             },
             tile_version: tile_version.clone(),
             max_tile_zoom: ART_ZOOM,

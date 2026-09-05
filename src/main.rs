@@ -11,6 +11,7 @@ mod shadow_render;
 mod texture;
 mod tile_codec;
 mod tile_identity;
+mod transport_render;
 mod tree_render;
 mod world;
 

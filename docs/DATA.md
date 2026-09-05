@@ -1,10 +1,10 @@
 # Data pipeline
 
-`uv run --locked poe ingest` loads nine source datasets and writes two
+`uv run --locked poe ingest` loads ten source datasets and writes two
 clean artifacts:
 
 - `data/clean/philly.bin` contains fallback buildings, building parts,
-  accepted textured meshes, surface masks, street-tree points, texture
+  accepted textured meshes, surface masks, typed major-transport lines, street-tree points, texture
   references, and the City boundary.
 - `data/clean/meta.json` records source URLs, request times, HTTP validators,
   SHA-256 checksums, bounds, counts, and output checksums.
@@ -21,14 +21,16 @@ The active pipeline has one source for each job:
 2. Building Footprints supplies citywide outlines and heights.
 3. Hydrology polygons provide restrained water color grading masks.
 4. Park polygons provide restrained vegetation color grading masks.
-5. OpenStreetMap building parts supply documented Center City setbacks and
+5. Street Centerlines supplies only three City-ranked through-road classes for
+   restrained citywide transport linework.
+6. OpenStreetMap building parts supply documented Center City setbacks and
    roof forms where photographed meshes are unavailable.
-6. The 2015 I3S scene supplies the newest detailed Center City geometry and
+7. The 2015 I3S scene supplies the newest detailed Center City geometry and
    textures.
-7. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
-8. The 2008 stadium archive supplies detailed geometry and textures for the
+8. The 2008 and 2009 legacy downtown archive fills gaps outside that scene.
+9. The 2008 stadium archive supplies detailed geometry and textures for the
    sports complex.
-9. The Philadelphia Parks & Recreation 2025 tree inventory supplies a
+10. The Philadelphia Parks & Recreation 2025 tree inventory supplies a
    citywide point layer and trunk diameters.
 
 The current retained hydrology snapshot comes from the official
@@ -65,7 +67,9 @@ parser, validation rules, texture store, and output types.
 
 ## Geometry rules
 
-- Coordinates use EPSG:32129, NAD83 Pennsylvania South in metres.
+- Horizontal coordinates use EPSG:32129 as retained by the City pipeline
+  (US survey feet). Building and mesh heights remain metres. Do not reuse a
+  height threshold as a horizontal distance.
 - City Limits defines the world bounds and tile presence.
 - Building `approx_hgt` is the primary height in US survey feet. `max_hgt` is
   the fallback. Values below 2.4 metres or above 400 metres receive the 8 metre
@@ -86,9 +90,16 @@ parser, validation rules, texture store, and output types.
   textures. Missing or invalid textures are errors, not a reason to draw a
   plain replacement polygon.
 
-Street centerlines and `streets.bin` remain removed. Roads come directly from
-the aerial image. Water and park polygons now grade only matching aerial pixels
-instead of drawing flat replacement polygons.
+The pinned Street Centerlines snapshot is `street-centerline-b9a1466fce07.geojson`
+(SHA-256 `b9a1466fce07dd0463198995d6f4fd705c463aa483e58ce594ab9a07de22fd5f`).
+Only City classes 1, 2, and 3 are retained as expressway, arterial, and connector
+cues (416, 4,439, and 4,505 lines respectively from this snapshot). They are
+world-anchored, translucent strokes drawn below shadows and
+buildings; their role is navigation hierarchy, not to replace the aerial road
+surface. Local classes stay in the aerial to avoid a dense wireframe. This
+snapshot has no independently typed rail geometry, so rail remains visible only
+through the aerial and PASDA road-or-rail land-cover class until a pinned public
+rail centerline source is added.
 
 ## Land cover class mask
 

@@ -922,6 +922,9 @@ try {
   if (meta.counts?.street_trees !== 151_371) {
     throw new Error(`server has no complete street-tree layer: ${JSON.stringify(meta.counts)}`);
   }
+  if (meta.counts?.transport_lines !== 9_360) {
+    throw new Error(`server has no complete transport layer: ${JSON.stringify(meta.counts)}`);
+  }
   if (!Array.isArray(meta.city_hall) || meta.city_hall.length !== 2) {
     throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
   }

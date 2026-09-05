@@ -12,6 +12,7 @@ use crate::{
     shadow_render::draw_cast_shadows,
     texture::AerialTile,
     tile_codec::encode_rgba,
+    transport_render::draw_transport,
     tree_render::draw_street_trees,
     world::{Bounds, PRIMARY_MESH_TEXTURE_LIMIT, Ring, View, World},
 };
@@ -44,6 +45,15 @@ pub fn render_tile(
         sampling_block,
         aerial,
         land_cover,
+    );
+    let transport_query = transport_query(bounds, scale);
+    draw_transport(
+        &mut pixmap,
+        world
+            .transport_iso_tree
+            .locate_in_envelope_intersecting(transport_query)
+            .map(|item| &world.transport[item.index]),
+        &projection,
     );
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let margin = PROCEDURAL_ROOF_MARGIN_METERS + 1.0 / scale;
@@ -151,6 +161,15 @@ pub fn render_rich_tile(
         aerial,
         land_cover,
     );
+    let transport_query = transport_query(bounds.ground_source_bounds_for(view), scale);
+    draw_transport(
+        &mut pixmap,
+        world
+            .transport_source_tree
+            .locate_in_envelope_intersecting(transport_query)
+            .map(|item| &world.transport[item.index]),
+        &projection,
+    );
     let mut depth = vec![f32::NEG_INFINITY; (TILE_SIZE * TILE_SIZE) as usize];
     let query = bounds.source_envelope_for(world.max_height, view);
     draw_city_buildings(
@@ -214,6 +233,17 @@ pub fn render_blank_tile() -> io::Result<Vec<u8>> {
 
 fn ground() -> Color {
     Color::from_rgba8(217, 209, 195, 255)
+}
+
+fn transport_query(bounds: Bounds, scale: f32) -> AABB<[f32; 2]> {
+    // Centerline widths are in feet, while their scale floor is in pixels.
+    // Include both in the query so a route just outside a tile still paints
+    // its visible stroke at the edge. This keeps prebuilt neighbors seamless.
+    let margin = 10.0 + 2.0 / scale.max(f32::EPSILON);
+    AABB::from_corners(
+        [bounds.min_x - margin, bounds.min_y - margin],
+        [bounds.max_x + margin, bounds.max_y + margin],
+    )
 }
 
 fn draw_ground(
@@ -358,8 +388,11 @@ fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
 mod tests {
     use std::collections::BTreeSet;
 
+    use rstar::Envelope;
+
     use super::{
         TILE_SIZE, block_size, canonical_block_sample, grade_ground, grade_water, rich_block_size,
+        transport_query,
     };
     use crate::land_cover::LandCoverClass;
     use crate::pyramid::ART_ZOOM;
@@ -388,6 +421,28 @@ mod tests {
 
         assert_eq!(block_size(bounds), 2.0);
         assert_eq!(rich_block_size(bounds), 1.0);
+    }
+
+    #[test]
+    fn transport_query_keeps_a_near_edge_stroke_in_both_neighbor_tiles() {
+        let left = Bounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 100.0,
+            max_y: 100.0,
+        };
+        let right = Bounds {
+            min_x: 100.0,
+            min_y: 0.0,
+            max_x: 200.0,
+            max_y: 100.0,
+        };
+        // This line is just beyond the left tile's source bounds, but an
+        // expressway stroke can still reach its rightmost output pixels.
+        let line = rstar::AABB::from_corners([104.0, 40.0], [106.0, 60.0]);
+
+        assert!(transport_query(left, 1.0).intersects(&line));
+        assert!(transport_query(right, 1.0).intersects(&line));
     }
 
     #[test]

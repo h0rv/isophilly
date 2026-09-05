@@ -45,6 +45,18 @@ class StreetTree:
     diameter_m: float
 
 
+class TransportKind(IntEnum):
+    EXPRESSWAY = 1
+    ARTERIAL = 2
+    CONNECTOR = 3
+
+
+@dataclass(frozen=True, slots=True)
+class TransportLine:
+    kind: TransportKind
+    points: tuple[Point, ...]
+
+
 class RoofShape(IntEnum):
     FLAT = 0
     GABLED = 1

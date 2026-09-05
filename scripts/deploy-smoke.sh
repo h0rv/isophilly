@@ -26,7 +26,7 @@ for (const key of ["schema_version", "world_sha256", "land_cover_sha256", "tile_
     throw new Error(`live ${key} mismatch: expected ${local[key]}, got ${live[key]}`);
   }
 }
-for (const key of ["buildings", "building_meshes", "street_trees"]) {
+for (const key of ["buildings", "building_meshes", "street_trees", "transport_lines"]) {
   if (live.counts?.[key] !== local.counts?.[key]) {
     throw new Error(`live count ${key} mismatch: expected ${local.counts?.[key]}, got ${live.counts?.[key]}`);
   }

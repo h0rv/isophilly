@@ -67,6 +67,7 @@ class Sources:
     buildings: Source
     water: Source
     parks: Source
+    streets: Source
     street_trees: Source
     building_parts: Source
     downtown_meshes: Source
@@ -79,6 +80,7 @@ class Sources:
             self.buildings,
             self.water,
             self.parks,
+            self.streets,
             self.street_trees,
             self.building_parts,
             self.downtown_meshes,
@@ -123,6 +125,16 @@ SOURCES = Sources(
         "ppr-properties",
         "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
         "PPR_Properties/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson",
+    ),
+    streets=Source(
+        "Street Centerlines",
+        "street-centerline",
+        "https://www.opendataphilly.org/datasets/street-centerlines.geojson",
+        minimum_bytes=10_000_000,
+        attribution="City of Philadelphia",
+        terms_url="https://www.opendataphilly.org/datasets/street-centerlines/",
+        immutable=True,
+        expected_sha256="b9a1466fce07dd0463198995d6f4fd705c463aa483e58ce594ab9a07de22fd5f",
     ),
     street_trees=Source(
         "2025 Philadelphia Tree Inventory",

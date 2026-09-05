@@ -18,6 +18,7 @@ from isophilly_ingest.geometry import (
     height_from_values,
     projected,
     street_trees,
+    transport_lines,
     tree_diameter,
     validate_street_tree_output,
 )
@@ -31,6 +32,8 @@ from isophilly_ingest.models import (
     RoofShape,
     Snapshot,
     StreetTree,
+    TransportKind,
+    TransportLine,
 )
 
 
@@ -213,6 +216,45 @@ class StreetTreeTests(unittest.TestCase):
             validate_tree_snapshot(invalid)
 
 
+class TransportTests(unittest.TestCase):
+    def test_transport_keeps_only_citywide_ranked_roads(self) -> None:
+        import geopandas as gpd
+        from shapely.geometry import LineString, Polygon
+
+        city = Polygon(((0, 0), (100, 0), (100, 100), (0, 100)))
+        frame = gpd.GeoDataFrame(
+            {"class": [3, 1, 2, 4, 12]},
+            geometry=[
+                LineString(((10, 10), (90, 10))),
+                LineString(((10, 20), (90, 20))),
+                LineString(((-10, 30), (110, 30))),
+                LineString(((10, 40), (90, 40))),
+                LineString(((10, 50), (90, 50))),
+            ],
+            crs=32129,
+        )
+
+        result = transport_lines(frame, city)
+
+        self.assertEqual(
+            [line.kind for line in result],
+            [
+                TransportKind.EXPRESSWAY,
+                TransportKind.ARTERIAL,
+                TransportKind.CONNECTOR,
+            ],
+        )
+        self.assertEqual(result[1].points, ((0.0, 30.0), (100.0, 30.0)))
+
+    def test_transport_requires_its_city_class_schema(self) -> None:
+        import geopandas as gpd
+        from shapely.geometry import LineString, Polygon
+
+        frame = gpd.GeoDataFrame({"rank": [1]}, geometry=[LineString(((0, 0), (10, 0)))], crs=32129)
+        with self.assertRaisesRegex(ValueError, "class field"):
+            transport_lines(frame, Polygon(((0, 0), (10, 0), (10, 10), (0, 10))))
+
+
 class WorldFormatTests(unittest.TestCase):
     def test_python_writer_matches_rust_v9_golden_world(self) -> None:
         output = BytesIO()
@@ -251,6 +293,29 @@ class WorldFormatTests(unittest.TestCase):
 
         fixture = Path(__file__).with_name("fixtures").joinpath("world-v9.hex")
         self.assertEqual(output.getvalue().hex(), fixture.read_text().strip())
+
+    def test_python_writer_emits_v10_transport_lines_when_present(self) -> None:
+        import struct
+
+        output = BytesIO()
+        write_world(
+            output,
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            Bounds(0.0, 0.0, 10.0, 10.0),
+            bytes(range(32)),
+            [TransportLine(TransportKind.ARTERIAL, ((1.0, 2.0), (3.0, 4.0)))],
+        )
+
+        header = struct.unpack("<IIIIIIIIII", output.getvalue()[8:48])
+        self.assertEqual(header[0], 10)
+        self.assertEqual(header[-1], 1)
+        self.assertEqual(output.getvalue()[-21:], struct.pack("<BIffff", 2, 2, 1.0, 2.0, 3.0, 4.0))
 
 
 if __name__ == "__main__":

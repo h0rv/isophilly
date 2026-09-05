@@ -10,7 +10,7 @@ from numbers import Real
 import geopandas as gpd
 from pyproj import Transformer
 from shapely import make_valid
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry.base import BaseGeometry
 
@@ -27,7 +27,7 @@ from .config import (
     STREET_TREE_PAYLOAD_SHA256,
     STREET_TREE_SOURCE_RECORD_COUNT,
 )
-from .models import Building, Ring, StreetTree
+from .models import Building, Ring, StreetTree, TransportKind, TransportLine
 
 HEIGHT_FIELDS = ("approx_hgt", "max_hgt")
 TREE_FIELDS = ("objectid", "tree_name", "tree_dbh", "year", "loc_y", "loc_x", "geometry")
@@ -36,6 +36,47 @@ DEFAULT_TREE_DIAMETER_METERS = 0.15
 MIN_TREE_DIAMETER_METERS = 0.0254
 MAX_TREE_DIAMETER_METERS = 2.0
 TREE_LOCATION_TOLERANCE_METERS = 1.0
+TRANSPORT_SIMPLIFY_FEET = 3.0
+
+
+def transport_lines(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[TransportLine]:
+    """Keep only the three city-ranked road classes that read at city scale.
+
+    Street centerlines are reference geometry, not surveyed curb lines.  Local
+    streets would turn the aerial into a noisy wireframe, so classes 4 and
+    above stay in the photograph.  The City source has no rail geometry; rail
+    remains represented by its aerial/land-cover surface until a pinned rail
+    source is added deliberately.
+    """
+    if "class" not in frame:
+        raise ValueError("street centerline source has no class field")
+    result: list[TransportLine] = []
+    for kind_value, geometry in zip(frame["class"], projected(frame).geometry, strict=True):
+        if isinstance(kind_value, bool) or not isinstance(kind_value, Real):
+            continue
+        try:
+            kind = TransportKind(int(kind_value))
+        except ValueError:
+            continue
+        if kind_value != int(kind_value) or geometry is None or geometry.is_empty:
+            continue
+        clipped = geometry.intersection(city).simplify(
+            TRANSPORT_SIMPLIFY_FEET, preserve_topology=True
+        )
+        geometries = (
+            [clipped]
+            if isinstance(clipped, LineString)
+            else list(clipped.geoms)
+            if isinstance(clipped, (MultiLineString, GeometryCollection))
+            else []
+        )
+        for line in geometries:
+            if not isinstance(line, LineString):
+                continue
+            points = tuple((float(x), float(y)) for x, y in line.coords)
+            if len(points) >= 2:
+                result.append(TransportLine(kind=kind, points=points))
+    return sorted(result, key=lambda line: (int(line.kind), line.points))
 
 
 def projected(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
