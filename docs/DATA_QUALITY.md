@@ -109,7 +109,10 @@ gets a limited material palette and a different pattern of wall and roof
 detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
 bays on exposed short walls. The v12 data can mark one likely front edge from an exact City address,
 street name, address range, edge length, distance, and parallel alignment. A known edge limits the
-openings and cornice to that one nonparty edge on a high confidence attached rowhouse. An unknown
+openings and cornice to that one nonparty edge on a high confidence attached rowhouse. The same
+known edge can receive a two tier entrance stoop when it also passes the short face rule. The lower
+step is 0.70 metres deep and 0.18 metres high. The upper step is 0.38 metres deep and 0.36 metres
+high. Both steps align with the drawn door and use the same depth buffer as the building. An unknown
 edge keeps the earlier exposed short wall rule. Lower confidence building classes ignore the stored
 edge. High-confidence attached runs also receive a
 shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
@@ -130,7 +133,7 @@ and depth buffer as flat roofs, and never receive synthetic roof furniture.
 The current packed world has 438,804 known frontages and 106,868 unknown frontages. The renderer
 uses 257,183 known frontages among 286,338 high confidence attached rowhouses. The remaining 29,155
 attached rowhouses keep the earlier exposed short wall rule. The street match does not claim that
-the drawn doors, windows, or cornice were observed.
+the drawn doors, windows, cornice, or stoop were observed.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly
@@ -142,10 +145,10 @@ high-confidence attached rowhouses, 51,849 rowhouse-like footprints, and
 139,080 two-building/twin cases. These are rendering classes, not land-use or
 architectural survey labels.
 
-The added facade, cornice, and roof detail is synthesis. It does not report the
+The added facade, cornice, stoop, and roof detail is synthesis. It does not report the
 real number of floors, window positions, door positions, wall material,
 building use, or condition. It also does not report real chimney or
-mechanical-unit locations. The exposed rowhouse frontage and cornice are
+mechanical-unit locations. The exposed rowhouse frontage, cornice, and stoop are
 inferred from footprint proportions and attached edges rather than an address,
 entrance record, or street survey. The class names describe drawing rules and
 should not be used as property data.

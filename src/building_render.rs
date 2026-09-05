@@ -38,6 +38,14 @@ const ROWHOUSE_CORNICE_EDGE_METERS: std::ops::RangeInclusive<f32> = 3.048..=9.14
 const ROWHOUSE_CORNICE_OUTSET_METERS: f32 = 0.24;
 const ROWHOUSE_CORNICE_HEIGHT_METERS: f32 = 0.42;
 const ROWHOUSE_CORNICE_NORMAL_PROBE_METERS: f32 = 0.05;
+const ROWHOUSE_STOOP_LOWER_DEPTH_METERS: f32 = 0.70;
+const ROWHOUSE_STOOP_UPPER_DEPTH_METERS: f32 = 0.38;
+const ROWHOUSE_STOOP_LOWER_HEIGHT_METERS: f32 = 0.18;
+const ROWHOUSE_STOOP_UPPER_HEIGHT_METERS: f32 = 0.36;
+const ROWHOUSE_STOOP_LOWER_WIDTH_METERS: f32 = 1.25;
+const ROWHOUSE_STOOP_UPPER_WIDTH_METERS: f32 = 1.0;
+const ROWHOUSE_STOOP_SIDE_CLEARANCE_METERS: f32 = 0.45;
+const ROWHOUSE_STOOP_MINIMUM_WIDTH_METERS: f32 = 0.85;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -100,12 +108,23 @@ impl Rasterizer<'_, '_> {
             context,
             building.frontage_edge.map(usize::from),
         );
+        let entry = rowhouse_entry_layout(building, context, style);
         let inferred_roof = infer_pitched_roof(building, context);
         let wall_top = inferred_roof.map_or(building.height, |roof| roof.wall_top);
         for index in 0..building.ring.points.len() {
             let left = building.ring.points[index];
             let right = building.ring.points[(index + 1) % building.ring.points.len()];
-            self.draw_wall(left, right, 0.0, wall_top, index, style);
+            self.draw_wall(
+                left,
+                right,
+                (0.0, wall_top),
+                index,
+                style,
+                entry.filter(|entry| entry.edge_index == index),
+            );
+        }
+        if let Some(entry) = entry {
+            self.draw_rowhouse_entry_stoop(entry, style);
         }
         if let Some(roof) = inferred_roof {
             self.draw_inferred_pitched_roof(&building.ring, roof, style);
@@ -125,7 +144,7 @@ impl Rasterizer<'_, '_> {
         for index in 0..part.ring.points.len() {
             let left = part.ring.points[index];
             let right = part.ring.points[(index + 1) % part.ring.points.len()];
-            self.draw_wall(left, right, part.min_height, wall_top, index, style);
+            self.draw_wall(left, right, (part.min_height, wall_top), index, style, None);
         }
         if part.roof_shape == RoofShape::Flat || part.roof_height <= f32::EPSILON {
             self.draw_flat_roof(&part.ring, part.height, style);
@@ -228,11 +247,12 @@ impl Rasterizer<'_, '_> {
         &mut self,
         left: (f32, f32),
         right: (f32, f32),
-        bottom: f32,
-        top: f32,
+        vertical: (f32, f32),
         edge_index: usize,
         building: BuildingStyle,
+        entry: Option<RowhouseEntryLayout>,
     ) {
+        let (bottom, top) = vertical;
         let ground_left = Vertex::world(left, bottom, self.projection);
         let ground_right = Vertex::world(right, bottom, self.projection);
         let roof_left = Vertex::world(left, top, self.projection);
@@ -250,6 +270,7 @@ impl Rasterizer<'_, '_> {
             left,
             right,
             seed: building.seed ^ facade_seed(((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)),
+            entry,
         };
         self.draw_wall_triangle([ground_left, ground_right, roof_right], style);
         self.draw_wall_triangle([ground_left, roof_right, roof_left], style);
@@ -416,6 +437,60 @@ impl Rasterizer<'_, '_> {
         }
     }
 
+    fn draw_rowhouse_entry_stoop(&mut self, entry: RowhouseEntryLayout, style: BuildingStyle) {
+        let stone = palette::mix(style.facade, [132, 126, 116], 0.46);
+        for tier in rowhouse_entry_stoop(entry) {
+            let inner_left = Vertex::world(tier.inner[0], tier.height, self.projection);
+            let inner_right = Vertex::world(tier.inner[1], tier.height, self.projection);
+            let outer_left = Vertex::world(tier.outer[0], tier.height, self.projection);
+            let outer_right = Vertex::world(tier.outer[1], tier.height, self.projection);
+            let outer_left_ground = Vertex::world(tier.outer[0], 0.0, self.projection);
+            let outer_right_ground = Vertex::world(tier.outer[1], 0.0, self.projection);
+            let inner_left_ground = Vertex::world(tier.inner[0], 0.0, self.projection);
+            let inner_right_ground = Vertex::world(tier.inner[1], 0.0, self.projection);
+
+            self.draw_solid_quad(
+                [inner_left, inner_right, outer_right, outer_left],
+                stone,
+                1.0,
+            );
+            self.draw_solid_quad(
+                [
+                    outer_left_ground,
+                    outer_right_ground,
+                    outer_right,
+                    outer_left,
+                ],
+                stone,
+                wall_light((
+                    tier.outer[1].0 - tier.outer[0].0,
+                    tier.outer[1].1 - tier.outer[0].1,
+                )),
+            );
+            self.draw_solid_quad(
+                [inner_left_ground, outer_left_ground, outer_left, inner_left],
+                stone,
+                wall_light((
+                    tier.outer[0].0 - tier.inner[0].0,
+                    tier.outer[0].1 - tier.inner[0].1,
+                )),
+            );
+            self.draw_solid_quad(
+                [
+                    outer_right_ground,
+                    inner_right_ground,
+                    inner_right,
+                    outer_right,
+                ],
+                stone,
+                wall_light((
+                    tier.inner[1].0 - tier.outer[1].0,
+                    tier.inner[1].1 - tier.outer[1].1,
+                )),
+            );
+        }
+    }
+
     fn draw_inferred_pitched_roof(
         &mut self,
         ring: &Ring,
@@ -540,10 +615,10 @@ impl Rasterizer<'_, '_> {
                 self.draw_wall(
                     left,
                     right,
-                    roof_height,
-                    roof_height + height,
+                    (roof_height, roof_height + height),
                     edge_index,
                     equipment_style,
+                    None,
                 );
             }
             self.draw_flat_roof(&equipment, roof_height + height, equipment_style);
@@ -774,6 +849,7 @@ struct WallStyle {
     left: (f32, f32),
     right: (f32, f32),
     seed: u64,
+    entry: Option<RowhouseEntryLayout>,
 }
 
 #[derive(Clone, Copy)]
@@ -795,6 +871,121 @@ fn rowhouse_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: 
         && edge_length <= (style.short_side * 1.35).max(4.5)
 }
 
+fn rowhouse_entry_layout(
+    building: &Building,
+    context: &BuildingContext,
+    style: BuildingStyle,
+) -> Option<RowhouseEntryLayout> {
+    if context.kind != WorldBuildingKind::Rowhouse
+        || building.height < 5.5
+        || building.ring.points.len() < 3
+    {
+        return None;
+    }
+    let edge_index = usize::from(building.frontage_edge?);
+    if edge_index >= building.ring.points.len()
+        || edge_index >= u64::BITS as usize
+        || context.party_edge_mask & (1_u64 << edge_index) != 0
+    {
+        return None;
+    }
+    let left = building.ring.points[edge_index];
+    let right = building.ring.points[(edge_index + 1) % building.ring.points.len()];
+    let (origin, end) = canonical_edge(left, right);
+    let edge = (end.0 - origin.0, end.1 - origin.1);
+    let length = edge.0.hypot(edge.1);
+    if !ROWHOUSE_CORNICE_EDGE_METERS.contains(&length)
+        || !rowhouse_frontage_edge(style, edge_index, length)
+    {
+        return None;
+    }
+    let outward = outward_normal(&building.ring, origin, end)?;
+    let bays = if length < 6.4 { 2.0 } else { 3.0 };
+    let bay_width = length / bays;
+    let door_start = bay_width * 0.2;
+    let door_end = bay_width * 0.68;
+    let maximum_width = length - ROWHOUSE_STOOP_SIDE_CLEARANCE_METERS * 2.0;
+    if maximum_width < ROWHOUSE_STOOP_MINIMUM_WIDTH_METERS {
+        return None;
+    }
+    Some(RowhouseEntryLayout {
+        edge_index,
+        origin,
+        unit: (edge.0 / length, edge.1 / length),
+        outward,
+        length,
+        bay_width,
+        door_start,
+        door_end,
+    })
+}
+
+fn canonical_edge(left: (f32, f32), right: (f32, f32)) -> ((f32, f32), (f32, f32)) {
+    let order = left.0.total_cmp(&right.0).then(left.1.total_cmp(&right.1));
+    if order.is_gt() {
+        (right, left)
+    } else {
+        (left, right)
+    }
+}
+
+fn outward_normal(ring: &Ring, left: (f32, f32), right: (f32, f32)) -> Option<(f32, f32)> {
+    let edge = (right.0 - left.0, right.1 - left.1);
+    let length = edge.0.hypot(edge.1);
+    if length <= f32::EPSILON {
+        return None;
+    }
+    let normal = (-edge.1 / length, edge.0 / length);
+    let midpoint = ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5);
+    let probe = |direction: f32| {
+        (
+            midpoint.0 + normal.0 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
+            midpoint.1 + normal.1 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
+        )
+    };
+    let positive_inside = ring.contains(probe(1.0));
+    let negative_inside = ring.contains(probe(-1.0));
+    (positive_inside != negative_inside).then_some(if positive_inside {
+        (-normal.0, -normal.1)
+    } else {
+        normal
+    })
+}
+
+fn rowhouse_entry_stoop(entry: RowhouseEntryLayout) -> [StoopTier; 2] {
+    let maximum_width = entry.length - ROWHOUSE_STOOP_SIDE_CLEARANCE_METERS * 2.0;
+    let lower_width = ROWHOUSE_STOOP_LOWER_WIDTH_METERS.min(maximum_width);
+    let upper_width = ROWHOUSE_STOOP_UPPER_WIDTH_METERS.min(lower_width);
+    let center = (entry.door_start + entry.door_end) * 0.5;
+    let tier = |width: f32, depth: f32, height: f32| {
+        let left = center - width * 0.5;
+        let right = center + width * 0.5;
+        let point = |along: f32, outward: f32| {
+            (
+                entry.origin.0 + entry.unit.0 * along + entry.outward.0 * outward,
+                entry.origin.1 + entry.unit.1 * along + entry.outward.1 * outward,
+            )
+        };
+        StoopTier {
+            inner: [point(left, 0.0), point(right, 0.0)],
+            outer: [point(left, depth), point(right, depth)],
+            height,
+        }
+    };
+    [
+        tier(
+            lower_width,
+            ROWHOUSE_STOOP_LOWER_DEPTH_METERS,
+            ROWHOUSE_STOOP_LOWER_HEIGHT_METERS,
+        ),
+        tier(
+            upper_width,
+            ROWHOUSE_STOOP_UPPER_DEPTH_METERS,
+            ROWHOUSE_STOOP_UPPER_HEIGHT_METERS,
+        ),
+    ]
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct InferredRoof {
     wall_top: f32,
@@ -808,6 +999,25 @@ struct CorniceSegment {
     outer: [(f32, f32); 2],
     bottom: f32,
     top: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowhouseEntryLayout {
+    edge_index: usize,
+    origin: (f32, f32),
+    unit: (f32, f32),
+    outward: (f32, f32),
+    length: f32,
+    bay_width: f32,
+    door_start: f32,
+    door_end: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StoopTier {
+    inner: [(f32, f32); 2],
+    outer: [(f32, f32); 2],
+    height: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -987,24 +1197,7 @@ fn rowhouse_cornice_segment(
     {
         return None;
     }
-    let normal = (-edge.1 / length, edge.0 / length);
-    let midpoint = ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5);
-    let probe = |direction: f32| {
-        (
-            midpoint.0 + normal.0 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
-            midpoint.1 + normal.1 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
-        )
-    };
-    let positive_inside = building.ring.contains(probe(1.0));
-    let negative_inside = building.ring.contains(probe(-1.0));
-    if positive_inside == negative_inside {
-        return None;
-    }
-    let outward = if positive_inside {
-        (-normal.0, -normal.1)
-    } else {
-        normal
-    };
+    let outward = outward_normal(&building.ring, left, right)?;
     let outer = [
         (
             left.0 + outward.0 * ROWHOUSE_CORNICE_OUTSET_METERS,
@@ -1342,7 +1535,13 @@ fn industrial_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if height < 4.0 || length < 8.0 {
         return style.facade;
     }
-    let along = ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length;
+    let along = style.entry.map_or_else(
+        || ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length,
+        |entry| {
+            (point.0 - entry.origin.0)
+                .mul_add(entry.unit.0, (point.1 - entry.origin.1) * entry.unit.1)
+        },
+    );
     let bay_width = 17.0 + f32::from((style.seed & 7) as u8);
     let bay = along.rem_euclid(bay_width);
     if bay < 0.7 || bay > bay_width - 0.7 {
@@ -1369,7 +1568,13 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if length <= f32::EPSILON {
         return style.facade;
     }
-    let along = ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length;
+    let along = style.entry.map_or_else(
+        || ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length,
+        |entry| {
+            (point.0 - entry.origin.0)
+                .mul_add(entry.unit.0, (point.1 - entry.origin.1) * entry.unit.1)
+        },
+    );
 
     // A dark cornice and aligned floor courses make a run of simple boxes read
     // as Philadelphia rowhouses even when no facade photograph exists.
@@ -1391,8 +1596,13 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         };
     }
 
-    let bays = if length < 6.4 { 2.0 } else { 3.0 };
-    let bay_width = length / bays;
+    let bay_width = style.entry.map_or_else(
+        || {
+            let bays = if length < 6.4 { 2.0 } else { 3.0 };
+            length / bays
+        },
+        |entry| entry.bay_width,
+    );
     let column = along.rem_euclid(bay_width);
     let window_left = bay_width * 0.22;
     let window_right = bay_width * 0.78;
@@ -1403,7 +1613,10 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         && along >= bay_width * 1.12
         && (window_left..=window_right).contains(&column);
     let door = (0.12..=2.55).contains(&relative_z)
-        && (bay_width * 0.2..=bay_width * 0.68).contains(&along);
+        && style.entry.map_or_else(
+            || (bay_width * 0.2..=bay_width * 0.68).contains(&along),
+            |entry| (entry.door_start..=entry.door_end).contains(&along),
+        );
     if door {
         return palette::mix(style.facade, [66, 58, 52], 0.68);
     }
@@ -1424,8 +1637,8 @@ mod tests {
         FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
         ROWHOUSE_CORNICE_OUTSET_METERS, WallStyle, block_seed, classify_building, facade_detail,
         infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, rowhouse_cornice_segment,
-        rowhouse_cornice_segments, rowhouse_frontage_edge, shade, wall_light, wall_material,
-        wall_surface_light,
+        rowhouse_cornice_segments, rowhouse_entry_layout, rowhouse_entry_stoop,
+        rowhouse_frontage_edge, shade, wall_light, wall_material, wall_surface_light,
     };
     use crate::{
         projection::Projection,
@@ -1459,6 +1672,23 @@ mod tests {
             height,
             frontage_edge: None,
             ring: ring(width, depth),
+        }
+    }
+
+    fn entry_style(building: &Building, context: &BuildingContext) -> super::BuildingStyle {
+        super::BuildingStyle {
+            kind: FacadeKind::Rowhouse,
+            facade: [152, 91, 68],
+            seed: 0,
+            short_side: building
+                .ring
+                .bounds
+                .width()
+                .min(building.ring.bounds.height()),
+            party_edge_mask: context.party_edge_mask,
+            frontage_edge: (context.kind == BuildingKind::Rowhouse)
+                .then(|| building.frontage_edge.map(usize::from))
+                .flatten(),
         }
     }
 
@@ -1505,6 +1735,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (20.0, 0.0),
             seed: 0,
+            entry: None,
         };
         let band = facade_detail((3.0, 0.0), 3.0, style);
         let window = facade_detail((1.0, 0.0), 1.5, style);
@@ -1614,6 +1845,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (6.0, 0.0),
             seed: 0,
+            entry: None,
         };
         assert_ne!(facade_detail((2.0, 0.0), 4.4, common), base);
         assert_eq!(
@@ -1679,6 +1911,143 @@ mod tests {
         };
         assert!(rowhouse_frontage_edge(unknown, 0, 5.0));
         assert!(rowhouse_frontage_edge(unknown, 2, 5.0));
+    }
+
+    #[test]
+    fn rowhouse_stoops_require_a_known_eligible_nonparty_frontage() {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        let rowhouse = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let style = entry_style(&house, &rowhouse);
+        assert!(rowhouse_entry_layout(&house, &rowhouse, style).is_some());
+
+        house.frontage_edge = None;
+        let style = entry_style(&house, &rowhouse);
+        assert!(rowhouse_entry_layout(&house, &rowhouse, style).is_none());
+
+        house.frontage_edge = Some(0);
+        let style = entry_style(&house, &rowhouse);
+        let party_front = BuildingContext {
+            party_edge_mask: rowhouse.party_edge_mask | 1,
+            ..rowhouse
+        };
+        assert!(rowhouse_entry_layout(&house, &party_front, style).is_none());
+        assert!(
+            rowhouse_entry_layout(&house, &context(BuildingKind::RowhouseLike), style).is_none()
+        );
+        assert!(rowhouse_entry_layout(&house, &context(BuildingKind::Twin), style).is_none());
+
+        let mut short = building(3.0, 16.0, 9.0);
+        short.frontage_edge = Some(0);
+        let style = entry_style(&short, &rowhouse);
+        assert!(rowhouse_entry_layout(&short, &rowhouse, style).is_none());
+
+        let mut long_side = building(8.0, 5.0, 9.0);
+        long_side.frontage_edge = Some(0);
+        let style = entry_style(&long_side, &rowhouse);
+        assert!(rowhouse_entry_layout(&long_side, &rowhouse, style).is_none());
+    }
+
+    #[test]
+    fn rowhouse_stoop_geometry_is_outward_and_aligns_to_the_painted_door()
+    -> Result<(), &'static str> {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let style = entry_style(&house, &context);
+        let layout = rowhouse_entry_layout(&house, &context, style).ok_or("entry layout")?;
+        let [lower, upper] = rowhouse_entry_stoop(layout);
+
+        assert_eq!(lower.height, 0.18);
+        assert_eq!(upper.height, 0.36);
+        assert!(lower.outer.iter().all(|&point| !house.ring.contains(point)));
+        assert!(upper.outer.iter().all(|&point| !house.ring.contains(point)));
+        assert!(lower.outer[0].1 < 0.0 && lower.outer[1].1 < 0.0);
+
+        let door_center = (layout.door_start + layout.door_end) * 0.5;
+        let door_point = (
+            layout.origin.0 + layout.unit.0 * door_center,
+            layout.origin.1 + layout.unit.1 * door_center,
+        );
+        let base = [152, 91, 68];
+        let style = WallStyle {
+            facade: base,
+            kind: FacadeKind::Rowhouse,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: house.height,
+            left: house.ring.points[0],
+            right: house.ring.points[1],
+            seed: 0,
+            entry: Some(layout),
+        };
+        assert_eq!(
+            facade_detail(door_point, 1.0, style),
+            crate::palette::mix(base, [66, 58, 52], 0.68)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rowhouse_stoop_layout_is_winding_stable() -> Result<(), &'static str> {
+        let mut original = building(5.0, 16.0, 9.0);
+        original.frontage_edge = Some(0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let style = entry_style(&original, &context);
+        let first = rowhouse_entry_layout(&original, &context, style).ok_or("original entry")?;
+
+        let mut reversed = original.clone();
+        reversed.ring.points.reverse();
+        reversed.frontage_edge = Some(2);
+        let style = entry_style(&reversed, &context);
+        let second = rowhouse_entry_layout(&reversed, &context, style).ok_or("reversed entry")?;
+
+        assert_eq!(first.origin, second.origin);
+        assert_eq!(first.unit, second.unit);
+        assert_eq!(first.outward, second.outward);
+        assert_eq!(first.door_start, second.door_start);
+        assert_eq!(first.door_end, second.door_end);
+        assert_eq!(rowhouse_entry_stoop(first), rowhouse_entry_stoop(second));
+
+        let point = (
+            first.origin.0 + first.unit.0 * (first.door_start + first.door_end) * 0.5,
+            first.origin.1 + first.unit.1 * (first.door_start + first.door_end) * 0.5,
+        );
+        let paint = |left, right, entry| WallStyle {
+            facade: [152, 91, 68],
+            kind: FacadeKind::Rowhouse,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: 9.0,
+            left,
+            right,
+            seed: 0,
+            entry: Some(entry),
+        };
+        assert_eq!(
+            facade_detail(
+                point,
+                1.0,
+                paint(original.ring.points[0], original.ring.points[1], first)
+            ),
+            facade_detail(
+                point,
+                1.0,
+                paint(reversed.ring.points[2], reversed.ring.points[3], second)
+            )
+        );
+        Ok(())
     }
 
     #[test]
@@ -1800,6 +2169,49 @@ mod tests {
         assert_ne!(first_pixels, without_cornice_pixels);
         assert_ne!(first_depth, without_cornice_depth);
         assert!(first_depth.iter().any(|depth| depth.is_finite()));
+        Ok(())
+    }
+
+    #[test]
+    fn rowhouse_stoop_raster_and_depth_are_deterministic_in_all_views() -> Result<(), &'static str>
+    {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+
+        for view in View::ALL {
+            let bounds = house.ring.bounds.projected(house.height, view).pad(3.0);
+            let projection = Projection {
+                bounds,
+                scale: 256.0 / bounds.width().max(bounds.height()),
+                view,
+            };
+            let render = || {
+                let mut pixmap = Pixmap::new(256, 256).ok_or("pixmap")?;
+                let mut depth = vec![f32::NEG_INFINITY; 256 * 256];
+                super::draw_city_buildings(
+                    &mut pixmap,
+                    [(&house, &context)],
+                    &projection,
+                    &aerial,
+                    1.0,
+                    &mut depth,
+                );
+                Ok::<_, &'static str>((pixmap.data().to_vec(), depth))
+            };
+            let (first_pixels, first_depth) = render()?;
+            let (second_pixels, second_depth) = render()?;
+            assert_eq!(first_pixels, second_pixels, "{view:?}");
+            assert_eq!(first_depth, second_depth, "{view:?}");
+            assert!(
+                first_depth.iter().any(|depth| depth.is_finite()),
+                "{view:?}"
+            );
+        }
         Ok(())
     }
 
@@ -2054,6 +2466,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (20.0, 0.0),
             seed: 0,
+            entry: None,
         };
         assert!(wall_surface_light(0.0, style) < wall_surface_light(10.0, style));
         assert!(wall_surface_light(19.9, style) < wall_surface_light(10.0, style));

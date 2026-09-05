@@ -31,9 +31,11 @@ High-confidence attached rowhouse runs receive a shallow depth-tested cornice le
 frontage-width edges. It projects 0.24 metres and stays within the top 0.42 metres of the recorded
 height. Party walls and lower-confidence rowhouse-like footprints do not receive the added volume.
 When the v12 world stores an exact address and street range match, the openings and cornice use only
-that selected front edge. Unknown frontages keep the earlier exposed short edge rule. The result is
+that selected front edge. A selected edge can also receive a two tier stoop aligned with the drawn
+door. The stoop projects no more than 0.70 metres and reaches 0.36 metres above the ground. Unknown
+frontages keep the earlier exposed short edge rule and do not receive a stoop. The result is
 illustrative geometry derived from the footprint, street record, and neighbor context. It is not a
-facade survey.
+facade or entrance survey.
 
 Water now uses a shoreline-aware deterministic treatment: official City hydrology still has
 priority, but the renderer also consults the 3 m land-cover mask to extend water only when nearby
