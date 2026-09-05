@@ -30,14 +30,16 @@ roof furniture on pitched roofs.
 High-confidence attached rowhouse runs receive a shallow depth-tested cornice ledge on exposed
 frontage-width edges. It projects 0.24 metres and stays within the top 0.42 metres of the recorded
 height. Party walls and lower-confidence rowhouse-like footprints do not receive the added volume.
-When the v12 world stores an exact address and street range match, the openings and cornice use only
-that selected front edge. A selected edge can also receive a two tier stoop aligned with the drawn
-door. The stoop projects no more than 0.70 metres and reaches 0.36 metres above the ground. Unknown
+When the v12 world stores an exact address and street range match, every attached drawing family uses
+only that nonparty edge for painted openings. Its component seed shares the floor rhythm while each
+wall keeps local material and glass variation. Cornices and stoops remain limited to high-confidence
+rowhouses. A selected high-confidence edge can receive a two tier stoop aligned with the drawn door.
+The stoop projects no more than 0.70 metres and reaches 0.36 metres above the ground. Unknown
 frontages keep the earlier exposed short edge rule and do not receive a stoop. The first two upper
-floors on a selected frontage can also receive painted stone toned surrounds aligned with the
-generated window openings. Unknown frontages do not receive the added surrounds. The result is
-illustrative geometry derived from the footprint, street record, and neighbor context. It is not a
-facade or entrance survey.
+floors on a selected high-confidence frontage can receive painted stone toned surrounds, and the
+same frontage can receive a painted stone base no taller than 0.56 metres outside the door. These
+features add no geometry. The result is illustrative geometry derived from the footprint, street
+record, and neighbor context. It is not a facade or entrance survey.
 
 Water now uses a shoreline-aware deterministic treatment: official City hydrology still has
 priority, but the renderer also consults the 3 m land-cover mask to extend water only when nearby

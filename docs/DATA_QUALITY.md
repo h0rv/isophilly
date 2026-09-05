@@ -50,6 +50,11 @@ correlation with source `Shape__Area`, and its ratio to that field stays within 
 the 1st to the 99th percentile. Its correlation with the selected building height is only
 0.12245. The field acts like another footprint area value rather than independent floor evidence.
 
+The merged LiDAR evidence rejects a height candidate when `roof_spread_m` is above 3 metres or
+above 35 percent of the candidate height, with a one metre floor. That is a height-quality gate,
+not a roof-shape or facade classifier. The retained artifact has quantiles and counts, not spatial
+facade returns, so it cannot support a bay, porch, window, or entrance rule.
+
 ## Terrain relief
 
 The current terrain artifact is `data/clean/terrain-v1.isoterrain`. It uses 256
@@ -113,8 +118,9 @@ openings and cornice to that one nonparty edge on a high confidence attached row
 known edge can receive a two tier entrance stoop when it also passes the short face rule. The lower
 step is 0.70 metres deep and 0.18 metres high. The upper step is 0.38 metres deep and 0.36 metres
 high. Both steps align with the drawn door and use the same depth buffer as the building. An unknown
-edge keeps the earlier exposed short wall rule. Lower confidence building classes ignore the stored
-edge. High-confidence attached runs also receive a
+edge keeps the earlier exposed short wall rule. Rowhouse-like footprints and twins use a known
+nonparty edge only to select painted openings. Their component seed shares floor cadence while wall
+seeds retain material and glass variation. High-confidence attached runs also receive a
 shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
 metres long. The ledge projects 0.24 metres and occupies the top 0.42 metres of
 the recorded building height, so it does not make the building taller. Detected
@@ -133,9 +139,10 @@ and depth buffer as flat roofs, and never receive synthetic roof furniture.
 The current packed world has 438,804 known frontages and 106,868 unknown frontages. The renderer
 uses 257,183 known frontages among 286,338 high confidence attached rowhouses. The remaining 29,155
 attached rowhouses keep the earlier exposed short wall rule. The street match does not claim that
-the drawn doors, windows, window surrounds, cornice, or stoop were observed. On known frontages, the
-first two upper floors can receive painted stone toned surrounds aligned with the generated window
-openings. The surround is 0.24 metres wide and adds no geometry outside the footprint.
+the drawn doors, windows, window surrounds, painted base, cornice, or stoop were observed. On known
+high-confidence rowhouse frontages, the first two upper floors can receive painted stone toned
+surrounds aligned with the generated window openings. A painted stone base reaches no higher than
+0.56 metres outside the door. These treatments add no geometry outside the footprint.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly
@@ -147,8 +154,8 @@ high-confidence attached rowhouses, 51,849 rowhouse-like footprints, and
 139,080 two-building/twin cases. These are rendering classes, not land-use or
 architectural survey labels.
 
-The added facade, window surround, cornice, stoop, and roof detail is synthesis. It does not report
-the real number of floors, window positions, door positions, wall material,
+The added facade, window surround, painted base, cornice, stoop, and roof detail is synthesis. It
+does not report the real number of floors, window positions, door positions, wall material,
 building use, or condition. It also does not report real chimney or
 mechanical-unit locations. The exposed rowhouse frontage, cornice, and stoop are
 inferred from footprint proportions and attached edges rather than an address,

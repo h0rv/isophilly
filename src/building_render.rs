@@ -48,6 +48,7 @@ const ROWHOUSE_STOOP_SIDE_CLEARANCE_METERS: f32 = 0.45;
 const ROWHOUSE_STOOP_MINIMUM_WIDTH_METERS: f32 = 0.85;
 const ROWHOUSE_WINDOW_TRIM_WIDTH_METERS: f32 = 0.24;
 const ROWHOUSE_WINDOW_TRIM_STORIES: std::ops::RangeInclusive<usize> = 1..=2;
+const ROWHOUSE_PLINTH_HEIGHT_METERS: f32 = 0.56;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -169,6 +170,7 @@ impl Rasterizer<'_, '_> {
                 kind,
             ),
             seed,
+            rhythm_seed: seed,
             short_side: ring.bounds.width().min(ring.bounds.height()),
             party_edge_mask: 0,
             frontage_edge: None,
@@ -198,14 +200,21 @@ impl Rasterizer<'_, '_> {
             | WorldBuildingKind::Twin => context.material_group_seed,
             _ => block_seed(ring.center()),
         };
+        let rhythm_seed = attached_rhythm_seed(context, seed);
         let sampled = self.facade_palette(ring);
         BuildingStyle {
             kind,
             facade: wall_material(sampled, ring.center(), seed, material_group_seed, kind),
             seed,
+            rhythm_seed,
             short_side: ring.bounds.width().min(ring.bounds.height()),
             party_edge_mask: context.party_edge_mask,
-            frontage_edge: if context.kind == WorldBuildingKind::Rowhouse {
+            frontage_edge: if matches!(
+                context.kind,
+                WorldBuildingKind::Rowhouse
+                    | WorldBuildingKind::RowhouseLike
+                    | WorldBuildingKind::Twin
+            ) {
                 frontage_edge
             } else {
                 None
@@ -272,6 +281,7 @@ impl Rasterizer<'_, '_> {
             left,
             right,
             seed: wall_seed(building.seed, left, right),
+            rhythm_seed: building.rhythm_seed,
             entry,
         };
         self.draw_wall_triangle([ground_left, ground_right, roof_right], style);
@@ -607,6 +617,7 @@ impl Rasterizer<'_, '_> {
                 kind: FacadeKind::LowRise,
                 facade: palette::mix(style.facade, [135, 137, 132], 0.62),
                 seed: style.seed.rotate_left(index as u32 + 7),
+                rhythm_seed: style.rhythm_seed.rotate_left(index as u32 + 7),
                 short_side: equipment.bounds.width().min(equipment.bounds.height()),
                 party_edge_mask: 0,
                 frontage_edge: None,
@@ -851,6 +862,7 @@ struct WallStyle {
     left: (f32, f32),
     right: (f32, f32),
     seed: u64,
+    rhythm_seed: u64,
     entry: Option<RowhouseEntryLayout>,
 }
 
@@ -859,6 +871,7 @@ struct BuildingStyle {
     kind: FacadeKind,
     facade: [u8; 3],
     seed: u64,
+    rhythm_seed: u64,
     short_side: f32,
     party_edge_mask: u64,
     frontage_edge: Option<usize>,
@@ -871,6 +884,17 @@ fn rowhouse_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: 
             .is_none_or(|selected| selected == edge_index)
         && (edge_index >= u64::BITS as usize || style.party_edge_mask & (1_u64 << edge_index) == 0)
         && edge_length <= (style.short_side * 1.35).max(4.5)
+}
+
+fn attached_rhythm_seed(context: &BuildingContext, fallback: u64) -> u64 {
+    // An attached component is one repeated facade run: make its floor rhythm
+    // shared while retaining the per-wall seed for local material and glass.
+    match context.kind {
+        WorldBuildingKind::Rowhouse | WorldBuildingKind::RowhouseLike | WorldBuildingKind::Twin => {
+            context.material_group_seed
+        }
+        _ => fallback,
+    }
 }
 
 fn rowhouse_entry_layout(
@@ -1591,7 +1615,7 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if height - relative_z < 0.42 {
         return style.facade.map(|channel| scale_channel(channel, 0.7));
     }
-    let floor_height = rowhouse_floor_height(style.seed);
+    let floor_height = rowhouse_floor_height(style.rhythm_seed);
     let floor = relative_z.rem_euclid(floor_height);
     if floor < 0.11 {
         return style.facade.map(|channel| scale_channel(channel, 0.84));
@@ -1639,6 +1663,12 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if door {
         return palette::mix(style.facade, [66, 58, 52], 0.68);
     }
+    // The entry layout is available only for an exact named Rowhouse
+    // frontage. This is painted rather than extruded, so it gives the
+    // selected facade a conservative stone base without adding guessed form.
+    if style.entry.is_some() && relative_z <= ROWHOUSE_PLINTH_HEIGHT_METERS {
+        return palette::mix(style.facade, [190, 181, 165], 0.52);
+    }
     if upper_window || ground_window {
         let glass = if style.seed & 1 == 0 {
             [62, 78, 86]
@@ -1657,7 +1687,8 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
 mod tests {
     use super::{
         FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
-        ROWHOUSE_CORNICE_OUTSET_METERS, ROWHOUSE_WINDOW_TRIM_WIDTH_METERS, WallStyle, block_seed,
+        ROWHOUSE_CORNICE_OUTSET_METERS, ROWHOUSE_PLINTH_HEIGHT_METERS,
+        ROWHOUSE_WINDOW_TRIM_WIDTH_METERS, WallStyle, attached_rhythm_seed, block_seed,
         classify_building, facade_detail, infer_pitched_roof, palette, point_in_polygon,
         polygon_area, roof_feature, rowhouse_cornice_segment, rowhouse_cornice_segments,
         rowhouse_entry_layout, rowhouse_entry_stoop, rowhouse_floor_height, rowhouse_frontage_edge,
@@ -1704,16 +1735,74 @@ mod tests {
             kind: FacadeKind::Rowhouse,
             facade: [152, 91, 68],
             seed: 0,
+            rhythm_seed: 0,
             short_side: building
                 .ring
                 .bounds
                 .width()
                 .min(building.ring.bounds.height()),
             party_edge_mask: context.party_edge_mask,
-            frontage_edge: (context.kind == BuildingKind::Rowhouse)
-                .then(|| building.frontage_edge.map(usize::from))
-                .flatten(),
+            frontage_edge: matches!(
+                context.kind,
+                BuildingKind::Rowhouse | BuildingKind::RowhouseLike | BuildingKind::Twin
+            )
+            .then(|| building.frontage_edge.map(usize::from))
+            .flatten(),
         }
+    }
+
+    #[test]
+    fn contextual_style_preserves_attached_frontage_and_component_rhythm()
+    -> Result<(), &'static str> {
+        let mut pixmap = Pixmap::new(1, 1).ok_or("pixmap")?;
+        let mut depth = [f32::NEG_INFINITY];
+        let projection = Projection {
+            bounds: Bounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 1.0,
+                max_y: 1.0,
+            },
+            scale: 1.0,
+            view: View::SouthEast,
+        };
+        let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+        let rasterizer = super::Rasterizer {
+            pixmap: &mut pixmap,
+            projection: &projection,
+            aerial: &aerial,
+            block_size: 1.0,
+            depth: &mut depth,
+        };
+        let footprint = ring(5.0, 16.0);
+        let component_seed = 0x1c7;
+
+        for kind in [
+            BuildingKind::Rowhouse,
+            BuildingKind::RowhouseLike,
+            BuildingKind::Twin,
+        ] {
+            let context = BuildingContext {
+                kind,
+                material_group_seed: component_seed,
+                party_edge_mask: 0,
+            };
+            let first =
+                rasterizer.contextual_building_style(&footprint, 9.0, 11, &context, Some(0));
+            let second =
+                rasterizer.contextual_building_style(&footprint, 9.0, 29, &context, Some(0));
+            assert_eq!(first.frontage_edge, Some(0), "{kind:?}");
+            assert_eq!(first.rhythm_seed, component_seed, "{kind:?}");
+            assert_eq!(second.rhythm_seed, component_seed, "{kind:?}");
+            assert_eq!(first.seed, 11, "{kind:?}");
+            assert_eq!(second.seed, 29, "{kind:?}");
+        }
+
+        let detached = context(BuildingKind::Detached);
+        let style = rasterizer.contextual_building_style(&footprint, 9.0, 29, &detached, Some(0));
+        assert_eq!(style.frontage_edge, None);
+        assert_eq!(style.rhythm_seed, 29);
+        Ok(())
     }
 
     #[test]
@@ -1759,6 +1848,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (20.0, 0.0),
             seed: 0,
+            rhythm_seed: 0,
             entry: None,
         };
         let band = facade_detail((3.0, 0.0), 3.0, style);
@@ -1869,6 +1959,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (6.0, 0.0),
             seed: 0,
+            rhythm_seed: 0,
             entry: None,
         };
         assert_ne!(facade_detail((2.0, 0.0), 4.4, common), base);
@@ -1916,6 +2007,7 @@ mod tests {
             left: entry.origin,
             right: edge_end,
             seed,
+            rhythm_seed: building_style.rhythm_seed,
             entry: Some(entry),
         };
         let trim = palette::mix(style.facade, [190, 181, 165], 0.52);
@@ -1987,6 +2079,7 @@ mod tests {
             kind: FacadeKind::Rowhouse,
             facade: [152, 91, 68],
             seed: 0,
+            rhythm_seed: 0,
             short_side: 5.0,
             party_edge_mask: rowhouse.party_edge_mask,
             frontage_edge: Some(0),
@@ -2000,6 +2093,120 @@ mod tests {
         };
         assert!(rowhouse_frontage_edge(unknown, 0, 5.0));
         assert!(rowhouse_frontage_edge(unknown, 2, 5.0));
+    }
+
+    #[test]
+    fn every_attached_family_honors_its_packed_frontage_for_painted_openings() {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        for kind in [
+            BuildingKind::Rowhouse,
+            BuildingKind::RowhouseLike,
+            BuildingKind::Twin,
+        ] {
+            let context = BuildingContext {
+                party_edge_mask: (1 << 1) | (1 << 3),
+                ..context(kind)
+            };
+            let style = entry_style(&house, &context);
+            assert!(rowhouse_frontage_edge(style, 0, 5.0), "{kind:?}");
+            assert!(!rowhouse_frontage_edge(style, 2, 5.0), "{kind:?}");
+            assert!(!rowhouse_frontage_edge(style, 1, 16.0), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn attached_runs_share_floor_rhythm_but_keep_wall_glass_variation() {
+        let attached = BuildingContext {
+            kind: BuildingKind::Twin,
+            material_group_seed: 0x1c7,
+            party_edge_mask: 0,
+        };
+        let left_seed = attached_rhythm_seed(&attached, 11);
+        let right_seed = attached_rhythm_seed(&attached, 29);
+        assert_eq!(left_seed, right_seed);
+        assert_eq!(
+            rowhouse_floor_height(left_seed),
+            rowhouse_floor_height(right_seed)
+        );
+        assert_eq!(
+            attached_rhythm_seed(&context(BuildingKind::Detached), 29),
+            29
+        );
+
+        let common = WallStyle {
+            facade: [152, 91, 68],
+            kind: FacadeKind::Rowhouse,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: 12.0,
+            left: (0.0, 0.0),
+            right: (6.0, 0.0),
+            seed: 0,
+            rhythm_seed: left_seed,
+            entry: None,
+        };
+        let z = rowhouse_floor_height(left_seed) + 1.2;
+        assert_ne!(
+            facade_detail((2.0, 0.0), z, common),
+            facade_detail((2.0, 0.0), z, WallStyle { seed: 1, ..common })
+        );
+    }
+
+    #[test]
+    fn plinth_is_painted_only_on_the_exact_rowhouse_entry_frontage() -> Result<(), &'static str> {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let building_style = entry_style(&house, &context);
+        let entry = rowhouse_entry_layout(&house, &context, building_style).ok_or("entry")?;
+        let edge_end = (
+            entry.origin.0 + entry.unit.0 * entry.length,
+            entry.origin.1 + entry.unit.1 * entry.length,
+        );
+        let along = entry.bay_width * 0.85;
+        let point = (
+            entry.origin.0 + entry.unit.0 * along,
+            entry.origin.1 + entry.unit.1 * along,
+        );
+        let style = WallStyle {
+            facade: building_style.facade,
+            kind: FacadeKind::Rowhouse,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: house.height,
+            left: entry.origin,
+            right: edge_end,
+            seed: wall_seed(building_style.seed, entry.origin, edge_end),
+            rhythm_seed: building_style.rhythm_seed,
+            entry: Some(entry),
+        };
+        let plinth = palette::mix(style.facade, [190, 181, 165], 0.52);
+        assert_eq!(
+            facade_detail(point, ROWHOUSE_PLINTH_HEIGHT_METERS * 0.7, style),
+            plinth
+        );
+        assert_eq!(
+            facade_detail(point, ROWHOUSE_PLINTH_HEIGHT_METERS * 1.1, style),
+            style.facade
+        );
+        assert_eq!(
+            facade_detail(
+                point,
+                ROWHOUSE_PLINTH_HEIGHT_METERS * 0.7,
+                WallStyle {
+                    entry: None,
+                    ..style
+                }
+            ),
+            style.facade
+        );
+        Ok(())
     }
 
     #[test]
@@ -2075,6 +2282,7 @@ mod tests {
             left: house.ring.points[0],
             right: house.ring.points[1],
             seed: 0,
+            rhythm_seed: 0,
             entry: Some(layout),
         };
         assert_eq!(
@@ -2122,6 +2330,7 @@ mod tests {
             left,
             right,
             seed: 0,
+            rhythm_seed: 0,
             entry: Some(entry),
         };
         assert_eq!(
@@ -2305,7 +2514,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_rowhouse_frontage_keeps_the_frozen_v62_raster_in_all_views()
+    fn unknown_rowhouse_frontage_keeps_the_frozen_v64_raster_in_all_views()
     -> Result<(), &'static str> {
         let house = building(5.0, 16.0, 9.0);
         let context = BuildingContext {
@@ -2315,20 +2524,20 @@ mod tests {
         let aerial = AerialTile::solid_for_tests([144, 136, 120]);
         let expected = [
             [
-                24, 252, 24, 29, 52, 90, 174, 131, 130, 161, 129, 254, 51, 26, 54, 185, 13, 114,
-                104, 255, 254, 187, 219, 26, 145, 33, 130, 127, 97, 98, 46, 100,
+                157, 183, 37, 209, 88, 86, 115, 47, 206, 11, 124, 167, 161, 219, 39, 64, 136, 100,
+                100, 128, 99, 141, 138, 226, 2, 39, 101, 208, 248, 223, 240, 16,
             ],
             [
-                36, 211, 187, 82, 162, 149, 185, 187, 222, 50, 191, 114, 222, 124, 215, 64, 107,
-                68, 55, 136, 253, 238, 12, 112, 74, 68, 204, 97, 93, 226, 16, 189,
+                253, 2, 127, 48, 124, 106, 106, 35, 165, 199, 157, 201, 108, 104, 189, 185, 63,
+                244, 9, 158, 6, 70, 81, 178, 54, 241, 163, 168, 59, 160, 5, 101,
             ],
             [
-                218, 14, 142, 243, 91, 60, 240, 129, 168, 19, 254, 141, 241, 100, 110, 82, 224,
-                185, 129, 78, 151, 237, 120, 192, 114, 30, 209, 50, 222, 87, 239, 163,
+                64, 52, 229, 166, 153, 83, 2, 250, 231, 253, 109, 181, 0, 188, 163, 4, 70, 178, 31,
+                163, 24, 208, 241, 138, 30, 51, 227, 134, 213, 206, 214, 248,
             ],
             [
-                119, 141, 191, 110, 85, 172, 211, 208, 82, 253, 209, 190, 127, 7, 186, 9, 10, 173,
-                105, 150, 167, 152, 231, 85, 229, 108, 247, 73, 192, 103, 75, 83,
+                64, 203, 53, 105, 26, 170, 164, 53, 99, 170, 202, 240, 26, 44, 187, 23, 185, 79,
+                210, 98, 182, 126, 8, 110, 192, 252, 19, 182, 168, 84, 188, 228,
             ],
         ];
 
@@ -2366,6 +2575,7 @@ mod tests {
             kind: FacadeKind::Industrial,
             facade: [160, 150, 140],
             seed: 42,
+            rhythm_seed: 42,
             short_side: 9.1,
             party_edge_mask: 0,
             frontage_edge: None,
@@ -2387,6 +2597,7 @@ mod tests {
             kind: FacadeKind::Industrial,
             facade: [160, 150, 140],
             seed: 42,
+            rhythm_seed: 42,
             short_side: 9.1,
             party_edge_mask: 0,
             frontage_edge: None,
@@ -2610,6 +2821,7 @@ mod tests {
             left: (0.0, 0.0),
             right: (20.0, 0.0),
             seed: 0,
+            rhythm_seed: 0,
             entry: None,
         };
         assert!(wall_surface_light(0.0, style) < wall_surface_light(10.0, style));

@@ -133,16 +133,23 @@ face type, sidewalk setback, or porch dimensions.
 
 The current citywide LiDAR artifact cannot supply the missing facade evidence.
 It retains building and ground point counts, roof and ground height quantiles,
-and roof spread. It does not retain the spatial facade returns needed to detect
-a bay or porch, and the validated raw LAS files were deleted after the bounded
-evidence pass. A future bay or porch rule needs a reviewed block face source or
-a new evidence artifact built for this purpose.
+and roof spread. The merge rejects height evidence with roof spread above 3
+metres or above 35 percent of its candidate height. That is a height-quality
+test, not evidence of a roof form or facade. It does not retain the spatial
+facade returns needed to detect a bay or porch, and the validated raw LAS files
+were deleted after the bounded evidence pass. A future bay or porch rule needs
+a reviewed block face source or a new evidence artifact built for this purpose.
 
-The accepted conservative treatment is shallow trim aligned with openings
-that the renderer already generates. Exact named rowhouse frontages can receive
-a shallow entrance stoop, cornice, and painted upper window surrounds. Unknown
-frontages keep the earlier flat treatment. These features are illustrative and do not
-claim an observed facade, entrance, or historical style.
+The accepted conservative treatment uses the renderer's existing openings.
+An exact named nonparty frontage selects painted openings for rowhouses,
+rowhouse-like footprints, and twins. Their attached component shares a floor
+rhythm while walls keep deterministic local material and glass variation. Only
+exact high-confidence rowhouses can add a shallow entrance stoop, painted upper
+window surrounds, and a painted stone base. Cornices remain limited to eligible
+exposed edges on high-confidence rowhouses, whether or not the frontage is
+known. Unknown frontages keep the earlier exposed-short-wall treatment. These
+features are illustrative and do not claim an observed facade, entrance, or
+historical style.
 
 Priority order for that work:
 

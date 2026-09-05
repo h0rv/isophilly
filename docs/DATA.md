@@ -130,14 +130,14 @@ ties. The accepted record digest is
 The production v12 ingest recomputes the rule on final packed polygons. It records 438,804 known
 frontage edges and 106,868 unknown edges among 545,672 buildings. The ordered frontage byte digest
 is `e029dc4644556cb4f28128eef149ffa97a45b177a968e6cb91224e7add94d20b`. A byte value of 255 means
-unknown. Edges that cannot fit in the byte also remain unknown. The Rust renderer uses a known edge
-only for high confidence attached rowhouses and only when the edge is not a party wall. The selected
-edge controls the painted openings and cornice. It can also place a small two tier entrance stoop
-when the edge passes the existing short face rule. The first two upper floors can receive painted
-stone toned surrounds that share the exact generated window layout. The stoop and surrounds are
-illustrative. They are not observed entrances or facade geometry. Every other building keeps the
-earlier rendering rule. The current Rust context classifier uses 257,183 named
-frontages among 286,338 high confidence attached rowhouses. The v12 world is 98,044,662 bytes with
+unknown. Edges that cannot fit in the byte also remain unknown. The Rust renderer uses a known,
+nonparty edge to select painted openings for attached rowhouses, rowhouse-like footprints, and
+twins. Their component seed shares floor rhythm, while each wall keeps its own material and glass
+variation. Cornices remain limited to eligible exposed edges on high confidence attached
+rowhouses, with a known frontage selecting one edge. Stoops, painted stone window surrounds, and a
+painted stone base require the stricter named short-face entry rule. The paint is illustrative. It
+is not an observed entrance or facade survey. The current Rust context classifier uses 257,183
+named frontages among 286,338 high confidence attached rowhouses. The v12 world is 98,044,662 bytes with
 SHA-256 `800628be026c3d7e7ab6e908b5fbc8588d6f747122140eb24f6f5a6639419661`.
 
 ## Land cover class mask

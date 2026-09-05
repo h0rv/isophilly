@@ -60,14 +60,19 @@
   its own treatment, and the rich Center City mesh views should not show any
   terrain shading at all.
 - Inspect attached rowhouse blocks in Italian Market, East Passyunk, Point
-  Breeze, and Port Richmond. Cornice ledges, upper window surrounds, and
-  entrance stoops should appear only on exposed selected front edges where v12 has a named frontage. Stoops
-  should align with the painted door and project away from the footprint. The
-  surrounds should align with the painted upper windows and stay below the
-  cornice. The cornice should stay below the recorded roof line. All three features should remain
-  aligned across tile boundaries. Twins, warehouses, and broad side walls are
-  negative controls. Unknown frontages are negative controls for stoops and
-  window surrounds, but they retain the earlier eligible cornice rule.
+  Breeze, and Port Richmond. Known nonparty frontages should restrict painted
+  openings for rowhouses, rowhouse-like footprints, and twins. Adjacent family
+  members should share their floor rhythm but retain material and glass variation.
+  Cornice ledges, upper window surrounds, painted bases, and entrance stoops
+  should appear only on exposed selected high-confidence rowhouse frontages.
+  Stoops should align with the painted door and project away from the footprint.
+  The surrounds should align with the painted upper windows and stay below the
+  cornice; the base should stay at or below 0.56 metres and outside the door.
+  The cornice should stay below the recorded roof line. All treatments should
+  remain aligned across tile boundaries. Twins, warehouses, and broad
+  side walls are negative controls for geometry. Unknown frontages are negative
+  controls for stoops, surrounds, and bases, but retain the earlier eligible
+  cornice rule.
 - Check inventoried trees in several dense and sparse neighborhoods. Default
   crowns must match the prior renderer, explicit conifer, columnar, weeping,
   and shrub forms must stay within the old crown extent, and no crown may clip
