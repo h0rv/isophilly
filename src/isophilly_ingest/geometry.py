@@ -28,6 +28,7 @@ from .config import (
     STREET_TREE_PAYLOAD_SHA256,
     STREET_TREE_SOURCE_RECORD_COUNT,
 )
+from .frontage_audit import ParsedAddress, StreetIndex, frontage_edge_for_polygon, parse_address
 from .models import Building, Ring, StreetTree, TransportKind, TransportLine, TreeForm
 
 HEIGHT_FIELDS = ("approx_hgt", "max_hgt")
@@ -161,6 +162,7 @@ def buildings(
     frame: gpd.GeoDataFrame,
     city: BaseGeometry,
     height_evidence: dict[str, float] | None = None,
+    street_index: StreetIndex | None = None,
 ) -> list[Building]:
     result: list[Building] = []
     identifiers = [
@@ -168,10 +170,11 @@ def buildings(
         for geometry in frame.geometry
     ]
     frame = projected(frame)
-    approximate = frame[HEIGHT_FIELDS[0]] if HEIGHT_FIELDS[0] in frame else repeat(None)
-    maximum = frame[HEIGHT_FIELDS[1]] if HEIGHT_FIELDS[1] in frame else repeat(None)
-    for geometry, approximate_height, maximum_height, identifier in zip(
-        frame.geometry, approximate, maximum, identifiers, strict=True
+    approximate = frame[HEIGHT_FIELDS[0]] if HEIGHT_FIELDS[0] in frame else repeat(None, len(frame))
+    maximum = frame[HEIGHT_FIELDS[1]] if HEIGHT_FIELDS[1] in frame else repeat(None, len(frame))
+    addresses = frame["address"] if "address" in frame else repeat(None, len(frame))
+    for geometry, approximate_height, maximum_height, identifier, raw_address in zip(
+        frame.geometry, approximate, maximum, identifiers, addresses, strict=True
     ):
         if geometry is None or geometry.is_empty or not geometry.intersects(city):
             continue
@@ -190,7 +193,13 @@ def buildings(
             if polygon.area < MIN_BUILDING_AREA_METERS:
                 continue
             if outline := exterior(polygon):
-                result.append(Building(height, outline))
+                address: ParsedAddress | None = parse_address(raw_address)
+                frontage_edge = (
+                    frontage_edge_for_polygon(polygon, address, street_index)
+                    if street_index is not None
+                    else None
+                )
+                result.append(Building(height, outline, frontage_edge))
     return result
 
 

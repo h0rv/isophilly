@@ -354,6 +354,8 @@ fn segment_intersects_box(
 pub struct Building {
     pub height: f32,
     pub ring: Ring,
+    /// v12 stores a final packed-ring edge; older worlds intentionally remain unknown.
+    pub frontage_edge: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -654,7 +656,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         ));
     }
     let version = cursor.u32()?;
-    if !(9..=11).contains(&version) {
+    if !(9..=12).contains(&version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -692,7 +694,25 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     for _ in 0..building_count {
         let height = cursor.f32()?;
         let ring = cursor.ring()?;
-        buildings.push(Building { height, ring });
+        let frontage_edge = if version >= 12 {
+            match cursor.u8()? {
+                255 => None,
+                edge if usize::from(edge) < ring.points.len() => Some(edge),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "building frontage edge is outside its ring",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        buildings.push(Building {
+            height,
+            ring,
+            frontage_edge,
+        });
     }
     let mut building_parts = Vec::with_capacity(building_part_count);
     for _ in 0..building_part_count {
@@ -1698,6 +1718,35 @@ mod tests {
         }
     }
 
+    fn v12_world(frontage_edge: u8) -> Vec<u8> {
+        let mut bytes = b"GEOPHILY".to_vec();
+        for value in [12_u32, 32129, 1, 0, 0, 0, 0, 0, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0; 32]);
+        for value in [0.0_f64, 0.0, 10.0, 10.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&8.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        for point in [(0.0_f32, 0.0_f32), (5.0, 0.0), (0.0, 5.0)] {
+            bytes.extend_from_slice(&point.0.to_le_bytes());
+            bytes.extend_from_slice(&point.1.to_le_bytes());
+        }
+        bytes.push(frontage_edge);
+        bytes
+    }
+
+    #[test]
+    fn v12_frontage_byte_follows_the_ring_and_validates_its_index() -> std::io::Result<()> {
+        let world = parse_world(&v12_world(2), [0; 32])?;
+        assert_eq!(world.buildings[0].frontage_edge, Some(2));
+        let unknown = parse_world(&v12_world(255), [0; 32])?;
+        assert_eq!(unknown.buildings[0].frontage_edge, None);
+        assert!(parse_world(&v12_world(3), [0; 32]).is_err());
+        Ok(())
+    }
+
     fn contextualize(buildings: &[Building]) -> Vec<super::BuildingContext> {
         derive_building_contexts(buildings, &index_source_buildings(buildings))
     }
@@ -1707,6 +1756,7 @@ mod tests {
         let buildings: Vec<_> = (0..5)
             .map(|index| Building {
                 height: 9.3,
+                frontage_edge: None,
                 ring: rectangle(index as f32 * 5.0, 0.0, (index + 1) as f32 * 5.0, 16.0),
             })
             .collect();
@@ -1732,6 +1782,7 @@ mod tests {
     fn isolated_narrow_footprint_is_rowhouse_like() {
         let buildings = vec![Building {
             height: 9.0,
+            frontage_edge: None,
             ring: rectangle(0.0, 0.0, 5.0, 16.0),
         }];
 
@@ -1746,10 +1797,12 @@ mod tests {
         let buildings = vec![
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(0.0, 0.0, 9.5, 15.0),
             },
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(9.5, 0.0, 19.0, 15.0),
             },
         ];
@@ -1774,18 +1827,22 @@ mod tests {
         let buildings = vec![
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(0.0, 0.0, 5.0, 16.0),
             },
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(5.0, 0.0, 10.0, 16.0),
             },
             Building {
                 height: 8.0,
+                frontage_edge: None,
                 ring: rectangle(30.0, 0.0, 41.0, 11.0),
             },
             Building {
                 height: 12.0,
+                frontage_edge: None,
                 ring: rectangle(60.0, 0.0, 110.0, 21.0),
             },
         ];
@@ -1803,6 +1860,7 @@ mod tests {
         let buildings: Vec<_> = (0..5)
             .map(|index| Building {
                 height: 8.8 + index as f32 * 0.2,
+                frontage_edge: None,
                 ring: rectangle(index as f32 * 5.0, 0.0, (index + 1) as f32 * 5.0, 16.0),
             })
             .collect();
@@ -1831,20 +1889,24 @@ mod tests {
         let joined = contextualize(&[
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(0.0, 0.0, 5.0, 16.0),
             },
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(5.8, 0.0, 10.8, 16.0),
             },
         ]);
         let separate = contextualize(&[
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(0.0, 0.0, 5.0, 16.0),
             },
             Building {
                 height: 9.0,
+                frontage_edge: None,
                 ring: rectangle(5.9, 0.0, 10.9, 16.0),
             },
         ]);
@@ -1865,10 +1927,12 @@ mod tests {
     fn small_metre_footprints_keep_their_area_and_context_near_city_coordinates() {
         let local = Building {
             height: 9.0,
+            frontage_edge: None,
             ring: rectangle(0.0, 0.0, 5.0, 16.0),
         };
         let translated = Building {
             height: 9.0,
+            frontage_edge: None,
             ring: rectangle(820_000.0, 72_000.0, 820_005.0, 72_016.0),
         };
 
@@ -2020,6 +2084,7 @@ mod tests {
     fn stale_short_mesh_does_not_hide_current_tower() {
         let building = Building {
             height: 100.0,
+            frontage_edge: None,
             ring: square(10.0),
         };
         let mesh = BuildingMesh {
@@ -2037,6 +2102,7 @@ mod tests {
     fn small_edge_mesh_does_not_hide_large_convention_center_footprint() {
         let building = Building {
             height: 45.7,
+            frontage_edge: None,
             ring: super::Ring {
                 bounds: Bounds {
                     min_x: 0.0,
@@ -2062,6 +2128,7 @@ mod tests {
     fn incomplete_legacy_mesh_does_not_hide_convention_center_footprint() {
         let building = Building {
             height: 45.72,
+            frontage_edge: None,
             ring: super::Ring {
                 bounds: Bounds {
                     min_x: 0.0,
@@ -2095,6 +2162,7 @@ mod tests {
     fn substantially_complete_mesh_still_covers_a_large_building() {
         let building = Building {
             height: 45.72,
+            frontage_edge: None,
             ring: super::Ring {
                 bounds: Bounds {
                     min_x: 0.0,
@@ -2128,6 +2196,7 @@ mod tests {
     fn nearby_mesh_does_not_hide_an_adjacent_building() {
         let building = Building {
             height: 20.0,
+            frontage_edge: None,
             ring: square(10.0),
         };
         let mesh = BuildingMesh {
@@ -2174,6 +2243,7 @@ mod tests {
     fn rich_fallback_is_suppressed_only_by_primary_meshes() {
         let buildings = vec![Building {
             height: 20.0,
+            frontage_edge: None,
             ring: square(10.0),
         }];
         let parts = vec![BuildingPart {
@@ -2225,6 +2295,7 @@ mod tests {
     fn building_parts_replace_a_parent_only_when_they_cover_most_of_it() {
         let buildings = vec![Building {
             height: 20.0,
+            frontage_edge: None,
             ring: square(10.0),
         }];
         let tree = index_source_buildings(&buildings);
@@ -2306,6 +2377,12 @@ mod tests {
         let world = parse_world(&bytes, digest)?;
 
         assert_eq!(world.buildings.len(), 1);
+        assert!(
+            world
+                .buildings
+                .iter()
+                .all(|building| building.frontage_edge.is_none())
+        );
         assert_eq!(world.building_contexts.len(), 1);
         assert_eq!(world.building_contexts[0].kind, BuildingKind::Detached);
         assert_eq!(world.building_parts.len(), 1);
@@ -2334,6 +2411,12 @@ mod tests {
         let digest = Sha256::digest(&bytes).into();
         let world = parse_world(&bytes, digest)?;
 
+        assert!(
+            world
+                .buildings
+                .iter()
+                .all(|building| building.frontage_edge.is_none())
+        );
         assert_eq!(world.street_trees.len(), 1);
         assert_eq!(world.street_trees[0].point, (5.0, 6.0));
         assert_eq!(world.street_trees[0].diameter, 0.25);

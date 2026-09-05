@@ -69,6 +69,7 @@ oblique-sfm = { cmd = "python -m isophilly_ingest.coastal_obliques sfm-handoff",
 oblique-sfm-plan = { cmd = "python -m isophilly_ingest.coastal_obliques sfm-plan", use_exec = true }
 land-cover-audit = { cmd = "python -m isophilly_ingest.land_cover audit", use_exec = true }
 land-cover-fetch = { cmd = "python -m isophilly_ingest.land_cover fetch", use_exec = true }
+frontage-audit = { cmd = "python -m isophilly_ingest.frontage_audit", use_exec = true }
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
 tile-smoke = { cmd = "bash scripts/tile-smoke.sh", use_exec = true }

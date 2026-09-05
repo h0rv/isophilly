@@ -93,7 +93,13 @@ impl Rasterizer<'_, '_> {
             return;
         }
         let seed = facade_seed(building.ring.center());
-        let style = self.contextual_building_style(&building.ring, building.height, seed, context);
+        let style = self.contextual_building_style(
+            &building.ring,
+            building.height,
+            seed,
+            context,
+            building.frontage_edge.map(usize::from),
+        );
         let inferred_roof = infer_pitched_roof(building, context);
         let wall_top = inferred_roof.map_or(building.height, |roof| roof.wall_top);
         for index in 0..building.ring.points.len() {
@@ -144,6 +150,7 @@ impl Rasterizer<'_, '_> {
             seed,
             short_side: ring.bounds.width().min(ring.bounds.height()),
             party_edge_mask: 0,
+            frontage_edge: None,
         }
     }
 
@@ -153,6 +160,7 @@ impl Rasterizer<'_, '_> {
         height: f32,
         seed: u64,
         context: &BuildingContext,
+        frontage_edge: Option<usize>,
     ) -> BuildingStyle {
         let kind = match context.kind {
             WorldBuildingKind::Rowhouse
@@ -176,6 +184,11 @@ impl Rasterizer<'_, '_> {
             seed,
             short_side: ring.bounds.width().min(ring.bounds.height()),
             party_edge_mask: context.party_edge_mask,
+            frontage_edge: if context.kind == WorldBuildingKind::Rowhouse {
+                frontage_edge
+            } else {
+                None
+            },
         }
     }
 
@@ -230,10 +243,7 @@ impl Rasterizer<'_, '_> {
         let style = WallStyle {
             facade: building.facade,
             kind: building.kind,
-            frontage: building.kind == FacadeKind::Rowhouse
-                && (edge_index >= u64::BITS as usize
-                    || building.party_edge_mask & (1_u64 << edge_index) == 0)
-                && edge_length <= (building.short_side * 1.35).max(4.5),
+            frontage: rowhouse_frontage_edge(building, edge_index, edge_length),
             light,
             bottom,
             top,
@@ -522,6 +532,7 @@ impl Rasterizer<'_, '_> {
                 seed: style.seed.rotate_left(index as u32 + 7),
                 short_side: equipment.bounds.width().min(equipment.bounds.height()),
                 party_edge_mask: 0,
+                frontage_edge: None,
             };
             for edge_index in 0..equipment.points.len() {
                 let left = equipment.points[edge_index];
@@ -772,6 +783,16 @@ struct BuildingStyle {
     seed: u64,
     short_side: f32,
     party_edge_mask: u64,
+    frontage_edge: Option<usize>,
+}
+
+fn rowhouse_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: f32) -> bool {
+    style.kind == FacadeKind::Rowhouse
+        && style
+            .frontage_edge
+            .is_none_or(|selected| selected == edge_index)
+        && (edge_index >= u64::BITS as usize || style.party_edge_mask & (1_u64 << edge_index) == 0)
+        && edge_length <= (style.short_side * 1.35).max(4.5)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -950,6 +971,9 @@ fn rowhouse_cornice_segment(
     if context.kind != WorldBuildingKind::Rowhouse
         || edge_index >= u64::BITS as usize
         || context.party_edge_mask & (1_u64 << edge_index) != 0
+        || building
+            .frontage_edge
+            .is_some_and(|frontage_edge| usize::from(frontage_edge) != edge_index)
         || building.ring.points.len() < 3
     {
         return None;
@@ -1400,7 +1424,8 @@ mod tests {
         FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
         ROWHOUSE_CORNICE_OUTSET_METERS, WallStyle, block_seed, classify_building, facade_detail,
         infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, rowhouse_cornice_segment,
-        rowhouse_cornice_segments, shade, wall_light, wall_material, wall_surface_light,
+        rowhouse_cornice_segments, rowhouse_frontage_edge, shade, wall_light, wall_material,
+        wall_surface_light,
     };
     use crate::{
         projection::Projection,
@@ -1432,6 +1457,7 @@ mod tests {
     fn building(width: f32, depth: f32, height: f32) -> Building {
         Building {
             height,
+            frontage_edge: None,
             ring: ring(width, depth),
         }
     }
@@ -1627,6 +1653,35 @@ mod tests {
     }
 
     #[test]
+    fn known_frontage_limits_openings_and_cornices_to_one_non_party_edge() {
+        let mut house = building(5.0, 16.0, 9.0);
+        house.frontage_edge = Some(0);
+        let rowhouse = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 0).is_some());
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 2).is_none());
+        let known = super::BuildingStyle {
+            kind: FacadeKind::Rowhouse,
+            facade: [152, 91, 68],
+            seed: 0,
+            short_side: 5.0,
+            party_edge_mask: rowhouse.party_edge_mask,
+            frontage_edge: Some(0),
+        };
+        assert!(rowhouse_frontage_edge(known, 0, 5.0));
+        assert!(!rowhouse_frontage_edge(known, 2, 5.0));
+        assert!(!rowhouse_frontage_edge(known, 1, 16.0));
+        let unknown = super::BuildingStyle {
+            frontage_edge: None,
+            ..known
+        };
+        assert!(rowhouse_frontage_edge(unknown, 0, 5.0));
+        assert!(rowhouse_frontage_edge(unknown, 2, 5.0));
+    }
+
+    #[test]
     fn rowhouse_cornice_geometry_is_winding_translation_and_height_stable() {
         let house = building(5.0, 16.0, 9.0);
         let context = BuildingContext {
@@ -1757,6 +1812,7 @@ mod tests {
             seed: 42,
             short_side: 9.1,
             party_edge_mask: 0,
+            frontage_edge: None,
         };
         let first = roof_feature(&roof, style, 0, 2);
         let second = roof_feature(&roof, style, 0, 2);
@@ -1777,6 +1833,7 @@ mod tests {
             seed: 42,
             short_side: 9.1,
             party_edge_mask: 0,
+            frontage_edge: None,
         };
 
         assert!(roof_feature(&roof, style, 0, 1).is_some());
@@ -1930,6 +1987,7 @@ mod tests {
                 .fold(f32::NEG_INFINITY, f32::max);
             let house = Building {
                 height: 10.0,
+                frontage_edge: None,
                 ring: Ring {
                     bounds: Bounds {
                         min_x,

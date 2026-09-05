@@ -45,6 +45,11 @@ Both City fields are interpreted as feet. Values below 2.4 metres or above 400
 metres are rejected before fallback. The last packed snapshot had a 7.92 metre
 median, a 10.67 metre ninetieth percentile, and a 297.49 metre maximum.
 
+The source `square_ft` field is not used to infer floors or building type. It has a 0.99584
+correlation with source `Shape__Area`, and its ratio to that field stays within 6.286 to 6.328 from
+the 1st to the 99th percentile. Its correlation with the selected building height is only
+0.12245. The field acts like another footprint area value rather than independent floor evidence.
+
 ## Terrain relief
 
 The current terrain artifact is `data/clean/terrain-v1.isoterrain`. It uses 256
@@ -102,7 +107,11 @@ the strongest shared seed, while rowhouse-like buildings can inherit a smaller
 family so nearby blocks read as a run instead of isolated boxes. Each class
 gets a limited material palette and a different pattern of wall and roof
 detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
-bays on exposed short walls. High-confidence attached runs also receive a
+bays on exposed short walls. The v12 data can mark one likely front edge from an exact City address,
+street name, address range, edge length, distance, and parallel alignment. A known edge limits the
+openings and cornice to that one nonparty edge on a high confidence attached rowhouse. An unknown
+edge keeps the earlier exposed short wall rule. Lower confidence building classes ignore the stored
+edge. High-confidence attached runs also receive a
 shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
 metres long. The ledge projects 0.24 metres and occupies the top 0.42 metres of
 the recorded building height, so it does not make the building taller. Detected
@@ -117,6 +126,11 @@ the roof top, with the wall top lowered by a bounded 1.0 to 2.8 metre rise.
 Rowhouse, rowhouse-like, twin, warehouse, generic, and non-rectangular
 footprints remain flat. Pitched roofs use the same aerial-derived roof color
 and depth buffer as flat roofs, and never receive synthetic roof furniture.
+
+The current packed world has 438,804 known frontages and 106,868 unknown frontages. The renderer
+uses 257,183 known frontages among 286,338 high confidence attached rowhouses. The remaining 29,155
+attached rowhouses keep the earlier exposed short wall rule. The street match does not claim that
+the drawn doors, windows, or cornice were observed.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly

@@ -223,6 +223,7 @@ mod tests {
     fn building_shadow_is_translucent() -> Result<(), &'static str> {
         let building = Building {
             height: 18.0,
+            frontage_edge: None,
             ring: ring(&[(0.0, 0.0), (12.0, 0.0), (12.0, 12.0), (0.0, 12.0)]),
         };
         let center = View::SouthEast.project(6.0, 6.0, 0.0);
@@ -284,6 +285,7 @@ mod tests {
     fn adjacent_tiles_match_a_single_world_anchored_render() -> Result<(), &'static str> {
         let building = Building {
             height: 30.0,
+            frontage_edge: None,
             ring: ring(&[(95.0, 95.0), (110.0, 95.0), (110.0, 110.0), (95.0, 110.0)]),
         };
         let center = View::SouthEast.project(102.5, 102.5, 0.0);

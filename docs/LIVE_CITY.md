@@ -30,7 +30,10 @@ roof furniture on pitched roofs.
 High-confidence attached rowhouse runs receive a shallow depth-tested cornice ledge on exposed
 frontage-width edges. It projects 0.24 metres and stays within the top 0.42 metres of the recorded
 height. Party walls and lower-confidence rowhouse-like footprints do not receive the added volume.
-This is illustrative geometry derived from the footprint and neighbor context, not a facade survey.
+When the v12 world stores an exact address and street range match, the openings and cornice use only
+that selected front edge. Unknown frontages keep the earlier exposed short edge rule. The result is
+illustrative geometry derived from the footprint, street record, and neighbor context. It is not a
+facade survey.
 
 Water now uses a shoreline-aware deterministic treatment: official City hydrology still has
 priority, but the renderer also consults the 3 m land-cover mask to extend water only when nearby

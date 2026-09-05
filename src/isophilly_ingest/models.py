@@ -37,6 +37,8 @@ class Bounds:
 class Building:
     height: float
     ring: Ring
+    # ``None`` is serialized as the v12 unknown sentinel (255).
+    frontage_edge: int | None = None
 
 
 class TreeForm(IntEnum):

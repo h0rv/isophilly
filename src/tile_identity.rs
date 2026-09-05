@@ -1,6 +1,6 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v60-tree-forms";
+const PYRAMID_VERSION: &str = "v61-named-frontages";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
 // already has the baked continuous-color finish. The later canopy and
 // metre-correct morphology, inferred-roof, terrain-relief, and
@@ -81,7 +81,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None, None),
-            "v60-tree-forms-1111111111111111"
+            "v61-named-frontages-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first), None),

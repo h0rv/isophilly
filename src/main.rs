@@ -176,6 +176,19 @@ impl BuildingContextCounts {
 fn validate_building_contexts(world: &World) -> io::Result<()> {
     let counts = BuildingContextCounts::from_world(world);
     counts.validate(world.buildings.len())?;
+    let named_frontages = world
+        .buildings
+        .iter()
+        .filter(|building| building.frontage_edge.is_some())
+        .count();
+    let named_rowhouse_frontages = world
+        .buildings
+        .iter()
+        .zip(&world.building_contexts)
+        .filter(|(building, context)| {
+            building.frontage_edge.is_some() && context.kind == BuildingKind::Rowhouse
+        })
+        .count();
     println!(
         "building contexts: {} attached rowhouses, {} rowhouse-like, {} twins, {} detached, {} warehouses, {} generic",
         counts.rowhouses,
@@ -184,6 +197,9 @@ fn validate_building_contexts(world: &World) -> io::Result<()> {
         counts.detached,
         counts.warehouses,
         counts.generic,
+    );
+    println!(
+        "named frontages: {named_rowhouse_frontages} attached rowhouses from {named_frontages} packed candidates"
     );
     Ok(())
 }

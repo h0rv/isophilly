@@ -9,6 +9,9 @@
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
   has a URL, retrieval time, byte count, and SHA-256 checksum.
+- Run `uv run --locked poe frontage-audit --output /tmp/frontage-audit.json` from the pinned local
+  snapshots. Confirm the rule digest, accepted record digest, rejection counts, packed known and
+  unknown counts, and packed edge digest against the reviewed data record.
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
   current renderer identity and the reviewed OSGeo image digest.
@@ -25,7 +28,7 @@
   inventory, canonical pair, rejected-source and gap records, and the nonzero
   applied-building count from the release ingest. The verified 2026-08-31
   inputs account for 653 evidence tiles, three outside-City tiles, and eight
-  rejected PASDA sources; the schema-9 ingest applies LiDAR heights to 292,048
+  rejected PASDA sources; the current ingest applies LiDAR heights to 292,048
   buildings.
 - Prebuild every zoom level intended for the public overview. Increment the
   tile/cache version whenever data, projection, colors, or rendering rules
@@ -58,9 +61,9 @@
   terrain shading at all.
 - Inspect attached rowhouse blocks in Italian Market, East Passyunk, Point
   Breeze, and Port Richmond. Cornice ledges should appear only on exposed
-  frontage-width edges, stay below the recorded roof line, and remain aligned
-  across tile boundaries. Twins, warehouses, and broad side walls are negative
-  controls.
+  selected front edges where v12 has a named frontage. They should stay below
+  the recorded roof line and remain aligned across tile boundaries. Twins,
+  warehouses, and broad side walls are negative controls.
 - Check inventoried trees in several dense and sparse neighborhoods. Default
   crowns must match the prior renderer, explicit conifer, columnar, weeping,
   and shrub forms must stay within the old crown extent, and no crown may clip

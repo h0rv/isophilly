@@ -21,8 +21,9 @@ The active pipeline has one source for each job:
 2. Building Footprints supplies citywide outlines and heights.
 3. Hydrology polygons provide restrained water color grading masks.
 4. Park polygons provide restrained vegetation color grading masks.
-5. Street Centerlines supplies only three City-ranked through-road classes for
-   restrained citywide transport linework.
+5. Street Centerlines supplies three City ranked through-road classes for
+   restrained citywide transport linework. All five named street classes also
+   support the conservative building frontage inference described below.
 6. OpenStreetMap building parts supply documented Center City setbacks and
    roof forms where photographed meshes are unavailable.
 7. The 2015 I3S scene supplies the newest detailed Center City geometry and
@@ -100,6 +101,40 @@ surface. Local classes stay in the aerial to avoid a dense wireframe. This
 snapshot has no independently typed rail geometry, so rail remains visible only
 through the aerial and PASDA road-or-rail land-cover class until a pinned public
 rail centerline source is added.
+
+## Building frontage inference
+
+The City footprint address and the pinned Street Centerlines snapshot can identify a likely front
+edge without facade photographs. The normal ingest applies the rule after projection, City
+clipping, geometry repair, 0.35 metre simplification, and polygon expansion. The stored byte is
+therefore an edge of the exact ring written to `philly.bin`.
+
+The rule requires an exact normalized street name and an address number or same parity range inside
+one side of the street segment range. It accepts City street classes 1 to 5. A candidate ring edge
+must be 3.048 to 9.144 metres long, 3 to 30 metres from the matched centerline, and within 20 degrees
+of parallel. If the second edge is less than 2 metres farther away, both edges are rejected. The
+normalizer uses a fixed list of direction and street type spellings. It does not use fuzzy matching.
+
+Run the full read only source audit with the cached snapshots:
+
+```text
+uv run --locked poe frontage-audit --output /tmp/frontage-audit.json
+```
+
+The reviewed source audit read 546,084 footprint records. It found 500,836 exact name, range, and
+parity matches, and it accepted 414,233 unique raw polygon edges. It rejected 13,779 ambiguous edge
+ties. The accepted record digest is
+`5e4212ccaf465a63427fb501db8879dee8f0ad4aa57f172b8817cfb2eb680d7e`, and the rule digest is
+`94edcd40187422be16e0061b6aaa91dd4aacf2550ced2ec926115cae57e87734`.
+
+The production v12 ingest recomputes the rule on final packed polygons. It records 438,804 known
+frontage edges and 106,868 unknown edges among 545,672 buildings. The ordered frontage byte digest
+is `e029dc4644556cb4f28128eef149ffa97a45b177a968e6cb91224e7add94d20b`. A byte value of 255 means
+unknown. Edges that cannot fit in the byte also remain unknown. The Rust renderer uses a known edge
+only for high confidence attached rowhouses and only when the edge is not a party wall. Every other
+building keeps the earlier rendering rule. The current Rust context classifier uses 257,183 named
+frontages among 286,338 high confidence attached rowhouses. The v12 world is 98,044,662 bytes with
+SHA-256 `800628be026c3d7e7ab6e908b5fbc8588d6f747122140eb24f6f5a6639419661`.
 
 ## Land cover class mask
 
@@ -275,7 +310,7 @@ metre; the audited source has a consistent approximately 0.91 metre transform
 offset and no record exceeds that tolerance.
 
 Only projected x/y, DBH-derived diameter, and one conservative visual-form byte
-are retained, in stable object-ID order. The v11 records contribute 1,967,823
+are retained, in stable object-ID order. The tree records introduced in v11 contribute 1,967,823
 bytes: 13 bytes for each of 151,371 records. The ordered retained-record payload
 is separately pinned as SHA-256
 `846992de1b2289410a714fea86c3e81ce96fd643e4ffda7ba426da1c53333868`.
@@ -317,7 +352,7 @@ All values are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (11)
+u32      version (12)
 u32      EPSG (32129)
 u32      building count
 u32      building part count
@@ -332,6 +367,7 @@ f64 x 4  official city bounds: min_x, min_y, max_x, max_y
 repeat building count times:
   f32    height
   ring
+  u8     frontage ring edge, or 255 when unknown
 repeat building part count times:
   u64    OpenStreetMap ID
   f32    height
@@ -367,9 +403,10 @@ ring:
   repeat point count times: f32 x, f32 y
 ```
 
-The reader keeps v9 and v10 compatibility: their trees have no form byte and
-load as the Default round fallback. v9 also has no transport count. v11 rejects
-reserved tree-form byte values rather than guessing their meaning.
+The reader keeps v9 through v11 compatibility. Buildings from those versions have no frontage byte
+and load as unknown. Trees from v9 and v10 have no form byte and load as the Default round fallback.
+v9 also has no transport count. v11 and v12 reject reserved tree form values, and v12 rejects a
+frontage byte that is outside its building ring.
 
 ## Aerial image and tile pyramid
 

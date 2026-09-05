@@ -333,7 +333,9 @@ class WorldFormatTests(unittest.TestCase):
         fixture = Path(__file__).with_name("fixtures").joinpath("world-v9.hex")
         self.assertEqual(output.getvalue().hex(), fixture.read_text().strip())
 
-    def test_python_writer_emits_v11_tree_forms_and_transport_lines_when_present(self) -> None:
+    def test_python_writer_emits_v12_frontages_tree_forms_and_transport_lines_when_present(
+        self,
+    ) -> None:
         import struct
 
         output = BytesIO()
@@ -352,12 +354,50 @@ class WorldFormatTests(unittest.TestCase):
         )
 
         header = struct.unpack("<IIIIIIIIII", output.getvalue()[8:48])
-        self.assertEqual(header[0], 11)
+        self.assertEqual(header[0], 12)
         self.assertEqual(header[-1], 1)
         self.assertEqual(
             output.getvalue()[-34:],
             struct.pack("<fffBBIffff", 5.0, 6.0, 0.25, 3, 2, 2, 1.0, 2.0, 3.0, 4.0),
         )
+
+    def test_python_writer_places_v12_frontage_after_each_packed_ring(self) -> None:
+        import struct
+
+        output = BytesIO()
+        write_world(
+            output,
+            [Building(8.0, ((1.0, 2.0), (3.0, 2.0), (1.0, 4.0)), frontage_edge=1)],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            Bounds(0.0, 0.0, 10.0, 10.0),
+            bytes(range(32)),
+            [],
+        )
+        data = output.getvalue()
+        self.assertEqual(struct.unpack("<I", data[8:12])[0], 12)
+        building_start = 8 + 10 * 4 + 32 + 4 * 8
+        self.assertEqual(data[building_start + 4 + 4 + 3 * 8], 1)
+
+    def test_python_writer_rejects_a_frontage_outside_the_ring_or_sentinel(self) -> None:
+        with self.assertRaisesRegex(ValueError, "frontage edge"):
+            write_world(
+                BytesIO(),
+                [Building(8.0, ((1.0, 2.0), (3.0, 2.0), (1.0, 4.0)), frontage_edge=3)],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                Bounds(0.0, 0.0, 10.0, 10.0),
+                bytes(range(32)),
+                [],
+            )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,8 @@ from .config import (
     WORLD_BIN,
 )
 from .download import download_all, local_snapshot
+from .frontage_audit import RULES as FRONTAGE_RULES
+from .frontage_audit import UNKNOWN_FRONTAGE_EDGE, build_street_index
 from .geometry import (
     buildings,
     city_rings,
@@ -63,7 +65,7 @@ from .terrain import ARTIFACT_NAME as TERRAIN_ARTIFACT_NAME
 from .terrain import TerrainBuild, build_if_evidence_present
 
 WORLD_MAGIC = b"GEOPHILY"
-VERSION = 11
+VERSION = 12
 
 
 def load(snapshot: Snapshot) -> gpd.GeoDataFrame:
@@ -124,7 +126,7 @@ def write_world(
     file.write(WORLD_MAGIC)
     # Keeping the no-transport form byte-compatible makes the golden v9
     # fixture an explicit compatibility check. Production ingest always passes
-    # an actual list and emits v11.
+    # an actual list and emits v12.
     if transport is None:
         file.write(
             struct.pack(
@@ -161,6 +163,17 @@ def write_world(
     for building in packed_buildings:
         file.write(struct.pack("<f", building.height))
         write_ring(file, building.ring)
+        if transport is not None:
+            frontage_edge = (
+                UNKNOWN_FRONTAGE_EDGE if building.frontage_edge is None else building.frontage_edge
+            )
+            if building.frontage_edge is not None and not 0 <= frontage_edge < min(
+                len(building.ring), UNKNOWN_FRONTAGE_EDGE
+            ):
+                raise ValueError(
+                    "building frontage edge must be an existing non-sentinel ring edge"
+                )
+            file.write(struct.pack("<B", frontage_edge))
     for part in parts:
         write_building_part(file, part)
     for mesh in meshes:
@@ -302,6 +315,12 @@ def write_metadata(
             "parks": len(parks),
             "street_trees": len(trees),
             "transport_lines": len(transport),
+            "frontage_known_buildings": sum(
+                building.frontage_edge is not None for building in packed_buildings
+            ),
+            "frontage_unknown_buildings": sum(
+                building.frontage_edge is None for building in packed_buildings
+            ),
         },
         "height_m": {
             "buildings": {"min": min(heights), "max": max(heights)},
@@ -321,6 +340,23 @@ def write_metadata(
                 "bytes": texture_bytes,
                 "sha256": texture_sha256.hex(),
             },
+        },
+        "frontage": {
+            "unknown_sentinel": UNKNOWN_FRONTAGE_EDGE,
+            "rules_sha256": hashlib.sha256(
+                json.dumps(FRONTAGE_RULES, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "packed_edge_digest_sha256": hashlib.sha256(
+                bytes(
+                    UNKNOWN_FRONTAGE_EDGE
+                    if building.frontage_edge is None
+                    else building.frontage_edge
+                    for building in packed_buildings
+                )
+            ).hexdigest(),
+            "selection": (
+                "exact street name/range and final projected clipped repaired simplified polygon"
+            ),
         },
         "sources": sources,
     }
@@ -415,12 +451,20 @@ async def main_async(*, refresh: bool = False) -> None:
             f"loaded trustworthy LiDAR heights for {len(height_evidence):,} buildings",
             flush=True,
         )
-    packed_buildings = buildings(load(snapshots[SOURCES.buildings.filename]), city, height_evidence)
+    street_snapshot = snapshots[SOURCES.streets.filename]
+    print("indexing full street centerlines for final-polygon frontage candidates", flush=True)
+    frontage_streets = build_street_index(street_snapshot.path)
+    packed_buildings = buildings(
+        load(snapshots[SOURCES.buildings.filename]),
+        city,
+        height_evidence,
+        frontage_streets,
+    )
     parts = building_parts(snapshots[SOURCES.building_parts.filename])
     water = ground_rings(load(snapshots[SOURCES.water.filename]), city)
     parks = ground_rings(load(snapshots[SOURCES.parks.filename]), city)
     trees = street_trees(load(tree_snapshot), city)
-    transport = transport_lines(load(snapshots[SOURCES.streets.filename]), city)
+    transport = transport_lines(load(street_snapshot), city)
     validate_street_tree_output(trees)
     if len(packed_buildings) < MIN_BUILDING_COUNT:
         raise ValueError(
