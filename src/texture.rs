@@ -277,6 +277,20 @@ pub(crate) fn missing_imagery(color: Option<[u8; 3]>) -> bool {
 }
 
 impl AerialTile {
+    #[cfg(test)]
+    pub(crate) fn solid_for_tests(color: [u8; 3]) -> Self {
+        Self {
+            images: HashMap::from([(
+                (0, 0),
+                Arc::new(RgbImage::from_pixel(
+                    SOURCE_SIZE,
+                    SOURCE_SIZE,
+                    image::Rgb(color),
+                )),
+            )]),
+        }
+    }
+
     pub fn for_source_bounds(source: &AerialSource, bounds: Bounds) -> io::Result<Self> {
         let bounds = bounds.pad(SOURCE_PIXEL_METERS * 2.0);
         let min_x = source_cell(bounds.min_x);

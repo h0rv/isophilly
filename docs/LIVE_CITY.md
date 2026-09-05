@@ -20,6 +20,13 @@ finish is applied before PNG encoding. The browser does not recolor the canvas. 
 tiles, derived zoom levels, deterministic screenshots, and the live display on the same pixels while
 preserving the continuous detail in the photographed Center City mesh.
 
+Outside photographed mesh coverage, a conservative citywide roof pass can add a low hipped or
+gabled silhouette to simple detached-house rectangles. It is derived at render time from the existing
+footprint, context, and metre height: the City height stays the roof top and the walls stop below the
+bounded roof rise. Attached rows, rowhouse-like footprints, twins, warehouses, and irregular shapes
+stay flat. The roof color remains sampled from the aerial imagery, with no invented chimneys or other
+roof furniture on pitched roofs.
+
 Water now uses a shoreline-aware deterministic treatment: official City hydrology still has
 priority, but the renderer also consults the 3 m land-cover mask to extend water only when nearby
 water pixels and hydrology agree. The result keeps a narrow quantized shoreline, then falls back to

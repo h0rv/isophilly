@@ -75,7 +75,14 @@ detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
 bays on exposed short walls. Detected party walls remain solid. Warehouses
 receive wider structural bays and restrained ground-level openings. Some
 compatible flat roofs receive deterministic, footprint-contained chimneys or
-mechanical units to avoid featureless roof slabs.
+mechanical units to avoid featureless roof slabs. A separate conservative roof
+pass gives only simple, unattached detached-house footprints a low pitched
+silhouette. Compact near-square rectangles get a hipped apex; elongated
+rectangles get a ridge along their long axis. The recorded City height remains
+the roof top, with the wall top lowered by a bounded 1.0 to 2.8 metre rise.
+Rowhouse, rowhouse-like, twin, warehouse, generic, and non-rectangular
+footprints remain flat. Pitched roofs use the same aerial-derived roof color
+and depth buffer as flat roofs, and never receive synthetic roof furniture.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly

@@ -1,6 +1,6 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v56-metre-morphology";
+const PYRAMID_VERSION: &str = "v57-inferred-roofs";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
 // already has the baked continuous-color finish. The later canopy and
 // metre-correct morphology changes are intentionally citywide-only because the
@@ -70,7 +70,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v56-metre-morphology-1111111111111111"
+            "v57-inferred-roofs-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),

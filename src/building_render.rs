@@ -25,6 +25,15 @@ const ROWHOUSE_ROOF_FEATURE_MAX_SIDE_METERS: f32 = 1.158_24; // 3.8 ft
 const INDUSTRIAL_ROOF_FEATURE_SIDE_METERS: std::ops::RangeInclusive<f32> = 2.438_4..=7.924_8;
 const INDUSTRIAL_ROOF_FEATURE_DEPTH_METERS: std::ops::RangeInclusive<f32> = 2.438_4..=10.058_4;
 const TALL_ROOF_FEATURE_SIDE_METERS: std::ops::RangeInclusive<f32> = 3.048..=12.192;
+// These intentionally use the packed EPSG:32129 metre coordinates, rather
+// than the feet and square-feet values from the source records.
+const INFERRED_ROOF_AREA_SQUARE_METERS: std::ops::RangeInclusive<f32> = 36.0..=300.0;
+const INFERRED_ROOF_SHORT_SIDE_METERS: std::ops::RangeInclusive<f32> = 4.8..=15.0;
+const INFERRED_ROOF_LONG_SIDE_METERS: std::ops::RangeInclusive<f32> = 4.8..=25.0;
+const INFERRED_GABLE_RATIO: f32 = 1.4;
+const INFERRED_HIP_RATIO: f32 = 1.3;
+const INFERRED_ROOF_MIN_RISE_METERS: f32 = 1.0;
+const INFERRED_ROOF_MAX_RISE_METERS: f32 = 2.8;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -81,13 +90,19 @@ impl Rasterizer<'_, '_> {
         }
         let seed = facade_seed(building.ring.center());
         let style = self.contextual_building_style(&building.ring, building.height, seed, context);
+        let inferred_roof = infer_pitched_roof(building, context);
+        let wall_top = inferred_roof.map_or(building.height, |roof| roof.wall_top);
         for index in 0..building.ring.points.len() {
             let left = building.ring.points[index];
             let right = building.ring.points[(index + 1) % building.ring.points.len()];
-            self.draw_wall(left, right, 0.0, building.height, index, style);
+            self.draw_wall(left, right, 0.0, wall_top, index, style);
         }
-        self.draw_flat_roof(&building.ring, building.height, style);
-        self.draw_roof_furniture(&building.ring, building.height, style);
+        if let Some(roof) = inferred_roof {
+            self.draw_inferred_pitched_roof(&building.ring, roof, style);
+        } else {
+            self.draw_flat_roof(&building.ring, building.height, style);
+            self.draw_roof_furniture(&building.ring, building.height, style);
+        }
     }
 
     fn draw_part(&mut self, part: &BuildingPart) {
@@ -303,6 +318,93 @@ impl Rasterizer<'_, '_> {
         }
     }
 
+    fn draw_inferred_pitched_roof(
+        &mut self,
+        ring: &Ring,
+        roof: InferredRoof,
+        style: BuildingStyle,
+    ) {
+        match roof.form {
+            InferredRoofForm::Hipped { apex } => {
+                let apex = Vertex::world(apex, roof.roof_top, self.projection);
+                for index in 0..ring.points.len() {
+                    let left = ring.points[index];
+                    let right = ring.points[(index + 1) % ring.points.len()];
+                    self.draw_aerial_roof_triangle(
+                        [
+                            Vertex::world(left, roof.wall_top, self.projection),
+                            Vertex::world(right, roof.wall_top, self.projection),
+                            apex,
+                        ],
+                        ring,
+                        style,
+                        roof_light((right.0 - left.0, right.1 - left.1)),
+                    );
+                }
+            }
+            InferredRoofForm::Gabled { ridge, gable_edges } => {
+                let low = |point| Vertex::world(point, roof.wall_top, self.projection);
+                let high = |point| Vertex::world(point, roof.roof_top, self.projection);
+                let points = &ring.points;
+                let first_gable = gable_edges.0;
+                let second_gable = gable_edges.1;
+                let first_long = (first_gable + ring.points.len() - 1) % ring.points.len();
+                let second_long = (first_gable + 1) % ring.points.len();
+                let first_low_edge = (points[first_long], points[first_gable]);
+                let second_low_edge = (points[second_gable], points[second_long]);
+                self.draw_aerial_roof_triangle(
+                    [low(first_low_edge.0), low(first_low_edge.1), high(ridge[0])],
+                    ring,
+                    style,
+                    roof_light((
+                        first_low_edge.1.0 - first_low_edge.0.0,
+                        first_low_edge.1.1 - first_low_edge.0.1,
+                    )),
+                );
+                self.draw_aerial_roof_triangle(
+                    [low(first_low_edge.0), high(ridge[0]), high(ridge[1])],
+                    ring,
+                    style,
+                    roof_light((
+                        first_low_edge.1.0 - first_low_edge.0.0,
+                        first_low_edge.1.1 - first_low_edge.0.1,
+                    )),
+                );
+                self.draw_aerial_roof_triangle(
+                    [
+                        low(second_low_edge.0),
+                        low(second_low_edge.1),
+                        high(ridge[1]),
+                    ],
+                    ring,
+                    style,
+                    roof_light((
+                        second_low_edge.1.0 - second_low_edge.0.0,
+                        second_low_edge.1.1 - second_low_edge.0.1,
+                    )),
+                );
+                self.draw_aerial_roof_triangle(
+                    [low(second_low_edge.0), high(ridge[1]), high(ridge[0])],
+                    ring,
+                    style,
+                    roof_light((
+                        second_low_edge.1.0 - second_low_edge.0.0,
+                        second_low_edge.1.1 - second_low_edge.0.1,
+                    )),
+                );
+                for (edge, ridge_point) in [(first_gable, ridge[0]), (second_gable, ridge[1])] {
+                    let left = points[edge];
+                    let right = points[(edge + 1) % points.len()];
+                    self.draw_solid_triangle(
+                        [low(left), low(right), high(ridge_point)],
+                        style.facade,
+                        wall_light((right.0 - left.0, right.1 - left.1)),
+                    );
+                }
+            }
+        }
+    }
+
     fn draw_roof_furniture(&mut self, ring: &Ring, roof_height: f32, style: BuildingStyle) {
         let area = polygon_area(&ring.points);
         let count = match style.kind {
@@ -470,6 +572,77 @@ impl Rasterizer<'_, '_> {
         }
     }
 
+    fn draw_aerial_roof_triangle(
+        &mut self,
+        triangle: [Vertex; 3],
+        ring: &Ring,
+        style: BuildingStyle,
+        light: f32,
+    ) {
+        let area = edge(triangle[0], triangle[1], triangle[2]);
+        if area.abs() < MIN_FACE_AREA {
+            return;
+        }
+        let min_x = triangle
+            .iter()
+            .map(|vertex| vertex.screen_x)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let max_x = triangle
+            .iter()
+            .map(|vertex| vertex.screen_x)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .min((TILE_SIZE - 1) as f32) as usize;
+        let min_y = triangle
+            .iter()
+            .map(|vertex| vertex.screen_y)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let max_y = triangle
+            .iter()
+            .map(|vertex| vertex.screen_y)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .min((TILE_SIZE - 1) as f32) as usize;
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+        let inverse_area = 1.0 / area;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let sample = Vertex::screen(x as f32 + 0.5, y as f32 + 0.5);
+                let weights = [
+                    edge(triangle[1], triangle[2], sample) * inverse_area,
+                    edge(triangle[2], triangle[0], sample) * inverse_area,
+                    edge(triangle[0], triangle[1], sample) * inverse_area,
+                ];
+                if weights.iter().any(|weight| *weight < -f32::EPSILON) {
+                    continue;
+                }
+                let source = (
+                    interpolate(&weights, &triangle, |vertex| vertex.source_x),
+                    interpolate(&weights, &triangle, |vertex| vertex.source_y),
+                );
+                let z = interpolate(&weights, &triangle, |vertex| vertex.z);
+                let offset = y * TILE_SIZE + x;
+                let depth = self.projection.depth(source, z);
+                if depth <= self.depth[offset] {
+                    continue;
+                }
+                self.depth[offset] = depth;
+                let aerial = self
+                    .aerial
+                    .sample(source.0, source.1, self.block_size)
+                    .unwrap_or(style.facade);
+                let color = roof_material(aerial, source, ring, style);
+                self.set_pixel(offset, color.map(|channel| shade(channel, light)));
+            }
+        }
+    }
+
     fn set_pixel(&mut self, offset: usize, color: [u8; 3]) {
         let byte_offset = offset * 4;
         self.pixmap.data_mut()[byte_offset..byte_offset + 4]
@@ -506,6 +679,24 @@ struct BuildingStyle {
     seed: u64,
     short_side: f32,
     party_edge_mask: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct InferredRoof {
+    wall_top: f32,
+    roof_top: f32,
+    form: InferredRoofForm,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InferredRoofForm {
+    Hipped {
+        apex: (f32, f32),
+    },
+    Gabled {
+        ridge: [(f32, f32); 2],
+        gable_edges: (usize, usize),
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -552,6 +743,96 @@ fn interpolate(weights: &[f32; 3], triangle: &[Vertex; 3], field: impl Fn(Vertex
         field(triangle[0]),
         weights[1].mul_add(field(triangle[1]), weights[2] * field(triangle[2])),
     )
+}
+
+// City footprints do not carry roof forms. Keep this inference deliberately
+// narrow: only an unattached, simple, low detached house can receive one.
+// In particular, a two-member row run remains flat because the `Twin` class
+// often describes two rowhouses separated by a small mapping gap.
+fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<InferredRoof> {
+    if context.kind != WorldBuildingKind::Detached
+        || !(5.0..18.0).contains(&building.height)
+        || building.ring.points.len() != 4
+    {
+        return None;
+    }
+    let area = polygon_area(&building.ring.points);
+    if !INFERRED_ROOF_AREA_SQUARE_METERS.contains(&area) {
+        return None;
+    }
+    let edges: [(f32, f32); 4] = std::array::from_fn(|index| {
+        let left = building.ring.points[index];
+        let right = building.ring.points[(index + 1) % building.ring.points.len()];
+        (right.0 - left.0, right.1 - left.1)
+    });
+    let lengths = edges.map(|edge| edge.0.hypot(edge.1));
+    let short = lengths.iter().copied().fold(f32::INFINITY, f32::min);
+    let long = lengths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !short.is_finite()
+        || !INFERRED_ROOF_SHORT_SIDE_METERS.contains(&short)
+        || !INFERRED_ROOF_LONG_SIDE_METERS.contains(&long)
+    {
+        return None;
+    }
+    let unit = |edge: (f32, f32), length: f32| (edge.0 / length, edge.1 / length);
+    let units: [(f32, f32); 4] = std::array::from_fn(|index| unit(edges[index], lengths[index]));
+    let dot = |left: (f32, f32), right: (f32, f32)| left.0.mul_add(right.0, left.1 * right.1);
+    if (0..4).any(|index| dot(units[index], units[(index + 1) % 4]).abs() > 0.16)
+        || dot(units[0], units[2]).abs() < 0.985
+        || dot(units[1], units[3]).abs() < 0.985
+        || (lengths[0] - lengths[2]).abs() > lengths[0].max(lengths[2]) * 0.12
+        || (lengths[1] - lengths[3]).abs() > lengths[1].max(lengths[3]) * 0.12
+    {
+        return None;
+    }
+
+    let rise = (short * 0.28)
+        .clamp(INFERRED_ROOF_MIN_RISE_METERS, INFERRED_ROOF_MAX_RISE_METERS)
+        .min(building.height * 0.25)
+        .min(building.height - 3.0);
+    if rise < INFERRED_ROOF_MIN_RISE_METERS {
+        return None;
+    }
+    let wall_top = building.height - rise;
+    let edge_pair_lengths = [
+        (lengths[0] + lengths[2]) * 0.5,
+        (lengths[1] + lengths[3]) * 0.5,
+    ];
+    let ratio = edge_pair_lengths[0].max(edge_pair_lengths[1])
+        / edge_pair_lengths[0].min(edge_pair_lengths[1]);
+    let form = if ratio >= INFERRED_GABLE_RATIO {
+        let long_pair = usize::from(edge_pair_lengths[1] > edge_pair_lengths[0]);
+        let gable_edges = if long_pair == 0 { (1, 3) } else { (0, 2) };
+        let midpoint = |edge: usize| {
+            let left = building.ring.points[edge];
+            let right = building.ring.points[(edge + 1) % building.ring.points.len()];
+            ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)
+        };
+        InferredRoofForm::Gabled {
+            ridge: [midpoint(gable_edges.0), midpoint(gable_edges.1)],
+            gable_edges,
+        }
+    } else if ratio <= INFERRED_HIP_RATIO {
+        InferredRoofForm::Hipped {
+            apex: building.ring.center(),
+        }
+    } else {
+        return None;
+    };
+    Some(InferredRoof {
+        wall_top,
+        roof_top: building.height,
+        form,
+    })
+}
+
+fn roof_light(edge: (f32, f32)) -> f32 {
+    let length = edge.0.hypot(edge.1);
+    if length <= f32::EPSILON {
+        return 0.9;
+    }
+    let directional = (edge.0 - edge.1).abs() / length;
+    (0.82 + directional * 0.18).clamp(0.78, 1.0)
 }
 
 fn point_in_polygon(point: (f32, f32), ring: &[(f32, f32)]) -> bool {
@@ -943,10 +1224,16 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::{
-        FacadeKind, WallStyle, block_seed, classify_building, facade_detail, point_in_polygon,
-        polygon_area, roof_feature, shade, wall_light, wall_material, wall_surface_light,
+        FacadeKind, InferredRoofForm, WallStyle, block_seed, classify_building, facade_detail,
+        infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, shade, wall_light,
+        wall_material, wall_surface_light,
     };
-    use crate::world::{Bounds, Ring};
+    use crate::{
+        projection::Projection,
+        texture::AerialTile,
+        world::{Bounds, Building, BuildingContext, BuildingKind, Ring, View},
+    };
+    use tiny_skia::Pixmap;
 
     fn ring(width: f32, depth: f32) -> Ring {
         Ring {
@@ -957,6 +1244,21 @@ mod tests {
                 max_y: depth,
             },
             points: vec![(0.0, 0.0), (width, 0.0), (width, depth), (0.0, depth)],
+        }
+    }
+
+    fn context(kind: BuildingKind) -> BuildingContext {
+        BuildingContext {
+            kind,
+            material_group_seed: 0,
+            party_edge_mask: 0,
+        }
+    }
+
+    fn building(width: f32, depth: f32, height: f32) -> Building {
+        Building {
+            height,
+            ring: ring(width, depth),
         }
     }
 
@@ -1160,6 +1462,206 @@ mod tests {
 
         assert!(roof_feature(&roof, style, 0, 1).is_some());
         assert!(roof_feature(&ring(0.60, 3.0), style, 0, 1).is_none());
+    }
+
+    #[test]
+    fn inferred_roofs_only_select_simple_detached_houses() {
+        let detached = building(10.0, 10.0, 9.0);
+        assert!(matches!(
+            infer_pitched_roof(&detached, &context(BuildingKind::Detached)),
+            Some(super::InferredRoof {
+                form: InferredRoofForm::Hipped { .. },
+                ..
+            })
+        ));
+
+        for kind in [
+            BuildingKind::Rowhouse,
+            BuildingKind::RowhouseLike,
+            BuildingKind::Twin,
+            BuildingKind::Warehouse,
+            BuildingKind::Generic,
+        ] {
+            assert!(
+                infer_pitched_roof(&detached, &context(kind)).is_none(),
+                "{kind:?} must remain flat"
+            );
+        }
+        assert!(
+            infer_pitched_roof(&building(4.0, 10.0, 9.0), &context(BuildingKind::Detached))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn elongated_detached_house_has_a_long_axis_ridge_and_bounded_wall_top()
+    -> Result<(), &'static str> {
+        let house = building(16.0, 8.0, 10.0);
+        let roof = infer_pitched_roof(&house, &context(BuildingKind::Detached))
+            .ok_or("detached rectangle roof")?;
+        let ridge = match roof.form {
+            InferredRoofForm::Gabled { ridge, .. } => ridge,
+            _ => return Err("elongated rectangle should have a gable ridge"),
+        };
+        let ridge_direction = (ridge[1].0 - ridge[0].0, ridge[1].1 - ridge[0].1);
+
+        assert!(ridge_direction.0.abs() > ridge_direction.1.abs() * 10.0);
+        assert_eq!(roof.roof_top, house.height);
+        assert!((1.0..=2.8).contains(&(roof.roof_top - roof.wall_top)));
+        assert!(roof.wall_top >= 3.0);
+        Ok(())
+    }
+
+    #[test]
+    fn inferred_roof_geometry_survives_large_coordinate_translation() -> Result<(), &'static str> {
+        let local = building(16.0, 8.0, 10.0);
+        let mut translated = local.clone();
+        let offset = (820_000.0, 72_000.0);
+        translated.ring.points = local
+            .ring
+            .points
+            .iter()
+            .map(|&(x, y)| (x + offset.0, y + offset.1))
+            .collect();
+        translated.ring.bounds = Bounds {
+            min_x: offset.0,
+            min_y: offset.1,
+            max_x: offset.0 + 16.0,
+            max_y: offset.1 + 8.0,
+        };
+
+        let local_roof =
+            infer_pitched_roof(&local, &context(BuildingKind::Detached)).ok_or("local roof")?;
+        let translated_roof = infer_pitched_roof(&translated, &context(BuildingKind::Detached))
+            .ok_or("translated roof")?;
+        assert_eq!(local_roof.wall_top, translated_roof.wall_top);
+        match (local_roof.form, translated_roof.form) {
+            (
+                InferredRoofForm::Gabled { ridge: local, .. },
+                InferredRoofForm::Gabled {
+                    ridge: translated, ..
+                },
+            ) => {
+                for index in 0..2 {
+                    assert!((translated[index].0 - local[index].0 - offset.0).abs() < 0.02);
+                    assert!((translated[index].1 - local[index].1 - offset.1).abs() < 0.02);
+                }
+            }
+            _ => return Err("both roofs should stay gabled"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inferred_roof_is_invariant_to_rectangle_start_and_winding() -> Result<(), &'static str> {
+        let original = building(16.0, 8.0, 10.0);
+        let mut reordered = original.clone();
+        reordered.ring.points = vec![(16.0, 8.0), (16.0, 0.0), (0.0, 0.0), (0.0, 8.0)];
+        let original = infer_pitched_roof(&original, &context(BuildingKind::Detached))
+            .ok_or("original roof")?;
+        let reordered = infer_pitched_roof(&reordered, &context(BuildingKind::Detached))
+            .ok_or("reordered roof")?;
+        let (
+            InferredRoofForm::Gabled { ridge: first, .. },
+            InferredRoofForm::Gabled { ridge: second, .. },
+        ) = (original.form, reordered.form)
+        else {
+            return Err("rectangle roof changed form");
+        };
+        let mut first = first;
+        let mut second = second;
+        first.sort_by(|left, right| left.0.total_cmp(&right.0));
+        second.sort_by(|left, right| left.0.total_cmp(&right.0));
+
+        assert_eq!(original.wall_top, reordered.wall_top);
+        assert_eq!(first, second);
+        Ok(())
+    }
+
+    #[test]
+    fn non_rectangular_or_complex_detached_footprints_remain_flat() {
+        let cases = [
+            vec![(0.0, 0.0), (16.0, 0.0), (16.0, 8.0)],
+            vec![
+                (0.0, 0.0),
+                (16.0, 0.0),
+                (16.0, 3.0),
+                (6.0, 3.0),
+                (6.0, 8.0),
+                (0.0, 8.0),
+            ],
+            vec![(0.0, 0.0), (16.0, 0.0), (14.0, 8.0), (0.0, 8.0)],
+        ];
+        for points in cases {
+            let min_x = points
+                .iter()
+                .map(|point| point.0)
+                .fold(f32::INFINITY, f32::min);
+            let min_y = points
+                .iter()
+                .map(|point| point.1)
+                .fold(f32::INFINITY, f32::min);
+            let max_x = points
+                .iter()
+                .map(|point| point.0)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let max_y = points
+                .iter()
+                .map(|point| point.1)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let house = Building {
+                height: 10.0,
+                ring: Ring {
+                    bounds: Bounds {
+                        min_x,
+                        min_y,
+                        max_x,
+                        max_y,
+                    },
+                    points,
+                },
+            };
+            assert!(infer_pitched_roof(&house, &context(BuildingKind::Detached)).is_none());
+        }
+    }
+
+    #[test]
+    fn inferred_roof_render_and_depth_are_deterministic() -> Result<(), &'static str> {
+        let house = building(16.0, 8.0, 10.0);
+        let roof =
+            infer_pitched_roof(&house, &context(BuildingKind::Detached)).ok_or("inferred roof")?;
+        let bounds = house
+            .ring
+            .bounds
+            .projected(roof.roof_top, View::SouthEast)
+            .pad(3.0);
+        let projection = Projection {
+            bounds,
+            scale: 256.0 / bounds.width().max(bounds.height()),
+            view: View::SouthEast,
+        };
+        let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+        let context = context(BuildingKind::Detached);
+        let render = || {
+            let mut pixmap = Pixmap::new(256, 256).ok_or("pixmap")?;
+            let mut depth = vec![f32::NEG_INFINITY; 256 * 256];
+            super::draw_city_buildings(
+                &mut pixmap,
+                [(&house, &context)],
+                &projection,
+                &aerial,
+                1.0,
+                &mut depth,
+            );
+            Ok::<_, &'static str>((pixmap.data().to_vec(), depth))
+        };
+        let (first_pixels, first_depth) = render()?;
+        let (second_pixels, second_depth) = render()?;
+
+        assert_eq!(first_pixels, second_pixels);
+        assert_eq!(first_depth, second_depth);
+        assert!(first_depth.iter().any(|depth| depth.is_finite()));
+        Ok(())
     }
 
     #[test]
