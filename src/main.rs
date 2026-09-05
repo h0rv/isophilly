@@ -2,6 +2,7 @@ mod building_render;
 mod land_cover;
 mod mesh_render;
 mod mesh_texture;
+mod palette;
 mod projection;
 mod pyramid;
 mod render;

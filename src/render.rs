@@ -8,6 +8,7 @@ use crate::{
     land_cover::{LandCoverClass, LandCoverMask},
     mesh_render::draw_textured_faces,
     mesh_texture::MeshTextureSource,
+    palette::{self, GROUND},
     projection::Projection,
     shadow_render::draw_cast_shadows,
     texture::AerialTile,
@@ -19,6 +20,8 @@ use crate::{
 
 const TILE_SIZE: u32 = 256;
 const PROCEDURAL_ROOF_MARGIN_METERS: f32 = 8.0;
+const SHORELINE_DISTANCE_METERS: f32 = 4.5;
+const SHORELINE_PROBE_METERS: f32 = 1.5;
 
 pub fn render_tile(
     world: &World,
@@ -134,7 +137,7 @@ pub fn render_tile(
         &projection,
         &mut depth,
     );
-    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
+    encode_display_pixmap(&mut pixmap)
 }
 
 pub fn render_rich_tile(
@@ -222,17 +225,22 @@ pub fn render_rich_tile(
         &projection,
         &mut depth,
     );
-    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
+    encode_display_pixmap(&mut pixmap)
 }
 
 pub fn render_blank_tile() -> io::Result<Vec<u8>> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or_else(|| io::Error::other("pixmap"))?;
     pixmap.fill(ground());
-    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
+    encode_display_pixmap(&mut pixmap)
 }
 
 fn ground() -> Color {
-    Color::from_rgba8(217, 209, 195, 255)
+    Color::from_rgba8(GROUND[0], GROUND[1], GROUND[2], 255)
+}
+
+fn encode_display_pixmap(pixmap: &mut Pixmap) -> io::Result<Vec<u8>> {
+    palette::bake_display_finish(pixmap.data_mut());
+    encode_rgba(pixmap.data(), TILE_SIZE, TILE_SIZE)
 }
 
 fn transport_query(bounds: Bounds, scale: f32) -> AABB<[f32; 2]> {
@@ -257,9 +265,20 @@ fn draw_ground(
     let bounds = projection.bounds;
     let scale = projection.scale;
     let view = projection.view;
-    let fallback = [217_u8, 209, 195];
+    let fallback = GROUND;
     let source_bounds = bounds.ground_source_bounds_for(view);
-    let source_query = AABB::from_corners(
+    let water_margin = water_query_margin(block_size);
+    let water_query = AABB::from_corners(
+        [
+            source_bounds.min_x - water_margin,
+            source_bounds.min_y - water_margin,
+        ],
+        [
+            source_bounds.max_x + water_margin,
+            source_bounds.max_y + water_margin,
+        ],
+    );
+    let park_query = AABB::from_corners(
         [
             source_bounds.min_x - block_size * 0.5,
             source_bounds.min_y - block_size * 0.5,
@@ -271,12 +290,12 @@ fn draw_ground(
     );
     let water: Vec<_> = world
         .water_tree
-        .locate_in_envelope_intersecting(source_query)
+        .locate_in_envelope_intersecting(water_query)
         .map(|item| &world.water[item.index])
         .collect();
     let parks: Vec<_> = world
         .park_tree
-        .locate_in_envelope_intersecting(source_query)
+        .locate_in_envelope_intersecting(park_query)
         .map(|item| &world.parks[item.index])
         .collect();
     let mut colors = HashMap::new();
@@ -291,12 +310,20 @@ fn draw_ground(
                 let aerial_color = if missing_imagery(sampled) {
                     fallback
                 } else {
-                    mix_rgb(fallback, sampled.unwrap_or(fallback), 0.9)
+                    palette::mix(fallback, sampled.unwrap_or(fallback), 0.9)
                 };
                 let land_cover_class = land_cover.and_then(|mask| {
                     mask.sample(f64::from(sample_point.0), f64::from(sample_point.1))
                 });
-                grade_ground(aerial_color, sample_point, &water, &parks, land_cover_class)
+                let nearby_water = land_cover.is_some_and(|mask| nearby_water(mask, sample_point));
+                grade_ground_with_context(
+                    aerial_color,
+                    sample_point,
+                    &water,
+                    &parks,
+                    land_cover_class,
+                    nearby_water,
+                )
             });
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
             pixmap.data_mut()[offset..offset + 4]
@@ -317,6 +344,7 @@ fn canonical_block_sample(point: (f32, f32), block_size: f32) -> ((i32, i32), (f
     (key, center)
 }
 
+#[cfg(test)]
 fn grade_ground(
     color: [u8; 3],
     point: (f32, f32),
@@ -324,8 +352,19 @@ fn grade_ground(
     parks: &[&Ring],
     land_cover: Option<LandCoverClass>,
 ) -> [u8; 3] {
-    if water.iter().any(|ring| ring.contains(point)) || land_cover == Some(LandCoverClass::Water) {
-        return grade_water(color, point);
+    grade_ground_with_context(color, point, water, parks, land_cover, false)
+}
+
+fn grade_ground_with_context(
+    color: [u8; 3],
+    point: (f32, f32),
+    water: &[&Ring],
+    parks: &[&Ring],
+    land_cover: Option<LandCoverClass>,
+    nearby_water: bool,
+) -> [u8; 3] {
+    if let Some(tone) = water_tone(point, water, land_cover, nearby_water) {
+        return grade_water_with_tone(color, point, tone);
     }
     let aerial_vegetation =
         color[1].saturating_add(12) >= color[0] && color[1] > color[2].saturating_add(4);
@@ -340,30 +379,76 @@ fn grade_ground(
         return grade_park(color);
     }
     match land_cover {
-        Some(LandCoverClass::TreeCanopy) => mix_rgb(color, [56, 126, 61], 0.32),
-        Some(LandCoverClass::GrassShrub) => mix_rgb(color, [86, 148, 73], 0.24),
+        Some(LandCoverClass::TreeCanopy) => palette::mix(color, palette::CANOPY, 0.32),
+        Some(LandCoverClass::GrassShrub) => palette::mix(color, palette::GRASS, 0.24),
         Some(_) => color,
-        None if aerial_vegetation => mix_rgb(color, [72, 142, 68], 0.24),
+        None if aerial_vegetation => palette::mix(color, palette::AERIAL_VEGETATION, 0.24),
         None => color,
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaterTone {
+    Open,
+    Shoreline,
+}
+
+fn water_query_margin(block_size: f32) -> f32 {
+    block_size * 0.5 + SHORELINE_DISTANCE_METERS + SHORELINE_PROBE_METERS
+}
+
+fn nearby_water(mask: &LandCoverMask, point: (f32, f32)) -> bool {
+    if mask.sample(f64::from(point.0), f64::from(point.1)) == Some(LandCoverClass::Water) {
+        return true;
+    }
+    SHORELINE_PROBES.iter().any(|offset| {
+        mask.sample(f64::from(point.0 + offset.0), f64::from(point.1 + offset.1))
+            == Some(LandCoverClass::Water)
+    })
+}
+
+fn water_tone(
+    point: (f32, f32),
+    water: &[&Ring],
+    land_cover: Option<LandCoverClass>,
+    nearby_water: bool,
+) -> Option<WaterTone> {
+    if water.iter().any(|ring| ring.contains(point)) || land_cover == Some(LandCoverClass::Water) {
+        return Some(WaterTone::Open);
+    }
+    if !nearby_water {
+        return None;
+    }
+    nearest_water_distance(point, water)
+        .filter(|distance| *distance <= SHORELINE_DISTANCE_METERS)
+        .map(|_| WaterTone::Shoreline)
+}
+
+#[cfg(test)]
 fn grade_water(color: [u8; 3], point: (f32, f32)) -> [u8; 3] {
-    let base = mix_rgb(color, [42, 132, 172], 0.56);
+    grade_water_with_tone(color, point, WaterTone::Open)
+}
+
+fn grade_water_with_tone(color: [u8; 3], point: (f32, f32), tone: WaterTone) -> [u8; 3] {
+    let (base_mix, highlight_mix, shadow_mix) = match tone {
+        WaterTone::Open => (0.56, 0.16, 0.12),
+        WaterTone::Shoreline => (0.42, 0.10, 0.0),
+    };
+    let base = palette::mix(color, palette::WATER, base_mix);
     // Sparse diagonal bands use source coordinates, so a tile or view boundary
     // cannot reset the texture phase.
     let band = point.0.mul_add(0.075, point.1 * 0.035).rem_euclid(29.0);
     if band < 1.4 {
-        mix_rgb(base, [126, 196, 210], 0.16)
-    } else if (14.5..15.3).contains(&band) {
-        mix_rgb(base, [27, 101, 147], 0.12)
+        palette::mix(base, palette::WATER_HIGHLIGHT, highlight_mix)
+    } else if shadow_mix > 0.0 && (14.5..15.3).contains(&band) {
+        palette::mix(base, palette::WATER_SHADOW, shadow_mix)
     } else {
         base
     }
 }
 
 fn grade_park(color: [u8; 3]) -> [u8; 3] {
-    mix_rgb(color, [67, 151, 65], 0.48)
+    palette::mix(color, palette::PARK, 0.48)
 }
 
 fn block_size(bounds: Bounds) -> f32 {
@@ -378,10 +463,66 @@ fn missing_imagery(color: Option<[u8; 3]>) -> bool {
     color.is_none_or(|color| color.iter().all(|channel| *channel >= 246))
 }
 
-fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
-    std::array::from_fn(|index| {
-        (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount).round() as u8
-    })
+const SHORELINE_PROBES: [(f32, f32); 4] = [
+    (-SHORELINE_PROBE_METERS, 0.0),
+    (SHORELINE_PROBE_METERS, 0.0),
+    (0.0, -SHORELINE_PROBE_METERS),
+    (0.0, SHORELINE_PROBE_METERS),
+];
+
+fn nearest_water_distance(point: (f32, f32), water: &[&Ring]) -> Option<f32> {
+    let mut best = f32::INFINITY;
+    for ring in water {
+        if !distance_could_be_within(point, ring, SHORELINE_DISTANCE_METERS, best) {
+            continue;
+        }
+        let distance = distance_to_ring(point, ring);
+        if distance < best {
+            best = distance;
+            if best <= f32::EPSILON {
+                return Some(0.0);
+            }
+        }
+    }
+    best.is_finite().then_some(best)
+}
+
+fn distance_could_be_within(point: (f32, f32), ring: &Ring, limit: f32, best: f32) -> bool {
+    let limit = limit.min(best);
+    point.0 >= ring.bounds.min_x - limit
+        && point.0 <= ring.bounds.max_x + limit
+        && point.1 >= ring.bounds.min_y - limit
+        && point.1 <= ring.bounds.max_y + limit
+}
+
+fn distance_to_ring(point: (f32, f32), ring: &Ring) -> f32 {
+    if ring.contains(point) {
+        return 0.0;
+    }
+    ring.points
+        .iter()
+        .copied()
+        .zip(ring.points.iter().copied().cycle().skip(1))
+        .take(ring.points.len())
+        .map(|(start, end)| distance_to_segment_squared(point, start, end))
+        .fold(f32::INFINITY, f32::min)
+        .sqrt()
+}
+
+fn distance_to_segment_squared(point: (f32, f32), start: (f32, f32), end: (f32, f32)) -> f32 {
+    let edge = (end.0 - start.0, end.1 - start.1);
+    let length_squared = edge.0.mul_add(edge.0, edge.1 * edge.1);
+    if length_squared <= f32::EPSILON {
+        let dx = point.0 - start.0;
+        let dy = point.1 - start.1;
+        return dx.mul_add(dx, dy * dy);
+    }
+    let amount = (((point.0 - start.0) * edge.0) + ((point.1 - start.1) * edge.1)) / length_squared;
+    let amount = amount.clamp(0.0, 1.0);
+    let closest = (start.0 + edge.0 * amount, start.1 + edge.1 * amount);
+    let dx = point.0 - closest.0;
+    let dy = point.1 - closest.1;
+    dx.mul_add(dx, dy * dy)
 }
 
 #[cfg(test)]
@@ -391,8 +532,9 @@ mod tests {
     use rstar::Envelope;
 
     use super::{
-        TILE_SIZE, block_size, canonical_block_sample, grade_ground, grade_water, rich_block_size,
-        transport_query,
+        SHORELINE_DISTANCE_METERS, SHORELINE_PROBE_METERS, TILE_SIZE, block_size,
+        canonical_block_sample, grade_ground, grade_ground_with_context, grade_water,
+        rich_block_size, transport_query, water_query_margin,
     };
     use crate::land_cover::LandCoverClass;
     use crate::pyramid::ART_ZOOM;
@@ -453,6 +595,19 @@ mod tests {
 
         assert!(result[2] > source[2]);
         assert!(result[2] > result[0]);
+    }
+
+    #[test]
+    fn shoreline_water_is_only_promoted_when_nearby_mask_water_exists() {
+        let water = square();
+        let source = [144, 128, 120];
+        let shoreline = grade_ground_with_context(source, (12.0, 5.0), &[&water], &[], None, true);
+        let background =
+            grade_ground_with_context(source, (12.0, 5.0), &[&water], &[], None, false);
+
+        assert!(shoreline[2] > background[2]);
+        assert!(shoreline[2] > shoreline[0]);
+        assert_eq!(background, source);
     }
 
     #[test]
@@ -531,6 +686,15 @@ mod tests {
                 assert_eq!(left_samples[key], right_samples[key]);
             }
         }
+    }
+
+    #[test]
+    fn shoreline_query_margin_includes_the_water_buffer_and_probe() {
+        assert_eq!(water_query_margin(128.0), 70.0);
+        assert_eq!(
+            water_query_margin(0.0),
+            SHORELINE_DISTANCE_METERS + SHORELINE_PROBE_METERS
+        );
     }
 
     #[test]

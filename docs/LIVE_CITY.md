@@ -12,8 +12,16 @@ from 2018 LiDAR and 2017 NAIP imagery, while the displayed ground remains the 20
 Tree canopy and grass or shrub classes receive different restrained green grading. Building, road,
 railroad, paved, and bare earth classes keep their aerial color.
 
-Water has a small set of blue tones arranged in fixed diagonal bands. Official City hydrology has
-priority, and the land cover water class fills areas outside that mask. The bands use source
+All tile types now share one baked color contract. The restrained ground, vegetation, water,
+building, and tree anchors live in the renderer, and the final continuous saturation and contrast
+finish is applied before PNG encoding. The browser does not recolor the canvas. This keeps exported
+tiles, derived zoom levels, deterministic screenshots, and the live display on the same pixels while
+preserving the continuous detail in the photographed Center City mesh.
+
+Water now uses a shoreline-aware deterministic treatment: official City hydrology still has
+priority, but the renderer also consults the 3 m land-cover mask to extend water only when nearby
+water pixels and hydrology agree. The result keeps a narrow quantized shoreline, then falls back to
+the same fixed blue bands for open water. The bands use source
 coordinates, so they stay aligned across tile boundaries and camera views. Park grading applies
 only where the land cover class is tree canopy or grass and shrub. Courts, paths, and plazas
 therefore keep their aerial color. If the optional mask is absent, the renderer keeps the earlier

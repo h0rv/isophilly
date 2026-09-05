@@ -1,10 +1,12 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v53-transport";
-// The multi-angle mesh viewer is hidden from the launch UI. Keep the exact
-// immutable v50 atlas identity so adding citywide-only data cannot rebuild
-// 4,096 expensive, unused mesh tiles.
-const FROZEN_RICH_IDENTITY: &str = "v50-citywide-polish-7ac1f590372e61a2-lc-217fdf2e5aeed51b7bbee3f798b1f136b7c016843385bd3af3202ecc22b35643";
+const PYRAMID_VERSION: &str = "v54-shared-palette";
+// The multi-angle mesh viewer is hidden from the launch UI. It normally keeps
+// the immutable v50 atlas identity, but the former browser-only finish is now
+// baked into every tile. Rich photographed tiles therefore receive one new
+// continuous-color generation, rather than a lossy recolor or a stale canvas
+// filter.
+const BAKED_RICH_IDENTITY: &str = "v54-shared-palette-rich-style";
 
 pub(crate) fn base_tile_version(
     world_sha256: &[u8; 32],
@@ -26,7 +28,7 @@ pub(crate) fn base_tile_version_hex(world_sha256: &str, land_cover_sha256: Optio
 
 pub(crate) fn rich_tile_version(tile_version: &str, view: View) -> String {
     let rich_source = if tile_version.starts_with(PYRAMID_VERSION) {
-        FROZEN_RICH_IDENTITY.to_owned()
+        BAKED_RICH_IDENTITY.to_owned()
     } else {
         tile_version.to_owned()
     };
@@ -57,7 +59,7 @@ fn digest_hex(digest: &[u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FROZEN_RICH_IDENTITY, base_tile_version, is_generation_of, rich_tile_version};
+    use super::{BAKED_RICH_IDENTITY, base_tile_version, is_generation_of, rich_tile_version};
     use crate::world::View;
 
     #[test]
@@ -68,7 +70,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v53-transport-1111111111111111"
+            "v54-shared-palette-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),
@@ -92,7 +94,7 @@ mod tests {
         let citywide = base_tile_version(&[0x11; 32], Some(&[0x22; 32]));
         assert_eq!(
             rich_tile_version(&citywide, View::SouthEast),
-            format!("{FROZEN_RICH_IDENTITY}-rich-se-z5-full")
+            format!("{BAKED_RICH_IDENTITY}-rich-se-z5-full")
         );
     }
 }

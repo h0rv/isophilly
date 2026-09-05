@@ -1,6 +1,7 @@
 use tiny_skia::Pixmap;
 
 use crate::{
+    palette,
     projection::Projection,
     texture::AerialTile,
     world::{
@@ -129,7 +130,9 @@ impl Rasterizer<'_, '_> {
             }
         };
         let material_group_seed = match context.kind {
-            WorldBuildingKind::Rowhouse | WorldBuildingKind::Twin => context.material_group_seed,
+            WorldBuildingKind::Rowhouse
+            | WorldBuildingKind::RowhouseLike
+            | WorldBuildingKind::Twin => context.material_group_seed,
             _ => block_seed(ring.center()),
         };
         let sampled = self.facade_palette(ring);
@@ -167,7 +170,7 @@ impl Rasterizer<'_, '_> {
         if samples.is_empty() {
             [128, 128, 128]
         } else {
-            soften(std::array::from_fn(|channel| {
+            palette::soften(std::array::from_fn(|channel| {
                 samples.sort_unstable_by_key(|sample| sample[channel]);
                 samples[samples.len() / 2][channel]
             }))
@@ -302,7 +305,7 @@ impl Rasterizer<'_, '_> {
             };
             let equipment_style = BuildingStyle {
                 kind: FacadeKind::LowRise,
-                facade: mix_rgb(style.facade, [135, 137, 132], 0.62),
+                facade: palette::mix(style.facade, [135, 137, 132], 0.62),
                 seed: style.seed.rotate_left(index as u32 + 7),
                 short_side: equipment.bounds.width().min(equipment.bounds.height()),
                 party_edge_mask: 0,
@@ -553,22 +556,6 @@ fn scale_channel(channel: u8, light: f32) -> u8 {
     (f32::from(channel) * light).round().clamp(0.0, 255.0) as u8
 }
 
-fn soften(color: [u8; 3]) -> [u8; 3] {
-    let luminance = (u16::from(color[0]) * 3 + u16::from(color[1]) * 6 + u16::from(color[2])) / 10;
-    std::array::from_fn(|index| {
-        let mixed = (u16::from(color[index]) * 3 + luminance * 2) / 5;
-        mixed.clamp(56, 208) as u8
-    })
-}
-
-fn mix_rgb(left: [u8; 3], right: [u8; 3], amount: f32) -> [u8; 3] {
-    std::array::from_fn(|index| {
-        (f32::from(left[index]) * (1.0 - amount) + f32::from(right[index]) * amount)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    })
-}
-
 fn facade_seed(center: (f32, f32)) -> u64 {
     (center.0.round() as u64).wrapping_mul(0x9e37_79b9) ^ (center.1.round() as u64).rotate_left(23)
 }
@@ -628,56 +615,29 @@ fn wall_material(
     material_group_seed: u64,
     kind: FacadeKind,
 ) -> [u8; 3] {
-    const ROWHOUSE_FAMILIES: [[[u8; 3]; 4]; 4] = [
-        [[143, 78, 58], [156, 88, 65], [169, 101, 72], [132, 73, 59]],
-        [[139, 92, 68], [153, 101, 75], [164, 113, 84], [128, 87, 72]],
-        [
-            [178, 151, 113],
-            [188, 164, 128],
-            [163, 140, 109],
-            [194, 174, 143],
-        ],
-        [
-            [137, 137, 132],
-            [153, 148, 139],
-            [167, 158, 145],
-            [126, 130, 128],
-        ],
-    ];
-    const LOW_RISE: [[u8; 3]; 4] = [
-        [151, 96, 72],
-        [167, 112, 82],
-        [143, 145, 139],
-        [188, 169, 141],
-    ];
-    const INDUSTRIAL: [[u8; 3]; 4] = [
-        [169, 161, 145],
-        [151, 153, 148],
-        [181, 171, 150],
-        [139, 147, 148],
-    ];
-    const HIGH_RISE: [[u8; 3]; 4] = [
-        [151, 137, 121],
-        [132, 145, 150],
-        [174, 164, 145],
-        [146, 142, 136],
-    ];
     let block = block_seed(center);
     let (reference, amount) = match kind {
         FacadeKind::Rowhouse => {
-            let family =
-                &ROWHOUSE_FAMILIES[(material_group_seed as usize) % ROWHOUSE_FAMILIES.len()];
+            let family = &palette::ROWHOUSE_FAMILIES
+                [(material_group_seed as usize) % palette::ROWHOUSE_FAMILIES.len()];
             let variant = (seed as usize) % family.len();
             (family[variant], 0.42)
         }
-        FacadeKind::LowRise => (LOW_RISE[(block as usize) % LOW_RISE.len()], 0.24),
-        FacadeKind::Industrial => (INDUSTRIAL[(block as usize) % INDUSTRIAL.len()], 0.3),
-        FacadeKind::MidRise | FacadeKind::Tower => {
-            (HIGH_RISE[(block as usize) % HIGH_RISE.len()], 0.18)
-        }
+        FacadeKind::LowRise => (
+            palette::LOW_RISE_FACADES[(block as usize) % palette::LOW_RISE_FACADES.len()],
+            0.24,
+        ),
+        FacadeKind::Industrial => (
+            palette::INDUSTRIAL_FACADES[(block as usize) % palette::INDUSTRIAL_FACADES.len()],
+            0.3,
+        ),
+        FacadeKind::MidRise | FacadeKind::Tower => (
+            palette::HIGH_RISE_FACADES[(block as usize) % palette::HIGH_RISE_FACADES.len()],
+            0.18,
+        ),
     };
     let tone = 0.94 + f32::from((seed & 7) as u8) * 0.014;
-    mix_rgb(facade, reference, amount).map(|channel| scale_channel(channel, tone))
+    palette::scale(palette::mix(facade, reference, amount), tone)
 }
 
 fn block_seed(center: (f32, f32)) -> u64 {
@@ -694,9 +654,9 @@ fn roof_material(aerial: [u8; 3], point: (f32, f32), ring: &Ring, style: Buildin
         FacadeKind::LowRise => (style.facade, 0.2),
         FacadeKind::MidRise | FacadeKind::Tower => ([159, 158, 151], 0.18),
     };
-    let mut color = mix_rgb(aerial, reference, amount);
+    let mut color = palette::mix(aerial, reference, amount);
     if style.kind == FacadeKind::Rowhouse && distance_to_ring(point, &ring.points) <= 1.4 {
-        color = mix_rgb(color, style.facade, 0.32).map(|channel| scale_channel(channel, 0.8));
+        color = palette::scale(palette::mix(color, style.facade, 0.32), 0.8);
     }
     color
 }
@@ -830,7 +790,7 @@ fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         } else {
             [82, 85, 82]
         };
-        return mix_rgb(
+        return palette::mix(
             style.facade,
             glass,
             if style.top - style.bottom >= 30.0 {
@@ -858,7 +818,7 @@ fn industrial_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     }
     let relative_z = z - style.bottom;
     if relative_z < height.min(4.2) && (2.4..=bay_width - 2.4).contains(&bay) {
-        return mix_rgb(style.facade, [74, 78, 77], 0.36);
+        return palette::mix(style.facade, [74, 78, 77], 0.36);
     }
     if height - relative_z < 0.35 {
         return style.facade.map(|channel| scale_channel(channel, 0.76));
@@ -913,7 +873,7 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     let door = (0.12..=2.55).contains(&relative_z)
         && (bay_width * 0.2..=bay_width * 0.68).contains(&along);
     if door {
-        return mix_rgb(style.facade, [66, 58, 52], 0.68);
+        return palette::mix(style.facade, [66, 58, 52], 0.68);
     }
     if upper_window || ground_window {
         let glass = if style.seed & 1 == 0 {
@@ -921,7 +881,7 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         } else {
             [73, 76, 74]
         };
-        return mix_rgb(style.facade, glass, 0.58);
+        return palette::mix(style.facade, glass, 0.58);
     }
     style.facade
 }
@@ -930,7 +890,7 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
 mod tests {
     use super::{
         FacadeKind, WallStyle, block_seed, classify_building, facade_detail, point_in_polygon,
-        polygon_area, roof_feature, shade, soften, wall_light, wall_material, wall_surface_light,
+        polygon_area, roof_feature, shade, wall_light, wall_material, wall_surface_light,
     };
     use crate::world::{Bounds, Ring};
 
@@ -971,9 +931,9 @@ mod tests {
 
     #[test]
     fn facade_palette_rejects_extreme_saturation_and_brightness() {
-        assert_eq!(soften([255, 0, 0]), [183, 56, 56]);
-        assert_eq!(soften([255, 255, 255]), [208, 208, 208]);
-        assert_eq!(soften([0, 0, 0]), [56, 56, 56]);
+        assert_eq!(crate::palette::soften([255, 0, 0]), [183, 56, 56]);
+        assert_eq!(crate::palette::soften([255, 255, 255]), [208, 208, 208]);
+        assert_eq!(crate::palette::soften([0, 0, 0]), [56, 56, 56]);
     }
 
     #[test]

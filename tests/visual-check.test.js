@@ -37,7 +37,8 @@ test("the public UI always opens the vivid citywide scene", async () => {
 
   assert.doesNotMatch(index, /id="(?:color|rich)-toggle"/);
   assert.doesNotMatch(index, /id="rotate-(?:left|right)"/);
-  assert.match(index, /canvas \{[^}]*filter: saturate\(1\.14\) contrast\(1\.04\)/);
+  assert.doesNotMatch(index, /canvas \{[^}]*filter:/);
+  assert.match(app, /ctx\.fillStyle = "#ded4c4";/);
   assert.match(app, /const richMode = false;/);
   assert.doesNotMatch(app, /parameters\.get\("mode"\)|parameters\.get\("view"\)/);
   assert.doesNotMatch(visualCheck, /#rotate-(?:left|right)|mode: "detailed"/);

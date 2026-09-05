@@ -373,8 +373,8 @@ pub enum BuildingKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildingContext {
     pub kind: BuildingKind,
-    /// Stable for every member of a detected attached run. Other buildings,
-    /// including `RowhouseLike`, receive a seed derived from their own geometry.
+    /// Stable for every member of a detected attached run. Rowhouse-like
+    /// clusters can also share a family seed when their geometry supports it.
     pub material_group_seed: u64,
     /// Bit `n` identifies ring edge `n` as adjoining another footprint. The
     /// procedural renderer only supports the first 64 edges; rowhouses have
@@ -996,6 +996,7 @@ struct FootprintProfile {
     area: f32,
     depth: f32,
     rowhouse_candidate: bool,
+    rowhouse_family_candidate: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1016,6 +1017,7 @@ fn derive_building_contexts(
         .collect();
     let mut party_edge_masks = vec![0_u64; buildings.len()];
     let mut attached = vec![Vec::new(); buildings.len()];
+    let mut family_attached = vec![Vec::new(); buildings.len()];
 
     for (left_index, left) in buildings.iter().enumerate() {
         let bounds = left.ring.bounds.pad(PARTY_EDGE_GAP_FEET);
@@ -1044,11 +1046,18 @@ fn derive_building_contexts(
                     }
                     let left_profile = profiles[left_index];
                     let right_profile = profiles[right_index];
-                    joins_row_run |= left_profile.rowhouse_candidate
-                        && right_profile.rowhouse_candidate
+                    let family_joins = left_profile.rowhouse_family_candidate
+                        && right_profile.rowhouse_family_candidate
                         && left_edge.length >= left_profile.depth * 0.6
                         && right_edge.length >= right_profile.depth * 0.6
                         && compatible_rowhouse_heights(left.height, buildings[right_index].height);
+                    joins_row_run |= left_profile.rowhouse_candidate
+                        && right_profile.rowhouse_candidate
+                        && family_joins;
+                    if family_joins {
+                        family_attached[left_index].push(right_index);
+                        family_attached[right_index].push(left_index);
+                    }
                 }
             }
             if joins_row_run {
@@ -1059,37 +1068,9 @@ fn derive_building_contexts(
     }
 
     let own_seeds: Vec<_> = buildings.iter().map(building_geometry_seed).collect();
-    let mut component_ids = vec![usize::MAX; buildings.len()];
-    let mut components = Vec::<Vec<usize>>::new();
-    for start in 0..buildings.len() {
-        if component_ids[start] != usize::MAX {
-            continue;
-        }
-        let component_id = components.len();
-        let mut members = Vec::new();
-        let mut pending = vec![start];
-        component_ids[start] = component_id;
-        while let Some(index) = pending.pop() {
-            members.push(index);
-            for &neighbor in &attached[index] {
-                if component_ids[neighbor] == usize::MAX {
-                    component_ids[neighbor] = component_id;
-                    pending.push(neighbor);
-                }
-            }
-        }
-        components.push(members);
-    }
-    let component_seeds: Vec<_> = components
-        .iter()
-        .map(|members| {
-            let mut member_seeds: Vec<_> = members.iter().map(|&index| own_seeds[index]).collect();
-            member_seeds.sort_unstable();
-            member_seeds
-                .into_iter()
-                .fold(0x6a09_e667_f3bc_c909, mix_seed)
-        })
-        .collect();
+    let (component_ids, components, component_seeds) = connected_components(&attached, &own_seeds);
+    let (family_component_ids, family_components, family_component_seeds) =
+        connected_components(&family_attached, &own_seeds);
 
     buildings
         .iter()
@@ -1101,7 +1082,7 @@ fn derive_building_contexts(
                 BuildingKind::Rowhouse
             } else if profile.rowhouse_candidate && component.len() == 2 {
                 BuildingKind::Twin
-            } else if profile.rowhouse_candidate {
+            } else if profile.rowhouse_candidate || profile.rowhouse_family_candidate {
                 BuildingKind::RowhouseLike
             } else if profile.area >= 4_840.0 && building.height <= 20.0 {
                 BuildingKind::Warehouse
@@ -1115,6 +1096,10 @@ fn derive_building_contexts(
             };
             let material_group_seed = if component.len() >= 2 {
                 component_seeds[component_ids[index]]
+            } else if profile.rowhouse_family_candidate
+                && family_components[family_component_ids[index]].len() >= 2
+            {
+                family_component_seeds[family_component_ids[index]]
             } else {
                 own_seeds[index]
             };
@@ -1145,7 +1130,49 @@ fn footprint_profile(building: &Building) -> FootprintProfile {
             && (10.0..=30.0).contains(&width)
             && (26.0..=105.0).contains(&depth)
             && (5.5..=16.0).contains(&building.height),
+        rowhouse_family_candidate: (220.0..=3_400.0).contains(&area)
+            && (8.0..=34.0).contains(&width)
+            && (18.0..=120.0).contains(&depth)
+            && (4.5..=20.0).contains(&building.height),
     }
+}
+
+fn connected_components(
+    attached: &[Vec<usize>],
+    own_seeds: &[u64],
+) -> (Vec<usize>, Vec<Vec<usize>>, Vec<u64>) {
+    let mut component_ids = vec![usize::MAX; attached.len()];
+    let mut components = Vec::<Vec<usize>>::new();
+    for start in 0..attached.len() {
+        if component_ids[start] != usize::MAX {
+            continue;
+        }
+        let component_id = components.len();
+        let mut members = Vec::new();
+        let mut pending = vec![start];
+        component_ids[start] = component_id;
+        while let Some(index) = pending.pop() {
+            members.push(index);
+            for &neighbor in &attached[index] {
+                if component_ids[neighbor] == usize::MAX {
+                    component_ids[neighbor] = component_id;
+                    pending.push(neighbor);
+                }
+            }
+        }
+        components.push(members);
+    }
+    let component_seeds = components
+        .iter()
+        .map(|members| {
+            let mut member_seeds: Vec<_> = members.iter().map(|&index| own_seeds[index]).collect();
+            member_seeds.sort_unstable();
+            member_seeds
+                .into_iter()
+                .fold(0x6a09_e667_f3bc_c909, mix_seed)
+        })
+        .collect();
+    (component_ids, components, component_seeds)
 }
 
 fn footprint_edges(ring: &Ring) -> Vec<FootprintEdge> {
@@ -1656,6 +1683,34 @@ mod tests {
 
         assert_eq!(contexts[0].kind, BuildingKind::RowhouseLike);
         assert_eq!(contexts[0].party_edge_mask, 0);
+    }
+
+    #[test]
+    fn broad_attached_rowhouse_shapes_share_a_family_seed() {
+        let buildings = vec![
+            Building {
+                height: 9.0,
+                ring: rectangle(0.0, 0.0, 31.0, 50.0),
+            },
+            Building {
+                height: 9.0,
+                ring: rectangle(31.0, 0.0, 62.0, 50.0),
+            },
+        ];
+
+        let contexts = contextualize(&buildings);
+
+        assert!(
+            contexts
+                .iter()
+                .all(|context| context.kind == BuildingKind::RowhouseLike)
+        );
+        assert_eq!(
+            contexts[0].material_group_seed,
+            contexts[1].material_group_seed
+        );
+        assert_eq!(contexts[0].party_edge_mask, 1 << 1);
+        assert_eq!(contexts[1].party_edge_mask, 1 << 3);
     }
 
     #[test]

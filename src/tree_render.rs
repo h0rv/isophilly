@@ -1,12 +1,12 @@
 use tiny_skia::Pixmap;
 
-use crate::{projection::Projection, world::StreetTree};
+use crate::{palette, projection::Projection, world::StreetTree};
 
 const TILE_SIZE: usize = 256;
 const MIN_CROWN_RADIUS_PIXELS: f32 = 0.55;
 const SQRT_2: f32 = std::f32::consts::SQRT_2;
 const SQRT_1_5: f32 = 1.224_744_9;
-const TRUNK_COLOR: [u8; 3] = [76, 61, 43];
+const TRUNK_COLOR: [u8; 3] = palette::TREE_TRUNK;
 const CROWN_LOBE_COUNT: usize = 4;
 
 pub fn draw_street_trees<'a>(
@@ -270,12 +270,7 @@ fn sphere_surface(projected_x: f32, projected_y: f32, radius: f32) -> Option<Sph
 }
 
 fn tree_palette(point: (f32, f32)) -> [u8; 3] {
-    match tree_hash(point) % 4 {
-        0 => [48, 99, 49],
-        1 => [55, 108, 52],
-        2 => [61, 113, 55],
-        _ => [44, 93, 47],
-    }
+    palette::tree_foliage(tree_hash(point))
 }
 
 fn tree_hash(point: (f32, f32)) -> u64 {

@@ -66,13 +66,16 @@ parallel overlapping edges within 0.8 metres. At least three compatible
 attached footprints are required for the high-confidence run class. Narrow
 footprints that fit Philadelphia rowhouse proportions but lack reliable
 neighbor continuity use the lower-confidence class. Both receive rowhouse
-drawing grammar, but only detected attached runs share a run-wide material
-seed. Each class gets a limited material palette and a different pattern of
-wall and roof detail. Rowhouses can get a cornice, floor courses, doors, and
-aligned window bays on exposed short walls. Detected party walls remain solid.
-Warehouses receive wider structural bays and restrained ground-level openings.
-Some compatible flat roofs receive deterministic, footprint-contained chimneys
-or mechanical units to avoid featureless roof slabs.
+drawing grammar, and broader rowhouse-shaped clusters keep a shared family
+seed when their footprint adjacency supports it. Exact attached runs still get
+the strongest shared seed, while rowhouse-like buildings can inherit a smaller
+family so nearby blocks read as a run instead of isolated boxes. Each class
+gets a limited material palette and a different pattern of wall and roof
+detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
+bays on exposed short walls. Detected party walls remain solid. Warehouses
+receive wider structural bays and restrained ground-level openings. Some
+compatible flat roofs receive deterministic, footprint-contained chimneys or
+mechanical units to avoid featureless roof slabs.
 
 The added facade and roof detail is synthesis. It does not report the real
 number of floors, window positions, door positions, wall material, building

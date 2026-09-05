@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
+    palette,
     render::{render_rich_tile, render_tile},
     texture::{AerialSource, AerialTile},
     tile_codec::{EXTENSION, encode_image},
@@ -27,7 +28,12 @@ pub const RICH_ART_ZOOM: u8 = 5;
 const TILE_SIZE: u32 = 256;
 const COMPLETE_FILE: &str = ".complete";
 const INVENTORY_FILE: &str = ".inventory";
-const GROUND: Rgba<u8> = Rgba([217, 209, 195, 255]);
+const GROUND: Rgba<u8> = Rgba([
+    palette::DISPLAY_GROUND[0],
+    palette::DISPLAY_GROUND[1],
+    palette::DISPLAY_GROUND[2],
+    255,
+]);
 
 pub fn build(
     world: &World,
@@ -572,7 +578,7 @@ mod tests {
         COMPLETE_FILE, derive_level, derive_parent, read_inventory, tile_path, valid_tile,
         validate_complete, write_atomic, write_inventory,
     };
-    use crate::tile_codec::encode_image;
+    use crate::{palette, tile_codec::encode_image};
 
     #[test]
     fn parent_combines_available_children_and_fills_missing_quadrants()
@@ -593,7 +599,15 @@ mod tests {
         assert!(derive_parent(&root, 0, 0, 0)?);
         let parent = image::open(tile_path(&root, 0, 0, 0))?.into_rgba8();
         assert_eq!(parent.get_pixel(32, 32).0, [255, 0, 0, 255]);
-        assert_eq!(parent.get_pixel(224, 224).0, [217, 209, 195, 255]);
+        assert_eq!(
+            parent.get_pixel(224, 224).0,
+            [
+                palette::DISPLAY_GROUND[0],
+                palette::DISPLAY_GROUND[1],
+                palette::DISPLAY_GROUND[2],
+                255
+            ]
+        );
 
         fs::remove_dir_all(root)?;
         Ok(())

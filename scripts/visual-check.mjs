@@ -593,7 +593,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
         const red = image[offset];
         const green = image[offset + 1];
         const blue = image[offset + 2];
-        if (red === 217 && green === 209 && blue === 195) ground += 1;
+        if (red === 222 && green === 212 && blue === 196) ground += 1;
         colors.add(`${red},${green},${blue}`);
         samples += 1;
       }

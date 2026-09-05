@@ -318,7 +318,7 @@ function drawNow() {
   const maxTileZoom = sceneMaxTileZoom();
   const bounds = sceneBounds();
   const cityHall = sceneCityHall();
-  ctx.fillStyle = "#d9d1c3";
+  ctx.fillStyle = "#ded4c4";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
   const viewZoom = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
   const z = Math.min(viewZoom, maxTileZoom);
