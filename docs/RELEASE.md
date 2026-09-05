@@ -56,6 +56,11 @@
 - Check that the terrain relief only changes the ground tone. Water should keep
   its own treatment, and the rich Center City mesh views should not show any
   terrain shading at all.
+- Inspect attached rowhouse blocks in Italian Market, East Passyunk, Point
+  Breeze, and Port Richmond. Cornice ledges should appear only on exposed
+  frontage-width edges, stay below the recorded roof line, and remain aligned
+  across tile boundaries. Twins, warehouses, and broad side walls are negative
+  controls.
 
 ## Publication
 

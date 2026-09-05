@@ -34,6 +34,10 @@ const INFERRED_GABLE_RATIO: f32 = 1.4;
 const INFERRED_HIP_RATIO: f32 = 1.3;
 const INFERRED_ROOF_MIN_RISE_METERS: f32 = 1.0;
 const INFERRED_ROOF_MAX_RISE_METERS: f32 = 2.8;
+const ROWHOUSE_CORNICE_EDGE_METERS: std::ops::RangeInclusive<f32> = 3.048..=9.144;
+const ROWHOUSE_CORNICE_OUTSET_METERS: f32 = 0.24;
+const ROWHOUSE_CORNICE_HEIGHT_METERS: f32 = 0.42;
+const ROWHOUSE_CORNICE_NORMAL_PROBE_METERS: f32 = 0.05;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -100,6 +104,7 @@ impl Rasterizer<'_, '_> {
         if let Some(roof) = inferred_roof {
             self.draw_inferred_pitched_roof(&building.ring, roof, style);
         } else {
+            self.draw_rowhouse_cornices(building, context, style);
             self.draw_flat_roof(&building.ring, building.height, style);
             self.draw_roof_furniture(&building.ring, building.height, style);
         }
@@ -314,6 +319,89 @@ impl Rasterizer<'_, '_> {
                 ],
                 facade,
                 light,
+            );
+        }
+    }
+
+    fn draw_rowhouse_cornices(
+        &mut self,
+        building: &Building,
+        context: &BuildingContext,
+        style: BuildingStyle,
+    ) {
+        if context.kind != WorldBuildingKind::Rowhouse {
+            return;
+        }
+        let color = palette::scale(style.facade, 0.72);
+        for edge_index in 0..building.ring.points.len() {
+            let Some(cornice) = rowhouse_cornice_segment(building, context, edge_index) else {
+                continue;
+            };
+            let inner_left_bottom =
+                Vertex::world(cornice.inner[0], cornice.bottom, self.projection);
+            let inner_right_bottom =
+                Vertex::world(cornice.inner[1], cornice.bottom, self.projection);
+            let inner_left_top = Vertex::world(cornice.inner[0], cornice.top, self.projection);
+            let inner_right_top = Vertex::world(cornice.inner[1], cornice.top, self.projection);
+            let outer_left_bottom =
+                Vertex::world(cornice.outer[0], cornice.bottom, self.projection);
+            let outer_right_bottom =
+                Vertex::world(cornice.outer[1], cornice.bottom, self.projection);
+            let outer_left_top = Vertex::world(cornice.outer[0], cornice.top, self.projection);
+            let outer_right_top = Vertex::world(cornice.outer[1], cornice.top, self.projection);
+
+            self.draw_solid_quad(
+                [
+                    outer_left_bottom,
+                    outer_right_bottom,
+                    outer_right_top,
+                    outer_left_top,
+                ],
+                color,
+                wall_light((
+                    cornice.inner[1].0 - cornice.inner[0].0,
+                    cornice.inner[1].1 - cornice.inner[0].1,
+                )),
+            );
+            self.draw_solid_quad(
+                [
+                    inner_left_top,
+                    inner_right_top,
+                    outer_right_top,
+                    outer_left_top,
+                ],
+                color,
+                1.02,
+            );
+            self.draw_solid_quad(
+                [
+                    inner_left_bottom,
+                    outer_left_bottom,
+                    outer_right_bottom,
+                    inner_right_bottom,
+                ],
+                color,
+                0.68,
+            );
+            self.draw_solid_quad(
+                [
+                    inner_left_bottom,
+                    inner_left_top,
+                    outer_left_top,
+                    outer_left_bottom,
+                ],
+                color,
+                0.78,
+            );
+            self.draw_solid_quad(
+                [
+                    inner_right_bottom,
+                    outer_right_bottom,
+                    outer_right_top,
+                    inner_right_top,
+                ],
+                color,
+                0.78,
             );
         }
     }
@@ -572,6 +660,11 @@ impl Rasterizer<'_, '_> {
         }
     }
 
+    fn draw_solid_quad(&mut self, quad: [Vertex; 4], color: [u8; 3], light: f32) {
+        self.draw_solid_triangle([quad[0], quad[1], quad[2]], color, light);
+        self.draw_solid_triangle([quad[0], quad[2], quad[3]], color, light);
+    }
+
     fn draw_aerial_roof_triangle(
         &mut self,
         triangle: [Vertex; 3],
@@ -686,6 +779,14 @@ struct InferredRoof {
     wall_top: f32,
     roof_top: f32,
     form: InferredRoofForm,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CorniceSegment {
+    inner: [(f32, f32); 2],
+    outer: [(f32, f32); 2],
+    bottom: f32,
+    top: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -823,6 +924,78 @@ fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<
         wall_top,
         roof_top: building.height,
         form,
+    })
+}
+
+#[cfg(test)]
+fn rowhouse_cornice_segments(
+    building: &Building,
+    context: &BuildingContext,
+) -> Vec<CorniceSegment> {
+    if context.kind != WorldBuildingKind::Rowhouse
+        || building.height <= ROWHOUSE_CORNICE_HEIGHT_METERS
+    {
+        return Vec::new();
+    }
+    (0..building.ring.points.len())
+        .filter_map(|edge_index| rowhouse_cornice_segment(building, context, edge_index))
+        .collect()
+}
+
+fn rowhouse_cornice_segment(
+    building: &Building,
+    context: &BuildingContext,
+    edge_index: usize,
+) -> Option<CorniceSegment> {
+    if context.kind != WorldBuildingKind::Rowhouse
+        || edge_index >= u64::BITS as usize
+        || context.party_edge_mask & (1_u64 << edge_index) != 0
+        || building.ring.points.len() < 3
+    {
+        return None;
+    }
+    let left = building.ring.points[edge_index];
+    let right = building.ring.points[(edge_index + 1) % building.ring.points.len()];
+    let edge = (right.0 - left.0, right.1 - left.1);
+    let length = edge.0.hypot(edge.1);
+    if !ROWHOUSE_CORNICE_EDGE_METERS.contains(&length)
+        || building.height <= ROWHOUSE_CORNICE_HEIGHT_METERS
+    {
+        return None;
+    }
+    let normal = (-edge.1 / length, edge.0 / length);
+    let midpoint = ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5);
+    let probe = |direction: f32| {
+        (
+            midpoint.0 + normal.0 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
+            midpoint.1 + normal.1 * ROWHOUSE_CORNICE_NORMAL_PROBE_METERS * direction,
+        )
+    };
+    let positive_inside = building.ring.contains(probe(1.0));
+    let negative_inside = building.ring.contains(probe(-1.0));
+    if positive_inside == negative_inside {
+        return None;
+    }
+    let outward = if positive_inside {
+        (-normal.0, -normal.1)
+    } else {
+        normal
+    };
+    let outer = [
+        (
+            left.0 + outward.0 * ROWHOUSE_CORNICE_OUTSET_METERS,
+            left.1 + outward.1 * ROWHOUSE_CORNICE_OUTSET_METERS,
+        ),
+        (
+            right.0 + outward.0 * ROWHOUSE_CORNICE_OUTSET_METERS,
+            right.1 + outward.1 * ROWHOUSE_CORNICE_OUTSET_METERS,
+        ),
+    ];
+    Some(CorniceSegment {
+        inner: [left, right],
+        outer,
+        bottom: building.height - ROWHOUSE_CORNICE_HEIGHT_METERS,
+        top: building.height,
     })
 }
 
@@ -1224,9 +1397,10 @@ fn rowhouse_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::{
-        FacadeKind, InferredRoofForm, WallStyle, block_seed, classify_building, facade_detail,
-        infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, shade, wall_light,
-        wall_material, wall_surface_light,
+        FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
+        ROWHOUSE_CORNICE_OUTSET_METERS, WallStyle, block_seed, classify_building, facade_detail,
+        infer_pitched_roof, point_in_polygon, polygon_area, roof_feature, rowhouse_cornice_segment,
+        rowhouse_cornice_segments, shade, wall_light, wall_material, wall_surface_light,
     };
     use crate::{
         projection::Projection,
@@ -1427,6 +1601,151 @@ mod tests {
             ),
             base
         );
+    }
+
+    #[test]
+    fn rowhouse_cornices_select_only_non_party_standard_frontage_edges() {
+        let house = building(5.0, 16.0, 9.0);
+        let rowhouse = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let cornices = rowhouse_cornice_segments(&house, &rowhouse);
+
+        assert_eq!(cornices.len(), 2);
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 0).is_some());
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 2).is_some());
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 1).is_none());
+        assert!(rowhouse_cornice_segment(&house, &rowhouse, 3).is_none());
+        assert!(rowhouse_cornice_segments(&house, &context(BuildingKind::RowhouseLike)).is_empty());
+        assert!(rowhouse_cornice_segments(&house, &context(BuildingKind::Twin)).is_empty());
+        assert!(rowhouse_cornice_segments(&house, &context(BuildingKind::Detached)).is_empty());
+        assert!(rowhouse_cornice_segments(&house, &context(BuildingKind::Warehouse)).is_empty());
+        assert!(rowhouse_cornice_segments(&house, &context(BuildingKind::Generic)).is_empty());
+        assert!(rowhouse_cornice_segments(&building(3.0, 16.0, 9.0), &rowhouse).is_empty());
+        assert!(rowhouse_cornice_segments(&building(9.2, 16.0, 9.0), &rowhouse).is_empty());
+    }
+
+    #[test]
+    fn rowhouse_cornice_geometry_is_winding_translation_and_height_stable() {
+        let house = building(5.0, 16.0, 9.0);
+        let context = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let original = rowhouse_cornice_segments(&house, &context);
+        assert_eq!(original.len(), 2);
+        for cornice in &original {
+            assert_eq!(cornice.top, house.height);
+            assert_eq!(
+                cornice.bottom,
+                house.height - ROWHOUSE_CORNICE_HEIGHT_METERS
+            );
+            for index in 0..2 {
+                let offset = (
+                    cornice.outer[index].0 - cornice.inner[index].0,
+                    cornice.outer[index].1 - cornice.inner[index].1,
+                );
+                assert!((offset.0.hypot(offset.1) - ROWHOUSE_CORNICE_OUTSET_METERS).abs() < 1e-5);
+            }
+            let outer_midpoint = (
+                (cornice.outer[0].0 + cornice.outer[1].0) * 0.5,
+                (cornice.outer[0].1 + cornice.outer[1].1) * 0.5,
+            );
+            assert!(!house.ring.contains(outer_midpoint));
+        }
+
+        let mut reversed = house.clone();
+        reversed.ring.points.reverse();
+        let reversed = rowhouse_cornice_segments(&reversed, &context);
+        let centers = |cornices: &[super::CorniceSegment]| {
+            let mut centers: Vec<_> = cornices
+                .iter()
+                .map(|cornice| {
+                    (
+                        (cornice.outer[0].0 + cornice.outer[1].0) * 0.5,
+                        (cornice.outer[0].1 + cornice.outer[1].1) * 0.5,
+                    )
+                })
+                .collect();
+            centers.sort_by(|left, right| left.1.total_cmp(&right.1));
+            centers
+        };
+        assert_eq!(centers(&original), centers(&reversed));
+
+        let offset = (820_000.0, 72_000.0);
+        let mut translated = house.clone();
+        translated.ring.points = house
+            .ring
+            .points
+            .iter()
+            .map(|&(x, y)| (x + offset.0, y + offset.1))
+            .collect();
+        translated.ring.bounds = Bounds {
+            min_x: house.ring.bounds.min_x + offset.0,
+            min_y: house.ring.bounds.min_y + offset.1,
+            max_x: house.ring.bounds.max_x + offset.0,
+            max_y: house.ring.bounds.max_y + offset.1,
+        };
+        let translated = rowhouse_cornice_segments(&translated, &context);
+        for (local, translated) in original.iter().zip(&translated) {
+            for index in 0..2 {
+                assert!((translated.inner[index].0 - local.inner[index].0 - offset.0).abs() < 0.03);
+                assert!((translated.inner[index].1 - local.inner[index].1 - offset.1).abs() < 0.03);
+                assert!((translated.outer[index].0 - local.outer[index].0 - offset.0).abs() < 0.03);
+                assert!((translated.outer[index].1 - local.outer[index].1 - offset.1).abs() < 0.03);
+            }
+            assert_eq!(translated.bottom, local.bottom);
+            assert_eq!(translated.top, local.top);
+        }
+    }
+
+    #[test]
+    fn rowhouse_cornice_raster_and_depth_are_deterministic() -> Result<(), &'static str> {
+        let house = building(5.0, 16.0, 9.0);
+        let bounds = house
+            .ring
+            .bounds
+            .projected(house.height, View::SouthEast)
+            .pad(2.0);
+        let projection = Projection {
+            bounds,
+            scale: 256.0 / bounds.width().max(bounds.height()),
+            view: View::SouthEast,
+        };
+        let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+        let rowhouse = BuildingContext {
+            party_edge_mask: (1 << 1) | (1 << 3),
+            ..context(BuildingKind::Rowhouse)
+        };
+        let rowhouse_like = BuildingContext {
+            party_edge_mask: rowhouse.party_edge_mask,
+            ..context(BuildingKind::RowhouseLike)
+        };
+        let render = |context: &BuildingContext| {
+            let mut pixmap = Pixmap::new(256, 256).ok_or("pixmap")?;
+            let mut depth = vec![f32::NEG_INFINITY; 256 * 256];
+            super::draw_city_buildings(
+                &mut pixmap,
+                [(&house, context)],
+                &projection,
+                &aerial,
+                1.0,
+                &mut depth,
+            );
+            Ok::<_, &'static str>((pixmap.data().to_vec(), depth))
+        };
+
+        let (first_pixels, first_depth) = render(&rowhouse)?;
+        let (second_pixels, second_depth) = render(&rowhouse)?;
+        let (without_cornice_pixels, without_cornice_depth) = render(&rowhouse_like)?;
+
+        assert_eq!(first_pixels, second_pixels);
+        assert_eq!(first_depth, second_depth);
+        assert_ne!(first_pixels, without_cornice_pixels);
+        assert_ne!(first_depth, without_cornice_depth);
+        assert!(first_depth.iter().any(|depth| depth.is_finite()));
+        Ok(())
     }
 
     #[test]

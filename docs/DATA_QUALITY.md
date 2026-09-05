@@ -91,7 +91,11 @@ the strongest shared seed, while rowhouse-like buildings can inherit a smaller
 family so nearby blocks read as a run instead of isolated boxes. Each class
 gets a limited material palette and a different pattern of wall and roof
 detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
-bays on exposed short walls. Detected party walls remain solid. Warehouses
+bays on exposed short walls. High-confidence attached runs also receive a
+shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
+metres long. The ledge projects 0.24 metres and occupies the top 0.42 metres of
+the recorded building height, so it does not make the building taller. Detected
+party walls remain solid. Warehouses
 receive wider structural bays and restrained ground-level openings. Some
 compatible flat roofs receive deterministic, footprint-contained chimneys or
 mechanical units to avoid featureless roof slabs. A separate conservative roof
@@ -113,12 +117,13 @@ high-confidence attached rowhouses, 51,849 rowhouse-like footprints, and
 139,080 two-building/twin cases. These are rendering classes, not land-use or
 architectural survey labels.
 
-The added facade and roof detail is synthesis. It does not report the real
-number of floors, window positions, door positions, wall material, building
-use, or condition. It also does not report real chimney or mechanical-unit locations.
-The exposed rowhouse frontage is inferred from footprint proportions and
-attached edges rather than an address, entrance record, or street survey. The
-class names describe drawing rules and should not be used as property data.
+The added facade, cornice, and roof detail is synthesis. It does not report the
+real number of floors, window positions, door positions, wall material,
+building use, or condition. It also does not report real chimney or
+mechanical-unit locations. The exposed rowhouse frontage and cornice are
+inferred from footprint proportions and attached edges rather than an address,
+entrance record, or street survey. The class names describe drawing rules and
+should not be used as property data.
 
 The synthesis is deterministic. Every detected attached run shares one material
 family derived from the sorted geometry of its members. Other buildings use a
