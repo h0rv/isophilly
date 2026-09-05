@@ -47,8 +47,8 @@ present. It writes one `philly.bin` input plus a `meta.json` provenance record.
 The download and conversion are the slow first run step.
 The ingest rejects short building exports and uses the newest verified complete
 snapshot instead of replacing a full city artifact with partial live data.
-Existing checkouts must rerun `ingest` because world format version 9 adds
-the packed street-tree layer to the single render input.
+Existing checkouts must rerun `ingest` because world format version 11 adds one
+validated conservative tree-form byte after each packed street-tree record.
 `prebuild` renders the citywide z8 scene and creates z0 through z7 by resizing
 those tiles. It also renders four Center City views at z5 and derives z0
 through z4 for each view. The Center City work makes a new prebuild heavier,

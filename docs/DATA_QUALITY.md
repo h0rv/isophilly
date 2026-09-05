@@ -13,11 +13,22 @@ services. The exact URLs, checksums, and clean counts are in
 | 2008 and 2009 legacy downtown | 2,689 `r0` models and 668,082 valid textured triangles before overlap suppression | The clean count is lower because the 2015 scene wins where they overlap. |
 | 2008 stadium area | 808 retained `r0` models and 126,181 textured triangles | Six obsolete Spectrum components are excluded. |
 | OpenStreetMap Center City building parts | 827 height-backed parts in the current snapshot | Parts improve setbacks and roof forms only where photographed meshes are absent. |
+| 2025 PPR street-tree inventory | 151,371 retained point records | The packed record preserves projected location, DBH-derived diameter, and one conservative visual-form byte; it is not a botanical or canopy survey. |
 | Terrain relief | 108 by 121 cells | 4,364 direct cells, 3,172 interpolated cells, 133 rejected-gap cells, and 5,399 unsupported cells. The eight rejected PASDA gaps stay neutral, and the artifact is tonal only. |
 
 The City Limits extent is about 27.29 by 30.52 kilometres in EPSG:32129. The
 boundary controls tile presence so the viewer does not create an unbounded
 empty plane.
+
+## Street-tree forms
+
+The inventory's 2025 tree-name text is normalized only enough to make spacing
+deterministic, then must retain the exact ASCII ` - ` scientific/common-name
+delimiter. The renderer uses a round fallback for 146,245 records and assigns
+the other 5,126 records only from explicit reviewed labels: 3,989 conifers, 251
+columnar trees, 644 weeping trees, and 242 shrubs. These are bounded drawing
+forms, not a statement of species, crown measurement, health, or pruning.
+Malformed, missing, generic, palm, and unsupported values remain the fallback.
 
 ## Building heights
 

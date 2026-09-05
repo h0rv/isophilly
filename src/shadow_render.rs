@@ -169,7 +169,7 @@ mod tests {
     use super::{SHADOW_COLOR, draw_cast_shadows, shadowed};
     use crate::{
         projection::Projection,
-        world::{Bounds, Building, Ring, StreetTree, View},
+        world::{Bounds, Building, Ring, StreetTree, TreeForm, View},
     };
 
     fn ring(points: &[(f32, f32)]) -> Ring {
@@ -257,6 +257,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 0.4,
+            form: TreeForm::Default,
         };
         let center = View::SouthEast.project(0.0, 0.0, 0.0);
         let bounds = Bounds {

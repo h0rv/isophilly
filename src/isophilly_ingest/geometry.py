@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import struct
 from collections.abc import Iterator
 from itertools import repeat
@@ -27,7 +28,7 @@ from .config import (
     STREET_TREE_PAYLOAD_SHA256,
     STREET_TREE_SOURCE_RECORD_COUNT,
 )
-from .models import Building, Ring, StreetTree, TransportKind, TransportLine
+from .models import Building, Ring, StreetTree, TransportKind, TransportLine, TreeForm
 
 HEIGHT_FIELDS = ("approx_hgt", "max_hgt")
 TREE_FIELDS = ("objectid", "tree_name", "tree_dbh", "year", "loc_y", "loc_x", "geometry")
@@ -37,6 +38,28 @@ MIN_TREE_DIAMETER_METERS = 0.0254
 MAX_TREE_DIAMETER_METERS = 2.0
 TREE_LOCATION_TOLERANCE_METERS = 1.0
 TRANSPORT_SIMPLIFY_METERS = 0.9144  # 3 ft
+CONIFER_GENERA = frozenset(
+    {
+        "PINUS",
+        "PICEA",
+        "JUNIPERUS",
+        "THUJA",
+        "TAXODIUM",
+        "TSUGA",
+        "CHAMAECYPARIS",
+        "CEDRUS",
+        "CRYPTOMERIA",
+        "ABIES",
+        "PSEUDOTSUGA",
+        "CUPRESSUS",
+        "METASEQUOIA",
+        "LARIX",
+        "TAXUS",
+    }
+)
+COLUMNAR_MODIFIERS = frozenset({"COLUMNAR", "FASTIGIATE", "UPRIGHT", "NARROW", "PYRAMIDAL"})
+WEEPING_MODIFIERS = frozenset({"WEEPING", "PENDULA"})
+COMMON_NAME_WORDS = re.compile(r"[A-Z]+")
 
 
 def transport_lines(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[TransportLine]:
@@ -179,6 +202,48 @@ def tree_diameter(value: object) -> float:
     return DEFAULT_TREE_DIAMETER_METERS
 
 
+def normalized_tree_name(value: object) -> tuple[str, str] | None:
+    """Parse the narrow, audited ``SCIENTIFIC - COMMON`` inventory spelling.
+
+    Whitespace is made deterministic, but only the literal ASCII separator is
+    accepted.  In particular, an en dash is not silently reinterpreted as a
+    safe taxonomy boundary.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.upper().split())
+    if normalized in {"", "UNKNOWN", "UNKNOWN UNKNOWN - UNKNOWN"}:
+        return None
+    parts = normalized.split(" - ")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return parts[0], parts[1]
+
+
+def tree_form(value: object) -> TreeForm:
+    """Classify only explicit, safe source labels into a visual form."""
+    parsed = normalized_tree_name(value)
+    if parsed is None:
+        return TreeForm.DEFAULT
+    scientific, common = parsed
+    scientific_tokens = scientific.split()
+    if not scientific_tokens:
+        return TreeForm.DEFAULT
+    genus = scientific_tokens[0]
+    common_words = frozenset(COMMON_NAME_WORDS.findall(common))
+    if genus == "SHRUB":
+        return TreeForm.SHRUB
+    if genus in {"PALM", "UNKNOWN"}:
+        return TreeForm.DEFAULT
+    if common_words & COLUMNAR_MODIFIERS:
+        return TreeForm.COLUMNAR
+    if common_words & WEEPING_MODIFIERS:
+        return TreeForm.WEEPING
+    if genus in CONIFER_GENERA:
+        return TreeForm.CONIFER
+    return TreeForm.DEFAULT
+
+
 def street_trees(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[StreetTree]:
     if tuple(frame.columns) != TREE_FIELDS:
         raise ValueError(
@@ -210,8 +275,9 @@ def street_trees(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[StreetTree
     )
     projected_frame = projected(frame)
     trees: list[tuple[int, StreetTree]] = []
-    for object_id, geometry, diameter, expected_x, expected_y in zip(
+    for object_id, tree_name, geometry, diameter, expected_x, expected_y in zip(
         frame["objectid"],
+        frame["tree_name"],
         projected_frame.geometry,
         frame["tree_dbh"],
         location_x,
@@ -237,7 +303,11 @@ def street_trees(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[StreetTree
         trees.append(
             (
                 int(object_id),
-                StreetTree((float(geometry.x), float(geometry.y)), tree_diameter(diameter)),
+                StreetTree(
+                    (float(geometry.x), float(geometry.y)),
+                    tree_diameter(diameter),
+                    tree_form(tree_name),
+                ),
             )
         )
     trees.sort(key=lambda item: item[0])
@@ -247,7 +317,9 @@ def street_trees(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[StreetTree
 def validate_street_tree_output(trees: list[StreetTree]) -> None:
     digest = hashlib.sha256()
     for tree in trees:
-        digest.update(struct.pack("<fff", tree.point[0], tree.point[1], tree.diameter_m))
+        digest.update(
+            struct.pack("<fffB", tree.point[0], tree.point[1], tree.diameter_m, int(tree.form))
+        )
     if len(trees) != STREET_TREE_ACCEPTED_COUNT or digest.hexdigest() != STREET_TREE_PAYLOAD_SHA256:
         raise ValueError(
             "retained street-tree coordinates changed; review the tree and City Limits "

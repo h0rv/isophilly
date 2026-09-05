@@ -35,6 +35,7 @@ from isophilly_ingest.models import (
     StreetTree,
     TransportKind,
     TransportLine,
+    TreeForm,
 )
 
 
@@ -81,6 +82,22 @@ class HeightTests(unittest.TestCase):
 
 
 class StreetTreeTests(unittest.TestCase):
+    def test_tree_form_requires_a_strict_normalized_name(self) -> None:
+        from isophilly_ingest.geometry import tree_form
+
+        self.assertEqual(tree_form("PINUS STROBUS - EASTERN WHITE PINE"), TreeForm.CONIFER)
+        self.assertEqual(tree_form("ACER RUBRUM - COLUMNAR RED MAPLE"), TreeForm.COLUMNAR)
+        self.assertEqual(tree_form("PRUNUS SUBHIRTELLA - HIGAN PENDULA CHERRY"), TreeForm.WEEPING)
+        self.assertEqual(tree_form("SHRUB SHRUB - SHRUB"), TreeForm.SHRUB)
+        self.assertEqual(tree_form("PICEA SPECIES - WEEPING SPRUCE"), TreeForm.WEEPING)
+        self.assertEqual(tree_form("PINUS STROBUS - COLUMNAR WHITE PINE"), TreeForm.COLUMNAR)
+        self.assertEqual(tree_form("ACER TRIFLORUM \u2013 THREE FLOWERED MAPLE"), TreeForm.DEFAULT)
+        self.assertEqual(tree_form("ACER RUBRUM - NOTWEEPING MAPLE"), TreeForm.DEFAULT)
+        self.assertEqual(tree_form("ACER SPECIES - RED MAPLE"), TreeForm.DEFAULT)
+        self.assertEqual(tree_form("PALM SPECIES - PALM"), TreeForm.DEFAULT)
+        self.assertEqual(tree_form("PALM SPECIES - WEEPING PALM"), TreeForm.DEFAULT)
+        self.assertEqual(tree_form(None), TreeForm.DEFAULT)
+
     def test_tree_diameter_parses_inches_and_defaults_invalid_values(self) -> None:
         self.assertAlmostEqual(tree_diameter(10), 0.254)
         self.assertEqual(tree_diameter(None), DEFAULT_TREE_DIAMETER_METERS)
@@ -119,6 +136,7 @@ class StreetTreeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result[0].diameter_m, DEFAULT_TREE_DIAMETER_METERS)
+        self.assertEqual(result[0].form, TreeForm.DEFAULT)
         self.assertAlmostEqual(result[1].diameter_m, 0.508)
 
     def test_tree_schema_drift_fails_closed(self) -> None:
@@ -171,9 +189,14 @@ class StreetTreeTests(unittest.TestCase):
         import struct
         from unittest.mock import patch
 
-        trees = [StreetTree((1.0, 2.0), 0.25), StreetTree((3.0, 4.0), 0.5)]
+        trees = [
+            StreetTree((1.0, 2.0), 0.25, TreeForm.CONIFER),
+            StreetTree((3.0, 4.0), 0.5, TreeForm.WEEPING),
+        ]
         digest = hashlib.sha256(
-            b"".join(struct.pack("<fff", *tree.point, tree.diameter_m) for tree in trees)
+            b"".join(
+                struct.pack("<fffB", *tree.point, tree.diameter_m, int(tree.form)) for tree in trees
+            )
         ).hexdigest()
         with (
             patch("isophilly_ingest.geometry.STREET_TREE_ACCEPTED_COUNT", 2),
@@ -310,7 +333,7 @@ class WorldFormatTests(unittest.TestCase):
         fixture = Path(__file__).with_name("fixtures").joinpath("world-v9.hex")
         self.assertEqual(output.getvalue().hex(), fixture.read_text().strip())
 
-    def test_python_writer_emits_v10_transport_lines_when_present(self) -> None:
+    def test_python_writer_emits_v11_tree_forms_and_transport_lines_when_present(self) -> None:
         import struct
 
         output = BytesIO()
@@ -322,16 +345,19 @@ class WorldFormatTests(unittest.TestCase):
             [],
             [],
             [],
-            [],
+            [StreetTree((5.0, 6.0), 0.25, TreeForm.WEEPING)],
             Bounds(0.0, 0.0, 10.0, 10.0),
             bytes(range(32)),
             [TransportLine(TransportKind.ARTERIAL, ((1.0, 2.0), (3.0, 4.0)))],
         )
 
         header = struct.unpack("<IIIIIIIIII", output.getvalue()[8:48])
-        self.assertEqual(header[0], 10)
+        self.assertEqual(header[0], 11)
         self.assertEqual(header[-1], 1)
-        self.assertEqual(output.getvalue()[-21:], struct.pack("<BIffff", 2, 2, 1.0, 2.0, 3.0, 4.0))
+        self.assertEqual(
+            output.getvalue()[-34:],
+            struct.pack("<fffBBIffff", 5.0, 6.0, 0.25, 3, 2, 2, 1.0, 2.0, 3.0, 4.0),
+        )
 
 
 if __name__ == "__main__":

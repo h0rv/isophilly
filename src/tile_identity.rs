@@ -1,12 +1,12 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v59-rowhouse-cornices";
+const PYRAMID_VERSION: &str = "v60-tree-forms";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
 // already has the baked continuous-color finish. The later canopy and
 // metre-correct morphology, inferred-roof, terrain-relief, and
-// rowhouse-cornice changes are intentionally citywide-only because the rich
-// mesh already photographs local vegetation and building form. Keep that
-// verified atlas immutable.
+// rowhouse-cornice and data-backed tree-form changes are intentionally
+// citywide-only because the rich mesh already photographs local vegetation and
+// building form. Keep that verified atlas immutable.
 const BAKED_RICH_IDENTITY: &str = "v54-shared-palette-rich-style";
 
 pub(crate) fn base_tile_version(
@@ -81,7 +81,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None, None),
-            "v59-rowhouse-cornices-1111111111111111"
+            "v60-tree-forms-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first), None),

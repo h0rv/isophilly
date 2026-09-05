@@ -274,16 +274,26 @@ must be finite and agree with the GeoJSON point after projection to within one
 metre; the audited source has a consistent approximately 0.91 metre transform
 offset and no record exceeds that tolerance.
 
-Only projected x/y and DBH-derived diameter are retained, in stable object-ID
-order. The records contribute 1,816,452 bytes and the v9 header adds a four-byte
-count, for an exact 1,816,456-byte increase over the same v8 geometry. The
-ordered retained-record payload is separately pinned as SHA-256
-`b47307b4134dea10fb0eace593a332ed135153202b7242ece2beb4f9ebb470d1`.
-Both its exact 151,371-record count and digest are enforced, binding the output
-to the reviewed tree inventory and City Limits snapshot even though City Limits
-is otherwise a refreshable source. A newer wrong cached tree file cannot shadow
-the older pinned snapshot; cache selection and download fallback require the
-full expected SHA-256.
+Only projected x/y, DBH-derived diameter, and one conservative visual-form byte
+are retained, in stable object-ID order. The v11 records contribute 1,967,823
+bytes: 13 bytes for each of 151,371 records. The ordered retained-record payload
+is separately pinned as SHA-256
+`846992de1b2289410a714fea86c3e81ce96fd643e4ffda7ba426da1c53333868`.
+Both its exact record count and digest are enforced, binding the output to the
+reviewed tree inventory and City Limits snapshot even though City Limits is
+otherwise a refreshable source. A newer wrong cached tree file cannot shadow the
+older pinned snapshot; cache selection and download fallback require the full
+expected SHA-256.
+
+The form is not a species assertion. It is `Default` (round fallback) unless a
+strict normalized `SCIENTIFIC - COMMON` value provides an exact safe rule.
+`SHRUB` records become `Shrub`; exact common-name words `COLUMNAR`,
+`FASTIGIATE`, `UPRIGHT`, `NARROW`, or `PYRAMIDAL` become `Columnar`; exact
+`WEEPING` or `PENDULA` words become `Weeping`; and only the reviewed conifer
+genera become `Conifer`. The precedence is Shrub, Columnar, Weeping, Conifer,
+then Default. Nulls, unknowns, palms, malformed delimiters including en dashes,
+and other unsupported names remain Default. The pinned output contains 146,245
+Default, 3,989 Conifer, 251 Columnar, 644 Weeping, and 242 Shrub records.
 
 The renderer builds spatial indexes once during prebuild, queries
 only points intersecting a tile, skips subpixel crowns, and writes trees into
@@ -307,7 +317,7 @@ All values are little-endian. Coordinates are EPSG:32129 metres.
 
 ```text
 8 bytes  magic "GEOPHILY"
-u32      version (9)
+u32      version (11)
 u32      EPSG (32129)
 u32      building count
 u32      building part count
@@ -316,6 +326,7 @@ u32      city ring count
 u32      water ring count
 u32      park ring count
 u32      street-tree count
+u32      transport-line count
 u8 x 32  SHA-256 digest of all retained texture atlases
 f64 x 4  official city bounds: min_x, min_y, max_x, max_y
 repeat building count times:
@@ -342,12 +353,23 @@ repeat water ring count times:
 repeat park ring count times:
   ring
 repeat street-tree count times:
-  f32 x, f32 y, trunk diameter in metres
+  f32    x
+  f32    y
+  f32    trunk diameter in metres
+  u8     validated tree form: Default=0, Conifer=1, Columnar=2, Weeping=3, Shrub=4
+repeat transport-line count times:
+  u8     transport kind
+  u32    point count
+  f32 x, f32 y repeated point count times
 
 ring:
   u32    point count
   repeat point count times: f32 x, f32 y
 ```
+
+The reader keeps v9 and v10 compatibility: their trees have no form byte and
+load as the Default round fallback. v9 also has no transport count. v11 rejects
+reserved tree-form byte values rather than guessing their meaning.
 
 ## Aerial image and tile pyramid
 

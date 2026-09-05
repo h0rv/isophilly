@@ -63,7 +63,7 @@ from .terrain import ARTIFACT_NAME as TERRAIN_ARTIFACT_NAME
 from .terrain import TerrainBuild, build_if_evidence_present
 
 WORLD_MAGIC = b"GEOPHILY"
-VERSION = 10
+VERSION = 11
 
 
 def load(snapshot: Snapshot) -> gpd.GeoDataFrame:
@@ -124,7 +124,7 @@ def write_world(
     file.write(WORLD_MAGIC)
     # Keeping the no-transport form byte-compatible makes the golden v9
     # fixture an explicit compatibility check. Production ingest always passes
-    # an actual list and emits v10.
+    # an actual list and emits v11.
     if transport is None:
         file.write(
             struct.pack(
@@ -176,6 +176,8 @@ def write_world(
         write_ring(file, outline)
     for tree in trees:
         file.write(struct.pack("<fff", tree.point[0], tree.point[1], tree.diameter_m))
+        if transport is not None:
+            file.write(struct.pack("<B", int(tree.form)))
     for line in transport or []:
         write_transport_line(file, line)
 

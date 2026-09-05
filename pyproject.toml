@@ -72,6 +72,7 @@ land-cover-fetch = { cmd = "python -m isophilly_ingest.land_cover fetch", use_ex
 serve = { cmd = "cargo run --release --locked -- serve --port 3000", use_exec = true }
 visual = { cmd = "bash -lc 'cargo build --release --locked && npm run visual'", use_exec = true }
 tile-smoke = { cmd = "bash scripts/tile-smoke.sh", use_exec = true }
+tile-diff-audit = { cmd = "bash scripts/tile-diff-audit.sh", use_exec = true }
 static-export = { cmd = "python scripts/export_static.py", use_exec = true }
 static-preview = { cmd = "bash -lc 'poe static-export && npx wrangler dev'", use_exec = true }
 static-dry-run = { cmd = "bash -lc 'poe static-export && npx wrangler deploy --dry-run'", use_exec = true }

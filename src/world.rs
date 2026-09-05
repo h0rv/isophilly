@@ -386,6 +386,37 @@ pub struct BuildingContext {
 pub struct StreetTree {
     pub point: (f32, f32),
     pub diameter: f32,
+    pub form: TreeForm,
+}
+
+/// The compact, validated visual form stored after each v11 tree record.
+/// v9 and v10 have no byte here, so they intentionally load as `Default`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum TreeForm {
+    Default,
+    Conifer,
+    Columnar,
+    Weeping,
+    Shrub,
+}
+
+impl TryFrom<u8> for TreeForm {
+    type Error = io::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Default),
+            1 => Ok(Self::Conifer),
+            2 => Ok(Self::Columnar),
+            3 => Ok(Self::Weeping),
+            4 => Ok(Self::Shrub),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported street-tree form",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -623,7 +654,7 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
         ));
     }
     let version = cursor.u32()?;
-    if !(9..=10).contains(&version) {
+    if !(9..=11).contains(&version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported data version",
@@ -746,18 +777,27 @@ fn parse_world(bytes: &[u8], world_sha256: [u8; 32]) -> io::Result<World> {
     let parks = (0..park_count)
         .map(|_| cursor.ring())
         .collect::<io::Result<Vec<_>>>()?;
-    cursor.ensure_items(street_tree_count, 12)?;
+    cursor.ensure_items(street_tree_count, if version >= 11 { 13 } else { 12 })?;
     let mut street_trees = Vec::with_capacity(street_tree_count);
     for _ in 0..street_tree_count {
         let point = (cursor.f32()?, cursor.f32()?);
         let diameter = cursor.f32()?;
+        let form = if version >= 11 {
+            TreeForm::try_from(cursor.u8()?)?
+        } else {
+            TreeForm::Default
+        };
         if !(0.0254..=2.0).contains(&diameter) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "street-tree diameter is outside the supported range",
             ));
         }
-        street_trees.push(StreetTree { point, diameter });
+        street_trees.push(StreetTree {
+            point,
+            diameter,
+            form,
+        });
     }
     let mut transport = Vec::with_capacity(transport_count);
     for _ in 0..transport_count {
@@ -1624,9 +1664,9 @@ mod tests {
     use super::{
         BROAD_NORTH_EAST, BROAD_NORTH_NORTH, Bounds, Building, BuildingKind, BuildingMesh,
         BuildingPart, Cursor, MESH_FACE_BYTES, MeshCoverage, PRIMARY_MESH_TEXTURE_LIMIT, Ring,
-        RoofShape, View, building_mesh_coverage, derive_building_contexts, detailed_buildings,
-        index_building_meshes, index_source_buildings, isometric, mesh_covers_building,
-        mesh_covers_part, parse_world, part_mesh_coverage,
+        RoofShape, TransportKind, TreeForm, View, building_mesh_coverage, derive_building_contexts,
+        detailed_buildings, index_building_meshes, index_source_buildings, isometric,
+        mesh_covers_building, mesh_covers_part, parse_world, part_mesh_coverage,
     };
 
     fn square(size: f32) -> Ring {
@@ -1843,10 +1883,8 @@ mod tests {
         );
     }
 
-    fn golden_world() -> std::io::Result<Vec<u8>> {
-        let hex = include_str!("../tests/fixtures/world-v9.hex")
-            .trim()
-            .as_bytes();
+    fn golden_world(hex: &str) -> std::io::Result<Vec<u8>> {
+        let hex = hex.trim().as_bytes();
         if !hex.len().is_multiple_of(2) {
             return Err(std::io::Error::other("golden world has odd-length hex"));
         }
@@ -2263,7 +2301,7 @@ mod tests {
 
     #[test]
     fn parses_python_v9_golden_world() -> std::io::Result<()> {
-        let bytes = golden_world()?;
+        let bytes = golden_world(include_str!("../tests/fixtures/world-v9.hex"))?;
         let digest = Sha256::digest(&bytes).into();
         let world = parse_world(&bytes, digest)?;
 
@@ -2287,6 +2325,33 @@ mod tests {
             std::array::from_fn(|index| index as u8)
         );
         assert_eq!(world.world_sha256, digest);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_python_v11_tree_form_golden_world() -> std::io::Result<()> {
+        let bytes = golden_world(include_str!("../tests/fixtures/world-v11.hex"))?;
+        let digest = Sha256::digest(&bytes).into();
+        let world = parse_world(&bytes, digest)?;
+
+        assert_eq!(world.street_trees.len(), 1);
+        assert_eq!(world.street_trees[0].point, (5.0, 6.0));
+        assert_eq!(world.street_trees[0].diameter, 0.25);
+        assert_eq!(world.street_trees[0].form, TreeForm::Weeping);
+        assert_eq!(world.transport.len(), 1);
+        assert_eq!(world.transport[0].kind, TransportKind::Arterial);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_reserved_v11_tree_form_value() -> std::io::Result<()> {
+        let mut bytes = golden_world(include_str!("../tests/fixtures/world-v11.hex"))?;
+        // The fixture contains no preceding geometry: magic + v11 header,
+        // digest and bounds leave the first tree form at byte 124.
+        bytes[124] = 255;
+        let digest = Sha256::digest(&bytes).into();
+
+        assert!(parse_world(&bytes, digest).is_err());
         Ok(())
     }
 }

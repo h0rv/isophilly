@@ -61,6 +61,13 @@
   frontage-width edges, stay below the recorded roof line, and remain aligned
   across tile boundaries. Twins, warehouses, and broad side walls are negative
   controls.
+- Check inventoried trees in several dense and sparse neighborhoods. Default
+  crowns must match the prior renderer, explicit conifer, columnar, weeping,
+  and shrub forms must stay within the old crown extent, and no crown may clip
+  or change order at tile boundaries.
+- After `poe tile-smoke`, compare the prior and candidate smoke directories
+  with `poe tile-diff-audit -- OLD_DIR NEW_DIR`. Review the exact changed-pixel
+  coverage together with the renderer's seam and depth tests before release.
 
 ## Publication
 

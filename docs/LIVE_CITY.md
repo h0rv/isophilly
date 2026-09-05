@@ -54,6 +54,11 @@ orientation. It shares the scene depth buffer: buildings and mesh faces occlude 
 while the separate official street-tree inventory is drawn afterward and remains the explicit
 individual-tree layer.
 
+The separate 2025 street-tree inventory retains its measured location and DBH-derived size. A
+strict subset also uses an explicit source label to select a bounded conifer, columnar, weeping, or
+shrub crown. All other records keep the established varied round fallback. The packed form is a
+drawing category, not a claim about measured crown dimensions, health, or exact species.
+
 The terrain relief adds a deterministic tonal hillshade to the ground pass only. It does not move
 geometry or change water color, and the rich Center City mesh views do not use the terrain artifact.
 The eight rejected PASDA gaps stay neutral, so the relief does not add a visible seam where the

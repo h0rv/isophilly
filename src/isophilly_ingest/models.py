@@ -39,10 +39,25 @@ class Building:
     ring: Ring
 
 
+class TreeForm(IntEnum):
+    """Validated, deliberately conservative visual form for a street tree."""
+
+    DEFAULT = 0
+    CONIFER = 1
+    COLUMNAR = 2
+    WEEPING = 3
+    SHRUB = 4
+
+
 @dataclass(frozen=True, slots=True)
 class StreetTree:
     point: Point
     diameter_m: float
+    form: TreeForm = TreeForm.DEFAULT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.form, TreeForm):
+            raise ValueError("street-tree form must be a validated TreeForm")
 
 
 class TransportKind(IntEnum):

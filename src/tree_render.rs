@@ -5,7 +5,7 @@ use crate::{
     palette,
     projection::Projection,
     texture::{AerialTile, missing_imagery},
-    world::StreetTree,
+    world::{StreetTree, TreeForm},
 };
 
 const TILE_SIZE: usize = 256;
@@ -134,23 +134,28 @@ struct TreeRasterizer<'a, 'b> {
 
 impl TreeRasterizer<'_, '_> {
     fn draw(&mut self, tree: &StreetTree) {
-        let crown_radius = tree.crown_radius();
-        let style = crown_style(tree.point);
-        let crown_radius = crown_radius * style.radius_scale;
+        let crown_radius = match tree.form {
+            // Retain the v59 fallback silhouette exactly.  New form-specific
+            // layouts are deliberately opt-in for explicit source labels.
+            TreeForm::Default => {
+                tree.crown_radius() * crown_style(tree.point, tree.form).radius_scale
+            }
+            TreeForm::Conifer | TreeForm::Columnar | TreeForm::Weeping | TreeForm::Shrub => {
+                tree.crown_radius()
+            }
+        };
         let radius_px = crown_radius * self.projection.scale;
         if radius_px < MIN_CROWN_RADIUS_PIXELS {
             return;
         }
-        let height = tree.height();
-        let crown_center_height = height - crown_radius * 0.75;
-        let lobes = crown_lobes(tree.point, crown_center_height, crown_radius, style);
+        let lobes = crown_lobes(tree);
         let projected_lobes = lobes.map(|lobe| ProjectedCrownLobe {
             center: self.projection.point(lobe.point, lobe.height),
             base_depth: self.projection.depth(lobe.point, lobe.height),
             radius: lobe.radius,
             tone: lobe.tone,
         });
-        self.draw_trunk(tree, crown_center_height - crown_radius * 0.52);
+        self.draw_trunk(tree, trunk_top(tree));
         let (min_x, max_x, min_y, max_y) = projected_lobes.iter().fold(
             (
                 f32::INFINITY,
@@ -175,7 +180,7 @@ impl TreeRasterizer<'_, '_> {
         if min_x > max_x || min_y > max_y {
             return;
         }
-        let palette = tree_palette(tree.point);
+        let palette = street_tree_palette(tree.point, tree.form);
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 let mut closest = None;
@@ -260,6 +265,8 @@ struct CrownStyle {
     lean_y: f32,
     broadness: f32,
     diagonal: f32,
+    turn: f32,
+    tone_shift: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -278,21 +285,86 @@ struct ProjectedCrownLobe {
     tone: f32,
 }
 
-fn crown_style(point: (f32, f32)) -> CrownStyle {
+fn crown_style(point: (f32, f32), form: TreeForm) -> CrownStyle {
     let hash = tree_hash(point);
-    let signed = |shift: u32| ((hash >> shift & 0xff) as f32 / 127.5) - 1.0;
+    if form == TreeForm::Default {
+        let signed = |shift: u32| ((hash >> shift & 0xff) as f32 / 127.5) - 1.0;
+        return CrownStyle {
+            radius_scale: 0.82 + ((hash & 0xff) as f32 / 255.0) * 0.1,
+            lean_x: signed(8) * 0.055,
+            lean_y: signed(16) * 0.045,
+            broadness: signed(24) * 0.045,
+            diagonal: signed(32) * 0.035,
+            turn: 0.0,
+            tone_shift: 0.0,
+        };
+    }
+    let hash = hash ^ (form as u64).wrapping_mul(0x9e37_79b9);
     CrownStyle {
-        // The inventory diameter is useful, but drawing its full inferred crown
-        // made dense blocks overwhelm streets and parks.
-        radius_scale: 0.82 + ((hash & 0xff) as f32 / 255.0) * 0.1,
-        lean_x: signed(8) * 0.055,
-        lean_y: signed(16) * 0.045,
-        broadness: signed(24) * 0.045,
-        diagonal: signed(32) * 0.035,
+        radius_scale: 1.0,
+        lean_x: 0.0,
+        lean_y: 0.0,
+        broadness: 0.0,
+        diagonal: 0.0,
+        turn: (hash >> 40) as u16 as f32 / u16::MAX as f32 * std::f32::consts::TAU,
+        tone_shift: ((hash >> 24 & 0xff) as f32 / 255.0 - 0.5) * 0.06,
     }
 }
 
-fn crown_lobes(
+fn crown_lobes(tree: &StreetTree) -> [CrownLobe; CROWN_LOBE_COUNT] {
+    let point = tree.point;
+    let radius = tree.crown_radius();
+    let height = tree.height();
+    let style = crown_style(point, tree.form);
+    if tree.form == TreeForm::Default {
+        let radius = radius * style.radius_scale;
+        return default_crown_lobes(point, height - radius * 0.75, radius, style);
+    }
+    let lobe = |angle: f32, distance: f32, radius_scale: f32, top_clearance: f32, tone: f32| {
+        let lobe_radius = radius * radius_scale;
+        CrownLobe {
+            point: (
+                point.0 + (style.turn + angle).cos() * radius * distance,
+                point.1 + (style.turn + angle).sin() * radius * distance,
+            ),
+            // A lobe's analytic sphere is bounded by this radius, so retaining
+            // at least one radius of clearance keeps every crown top at or
+            // below the existing DBH-derived visual height.
+            height: height - radius * top_clearance,
+            radius: lobe_radius,
+            tone: tone + style.tone_shift,
+        }
+    };
+    match tree.form {
+        TreeForm::Default => unreachable!("default crowns returned above"),
+        TreeForm::Conifer => [
+            lobe(0.0, 0.0, 0.25, 0.25, 1.10),
+            lobe(0.3, 0.12, 0.34, 0.46, 1.04),
+            lobe(2.5, 0.21, 0.40, 0.58, 0.96),
+            lobe(4.3, 0.24, 0.43, 0.70, 0.88),
+        ],
+        TreeForm::Columnar => [
+            lobe(0.0, 0.0, 0.30, 0.30, 1.08),
+            lobe(0.2, 0.07, 0.31, 0.43, 1.02),
+            lobe(3.2, 0.11, 0.34, 0.55, 0.94),
+            lobe(1.7, 0.08, 0.28, 0.60, 0.98),
+        ],
+        TreeForm::Weeping => [
+            lobe(0.0, 0.0, 0.35, 0.35, 1.08),
+            lobe(0.2, 0.25, 0.40, 0.58, 1.00),
+            lobe(3.1, 0.28, 0.39, 0.65, 0.91),
+            lobe(4.7, 0.18, 0.36, 0.56, 0.97),
+        ],
+        TreeForm::Shrub => [
+            lobe(0.0, 0.20, 0.42, 0.85, 1.02),
+            lobe(1.8, 0.30, 0.38, 0.80, 0.96),
+            lobe(3.8, 0.28, 0.39, 0.82, 0.91),
+            lobe(5.7, 0.24, 0.40, 0.78, 1.06),
+        ],
+    }
+}
+
+fn default_crown_lobes(
     point: (f32, f32),
     height: f32,
     radius: f32,
@@ -344,6 +416,22 @@ fn crown_lobes(
     ]
 }
 
+fn trunk_top(tree: &StreetTree) -> f32 {
+    let radius = tree.crown_radius();
+    if tree.form == TreeForm::Default {
+        let radius = radius * crown_style(tree.point, tree.form).radius_scale;
+        return tree.height() - radius * (0.75 + 0.52);
+    }
+    let clearance = match tree.form {
+        TreeForm::Shrub => 1.15,
+        TreeForm::Weeping => 0.96,
+        TreeForm::Conifer => 0.82,
+        TreeForm::Columnar => 0.88,
+        TreeForm::Default => unreachable!("default trunk returned above"),
+    };
+    tree.height() - radius * clearance
+}
+
 #[derive(Clone, Copy)]
 struct SphereSurface {
     east: f32,
@@ -374,6 +462,17 @@ fn tree_palette(point: (f32, f32)) -> [u8; 3] {
     palette::tree_foliage(tree_hash(point))
 }
 
+fn street_tree_palette(point: (f32, f32), form: TreeForm) -> [u8; 3] {
+    match form {
+        TreeForm::Default => tree_palette(point),
+        TreeForm::Conifer | TreeForm::Columnar | TreeForm::Weeping | TreeForm::Shrub => {
+            palette::tree_foliage(
+                tree_hash(point) ^ (form as u64).wrapping_mul(0xd6e8_feb8_6659_fd93),
+            )
+        }
+    }
+}
+
 fn tree_hash(point: (f32, f32)) -> u64 {
     let x = point.0.round() as i64 as u64;
     let y = point.1.round() as i64 as u64;
@@ -395,13 +494,13 @@ mod tests {
         CANOPY_MASS_HEIGHT, CANOPY_TONE_PATCH_METERS, CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS,
         TILE_SIZE, TRUNK_COLOR, canopy_mass_color, canopy_surface_at_pixel, crown_lobes,
         crown_style, draw_canopy_mass_with_samples, draw_street_trees, grade_canopy_color,
-        sphere_surface, tree_palette,
+        sphere_surface, street_tree_palette, tree_palette, trunk_top,
     };
     use crate::{
         land_cover::LandCoverClass,
         palette,
         projection::Projection,
-        world::{Bounds, StreetTree, View},
+        world::{Bounds, StreetTree, TreeForm, View},
     };
 
     fn projection_for(scale: f32, view: View) -> Projection {
@@ -428,24 +527,45 @@ mod tests {
             .flat_map(|x| (0..8).map(move |y| tree_palette((x as f32, y as f32))))
             .collect();
         assert_eq!(colors.len(), 4);
+        assert_eq!(
+            street_tree_palette((123.0, 456.0), TreeForm::Default),
+            tree_palette((123.0, 456.0))
+        );
+        assert_eq!(
+            street_tree_palette((123.0, 456.0), TreeForm::Conifer),
+            street_tree_palette((123.0, 456.0), TreeForm::Conifer)
+        );
     }
 
     #[test]
-    fn crown_shape_is_stable_and_varies_by_location() {
-        assert_eq!(crown_style((123.0, 456.0)), crown_style((123.0, 456.0)));
-        let shapes: std::collections::BTreeSet<_> = (0..8)
-            .flat_map(|x| {
-                (0..8).map(move |y| {
-                    let style = crown_style((x as f32, y as f32));
-                    (
-                        style.radius_scale.to_bits(),
-                        style.lean_x.to_bits(),
-                        style.lean_y.to_bits(),
-                    )
-                })
-            })
-            .collect();
-        assert!(shapes.len() > 32);
+    fn crown_style_is_stable_for_a_form_and_changes_with_the_form() {
+        assert_eq!(
+            crown_style((123.0, 456.0), TreeForm::Conifer),
+            crown_style((123.0, 456.0), TreeForm::Conifer)
+        );
+        assert_ne!(
+            crown_style((123.0, 456.0), TreeForm::Conifer),
+            crown_style((123.0, 456.0), TreeForm::Shrub)
+        );
+    }
+
+    #[test]
+    fn default_crown_keeps_the_v59_scale_and_trunk_placement() {
+        let tree = StreetTree {
+            point: (123.0, 456.0),
+            diameter: 1.0,
+            form: TreeForm::Default,
+        };
+        let style = crown_style(tree.point, tree.form);
+        let scaled_radius = tree.crown_radius() * style.radius_scale;
+        let lobes = crown_lobes(&tree);
+
+        assert!((0.82..=0.92).contains(&style.radius_scale));
+        assert_eq!(lobes[0].radius.to_bits(), (scaled_radius * 0.66).to_bits());
+        assert_eq!(
+            trunk_top(&tree).to_bits(),
+            (tree.height() - scaled_radius * (0.75 + 0.52)).to_bits()
+        );
     }
 
     #[test]
@@ -529,6 +649,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 1.0,
+            form: TreeForm::Default,
         };
 
         draw_street_trees(&mut pixmap, [&tree], &projection, &mut depth);
@@ -573,27 +694,40 @@ mod tests {
     }
 
     #[test]
-    fn clustered_crown_is_stable_varied_and_inside_inventory_extent() {
+    fn crown_forms_are_stable_and_bounded_by_the_raw_inventory_crown() {
         let point = (123.0, 456.0);
-        let inventory_radius = 4.0;
-        let style = crown_style(point);
-        let radius = inventory_radius * style.radius_scale;
-        let first = crown_lobes(point, 10.0, radius, style);
-        let second = crown_lobes(point, 10.0, radius, style);
-
-        assert_eq!(first, second);
-        assert_eq!(first.len(), CROWN_LOBE_COUNT);
-        assert!(first.windows(2).any(|lobes| lobes[0].tone != lobes[1].tone));
-        assert!(
-            first
-                .windows(2)
-                .any(|lobes| lobes[0].point != lobes[1].point)
-        );
-        for lobe in first {
-            let offset = (lobe.point.0 - point.0).hypot(lobe.point.1 - point.1);
-            assert!(offset + lobe.radius <= inventory_radius);
-            assert!(lobe.height + lobe.radius <= 10.0 + radius * 0.75 + f32::EPSILON);
+        let mut layouts = Vec::new();
+        for form in [
+            TreeForm::Default,
+            TreeForm::Conifer,
+            TreeForm::Columnar,
+            TreeForm::Weeping,
+            TreeForm::Shrub,
+        ] {
+            let tree = StreetTree {
+                point,
+                diameter: 1.0,
+                form,
+            };
+            let first = crown_lobes(&tree);
+            assert_eq!(first, crown_lobes(&tree));
+            assert_eq!(first.len(), CROWN_LOBE_COUNT);
+            assert!(first.windows(2).any(|lobes| lobes[0].tone != lobes[1].tone));
+            for lobe in first {
+                let offset = (lobe.point.0 - point.0).hypot(lobe.point.1 - point.1);
+                assert!(offset + lobe.radius <= tree.crown_radius() + f32::EPSILON);
+                assert!(lobe.height + lobe.radius <= tree.height() + f32::EPSILON);
+            }
+            layouts.push(crown_lobes(&tree).map(|lobe| {
+                (
+                    (lobe.point.0 - point.0).to_bits(),
+                    (lobe.point.1 - point.1).to_bits(),
+                    lobe.height.to_bits(),
+                    lobe.radius.to_bits(),
+                )
+            }));
         }
+        assert!(layouts.windows(2).all(|layouts| layouts[0] != layouts[1]));
     }
 
     #[test]
@@ -603,6 +737,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 0.15,
+            form: TreeForm::Default,
         };
         let scale = (MIN_CROWN_RADIUS_PIXELS / tree.crown_radius()) * 0.9;
 
@@ -620,6 +755,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 0.5,
+            form: TreeForm::Default,
         };
 
         draw_street_trees(&mut pixmap, [&tree], &projection(2.0), &mut depth);
@@ -637,6 +773,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 0.5,
+            form: TreeForm::Default,
         };
 
         draw_street_trees(&mut first, [&tree], &projection(2.0), &mut first_depth);
@@ -681,6 +818,7 @@ mod tests {
             let tree = StreetTree {
                 point: view.inverse(0.0, 0.0),
                 diameter: 0.5,
+                form: TreeForm::Default,
             };
 
             draw_street_trees(&mut pixmap, [&tree], &projection_for(3.0, view), &mut depth);
@@ -716,10 +854,12 @@ mod tests {
                 StreetTree {
                     point: view.inverse(0.0, 0.0),
                     diameter: 0.55,
+                    form: TreeForm::Default,
                 },
                 StreetTree {
                     point: view.inverse(0.4, 0.7),
                     diameter: 0.45,
+                    form: TreeForm::Conifer,
                 },
             ];
             let mut forward = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
@@ -748,6 +888,7 @@ mod tests {
             let tree = StreetTree {
                 point: view.inverse(0.0, 0.0),
                 diameter: 0.5,
+                form: TreeForm::Weeping,
             };
             let mut left = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
             let mut right = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
@@ -806,6 +947,7 @@ mod tests {
         let tree = StreetTree {
             point: (0.0, 0.0),
             diameter: 0.15,
+            form: TreeForm::Default,
         };
 
         draw_street_trees(&mut pixmap, [&tree], &projection(3.0), &mut depth);
