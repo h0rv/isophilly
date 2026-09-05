@@ -10,7 +10,9 @@ The ingest builds water and park masks from the City hydrology and PPR property 
 builder combines them with the audited 2018 Philadelphia land cover mask. The raster classes come
 from 2018 LiDAR and 2017 NAIP imagery, while the displayed ground remains the 2025 aerial image.
 Tree canopy and grass or shrub classes receive different restrained green grading. Building, road,
-railroad, paved, and bare earth classes keep their aerial color.
+railroad, paved, and bare earth classes keep their aerial color. The tree-canopy class also draws a
+single low, depth-tested foliage surface in the renderer. This makes parks and woodlands read as
+continuous leafy mass without turning raster cells into invented street-tree points.
 
 All tile types now share one baked color contract. The restrained ground, vegetation, water,
 building, and tree anchors live in the renderer, and the final continuous saturation and contrast
@@ -29,8 +31,16 @@ aerial-color vegetation test instead of failing a normal prebuild.
 
 These effects are baked into the tile images by `poe prebuild`. They add no browser timer, network
 request, or repeated repaint. There is no continuous motion, so people who prefer reduced motion see
-the same stable scene. The `v50-citywide-polish` tile identity includes the exact mask digest. Rebuild the
-tiles after changing the mask or renderer to view the result.
+the same stable scene. The citywide tile identity includes the exact mask digest. Rebuild the tiles
+after changing the mask or renderer to view the result.
+
+The canopy surface samples the PASDA class and its broad foliage tone from source coordinates for
+each output pixel. It blends that tone with the corresponding sampled aerial color, preserving local
+canopy detail instead of replacing it with a flat green fill. It is bounded to the 256 by 256 output
+tile, creates no retained canopy geometry, and cannot reset at a tile edge or when the city changes
+orientation. It shares the scene depth buffer: buildings and mesh faces occlude it where closer,
+while the separate official street-tree inventory is drawn afterward and remains the explicit
+individual-tree layer.
 
 ## Neighborhood names
 

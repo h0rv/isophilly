@@ -1,6 +1,12 @@
 use tiny_skia::Pixmap;
 
-use crate::{palette, projection::Projection, world::StreetTree};
+use crate::{
+    land_cover::{LandCoverClass, LandCoverMask},
+    palette,
+    projection::Projection,
+    texture::{AerialTile, missing_imagery},
+    world::StreetTree,
+};
 
 const TILE_SIZE: usize = 256;
 const MIN_CROWN_RADIUS_PIXELS: f32 = 0.55;
@@ -8,6 +14,101 @@ const SQRT_2: f32 = std::f32::consts::SQRT_2;
 const SQRT_1_5: f32 = 1.224_744_9;
 const TRUNK_COLOR: [u8; 3] = palette::TREE_TRUNK;
 const CROWN_LOBE_COUNT: usize = 4;
+// The PASDA mask is a continuous area classification, not a second tree
+// inventory. Keep it as one low canopy surface so woods read as woods instead
+// of materializing a point tree for every raster cell.
+const CANOPY_MASS_HEIGHT: f32 = 4.5;
+const CANOPY_TONE_PATCH_METERS: f32 = 12.0;
+const CANOPY_FOLIAGE_MIX: f32 = 0.56;
+
+/// Draw the PASDA tree-canopy class as a low, depth-tested foliage surface.
+///
+/// This is intentionally bounded to the output tile: it samples one source
+/// coordinate per output pixel and allocates no citywide geometry. Source
+/// coordinates, rather than tile-local indices, select both the mask and
+/// foliage tone, keeping adjacent tiles and all views phase-stable.
+pub fn draw_canopy_mass(
+    pixmap: &mut Pixmap,
+    land_cover: &LandCoverMask,
+    projection: &Projection,
+    aerial: &AerialTile,
+    block_size: f32,
+    depth: &mut [f32],
+) {
+    draw_canopy_mass_with_samples(
+        pixmap,
+        projection,
+        depth,
+        |point| land_cover.sample(f64::from(point.0), f64::from(point.1)),
+        |point| aerial.sample(point.0, point.1, block_size),
+    );
+}
+
+fn draw_canopy_mass_with_samples(
+    pixmap: &mut Pixmap,
+    projection: &Projection,
+    depth: &mut [f32],
+    sample_land_cover: impl Fn((f32, f32)) -> Option<LandCoverClass>,
+    sample_aerial: impl Fn((f32, f32)) -> Option<[u8; 3]>,
+) {
+    for y in 0..TILE_SIZE {
+        for x in 0..TILE_SIZE {
+            let (source, pixel_depth) = canopy_surface_at_pixel(projection, x, y);
+            if sample_land_cover(source) != Some(LandCoverClass::TreeCanopy) {
+                continue;
+            }
+            let offset = y * TILE_SIZE + x;
+            if pixel_depth <= depth[offset] {
+                continue;
+            }
+            depth[offset] = pixel_depth;
+            let color = grade_canopy_color(source, sample_aerial(source));
+            let start = offset * 4;
+            pixmap.data_mut()[start..start + 4]
+                .copy_from_slice(&[color[0], color[1], color[2], 255]);
+        }
+    }
+}
+
+fn canopy_surface_at_pixel(
+    projection: &Projection,
+    pixel_x: usize,
+    pixel_y: usize,
+) -> ((f32, f32), f32) {
+    let projected = (
+        (pixel_x as f32 + 0.5).mul_add(1.0 / projection.scale, projection.bounds.min_x),
+        (pixel_y as f32 + 0.5).mul_add(1.0 / projection.scale, projection.bounds.min_y),
+    );
+    // Raising a horizontal surface by h shifts its screen y by -h. Recover the
+    // source location from the corresponding ground-coordinate projection.
+    let source = projection.inverse((projected.0, projected.1 + CANOPY_MASS_HEIGHT));
+    (source, projection.depth(source, CANOPY_MASS_HEIGHT))
+}
+
+fn canopy_mass_color(point: (f32, f32)) -> [u8; 3] {
+    let patch = (
+        (point.0 / CANOPY_TONE_PATCH_METERS).floor(),
+        (point.1 / CANOPY_TONE_PATCH_METERS).floor(),
+    );
+    // Broad, fixed patches distinguish foliage mass from a flat green overlay
+    // without creating a noisy per-pixel texture or a tile-local phase.
+    palette::mix(palette::CANOPY, tree_palette(patch), 0.48)
+}
+
+fn grade_canopy_color(point: (f32, f32), sampled_aerial: Option<[u8; 3]>) -> [u8; 3] {
+    let aerial_color = if missing_imagery(sampled_aerial) {
+        palette::GROUND
+    } else {
+        // Match ground's source treatment before layering foliage over it, so
+        // the canopy remains tied to the same bounded aerial-color contract.
+        palette::mix(
+            palette::GROUND,
+            sampled_aerial.unwrap_or(palette::GROUND),
+            0.9,
+        )
+    };
+    palette::mix(aerial_color, canopy_mass_color(point), CANOPY_FOLIAGE_MIX)
+}
 
 pub fn draw_street_trees<'a>(
     pixmap: &mut Pixmap,
@@ -291,10 +392,14 @@ mod tests {
     use tiny_skia::Pixmap;
 
     use super::{
-        CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, TRUNK_COLOR, crown_lobes,
-        crown_style, draw_street_trees, sphere_surface, tree_palette,
+        CANOPY_MASS_HEIGHT, CANOPY_TONE_PATCH_METERS, CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS,
+        TILE_SIZE, TRUNK_COLOR, canopy_mass_color, canopy_surface_at_pixel, crown_lobes,
+        crown_style, draw_canopy_mass_with_samples, draw_street_trees, grade_canopy_color,
+        sphere_surface, tree_palette,
     };
     use crate::{
+        land_cover::LandCoverClass,
+        palette,
         projection::Projection,
         world::{Bounds, StreetTree, View},
     };
@@ -341,6 +446,130 @@ mod tests {
             })
             .collect();
         assert!(shapes.len() > 32);
+    }
+
+    #[test]
+    fn canopy_surface_recovers_source_coordinates_and_depth_in_every_view() {
+        let source = (823_456.25, 74_321.75);
+        for view in View::ALL {
+            let projected = view.project(source.0, source.1, CANOPY_MASS_HEIGHT);
+            let projection = Projection {
+                bounds: Bounds {
+                    min_x: projected.0 - 0.5,
+                    min_y: projected.1 - 0.5,
+                    max_x: projected.0 + 255.5,
+                    max_y: projected.1 + 255.5,
+                },
+                scale: 1.0,
+                view,
+            };
+            let (recovered, depth) = canopy_surface_at_pixel(&projection, 0, 0);
+
+            assert!((recovered.0 - source.0).abs() < 0.1, "{}", view.id());
+            assert!((recovered.1 - source.1).abs() < 0.1, "{}", view.id());
+            assert!((depth - projection.depth(source, CANOPY_MASS_HEIGHT)).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn canopy_mass_is_deterministic_and_respects_existing_depth() -> Result<(), &'static str> {
+        let mut first = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
+        let mut second = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
+        let mut first_depth = vec![f32::NEG_INFINITY; TILE_SIZE * TILE_SIZE];
+        let mut second_depth = first_depth.clone();
+        let sample = |_| Some(LandCoverClass::TreeCanopy);
+
+        draw_canopy_mass_with_samples(
+            &mut first,
+            &projection(1.0),
+            &mut first_depth,
+            sample,
+            |_| Some([92, 128, 72]),
+        );
+        draw_canopy_mass_with_samples(
+            &mut second,
+            &projection(1.0),
+            &mut second_depth,
+            sample,
+            |_| Some([92, 128, 72]),
+        );
+
+        assert_eq!(first.data(), second.data());
+        assert_eq!(first_depth, second_depth);
+        assert!(first_depth.iter().all(|value| value.is_finite()));
+        assert!(first.data().chunks_exact(4).all(|pixel| pixel[3] == 255));
+
+        let mut blocked = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
+        let mut blocked_depth = vec![f32::INFINITY; TILE_SIZE * TILE_SIZE];
+        draw_canopy_mass_with_samples(
+            &mut blocked,
+            &projection(1.0),
+            &mut blocked_depth,
+            sample,
+            |_| Some([92, 128, 72]),
+        );
+        assert!(blocked.data().iter().all(|channel| *channel == 0));
+        assert!(blocked_depth.iter().all(|value| *value == f32::INFINITY));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_street_trees_stay_above_the_canopy_mass() -> Result<(), &'static str> {
+        let mut pixmap = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
+        let mut depth = vec![f32::NEG_INFINITY; TILE_SIZE * TILE_SIZE];
+        let projection = projection(3.0);
+        draw_canopy_mass_with_samples(
+            &mut pixmap,
+            &projection,
+            &mut depth,
+            |_| Some(LandCoverClass::TreeCanopy),
+            |_| Some([92, 128, 72]),
+        );
+        let before = pixmap.data().to_vec();
+        let tree = StreetTree {
+            point: (0.0, 0.0),
+            diameter: 1.0,
+        };
+
+        draw_street_trees(&mut pixmap, [&tree], &projection, &mut depth);
+
+        assert_ne!(pixmap.data(), before);
+        Ok(())
+    }
+
+    #[test]
+    fn canopy_grading_preserves_aerial_detail_and_uses_the_missing_imagery_fallback() {
+        let point = (819_516.25, 72_998.75);
+        let nearby = (point.0 + 0.1, point.1);
+        let first = grade_canopy_color(point, Some([80, 120, 70]));
+        let second = grade_canopy_color(nearby, Some([96, 120, 70]));
+
+        assert_ne!(first, second);
+        assert!(second[0] > first[0]);
+
+        let fallback = grade_canopy_color(point, None);
+        assert_eq!(fallback, grade_canopy_color(point, Some([250, 250, 250])));
+        assert_eq!(
+            fallback,
+            palette::mix(palette::GROUND, canopy_mass_color(point), 0.56)
+        );
+    }
+
+    #[test]
+    fn canopy_tone_uses_source_patches_not_tile_phase() {
+        let point = (819_516.25, 72_998.75);
+
+        assert_eq!(canopy_mass_color(point), canopy_mass_color(point));
+        assert_eq!(
+            canopy_mass_color(point),
+            canopy_mass_color((point.0 + CANOPY_TONE_PATCH_METERS * 0.01, point.1))
+        );
+        let tones: std::collections::BTreeSet<_> = (0..16)
+            .map(|offset| {
+                canopy_mass_color((point.0 + offset as f32 * CANOPY_TONE_PATCH_METERS, point.1))
+            })
+            .collect();
+        assert!(tones.len() > 1);
     }
 
     #[test]

@@ -1,11 +1,10 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v54-shared-palette";
-// The multi-angle mesh viewer is hidden from the launch UI. It normally keeps
-// the immutable v50 atlas identity, but the former browser-only finish is now
-// baked into every tile. Rich photographed tiles therefore receive one new
-// continuous-color generation, rather than a lossy recolor or a stale canvas
-// filter.
+const PYRAMID_VERSION: &str = "v55-canopy-mass";
+// The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
+// already has the baked continuous-color finish, and the v55 canopy surface is
+// intentionally citywide-only because the rich mesh already photographs local
+// vegetation. Keep that verified atlas immutable.
 const BAKED_RICH_IDENTITY: &str = "v54-shared-palette-rich-style";
 
 pub(crate) fn base_tile_version(
@@ -70,7 +69,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v54-shared-palette-1111111111111111"
+            "v55-canopy-mass-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),

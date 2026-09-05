@@ -272,6 +272,10 @@ pub struct AerialTile {
     images: HashMap<(i32, i32), Arc<RgbImage>>,
 }
 
+pub(crate) fn missing_imagery(color: Option<[u8; 3]>) -> bool {
+    color.is_none_or(|color| color.iter().all(|channel| *channel >= 246))
+}
+
 impl AerialTile {
     pub fn for_source_bounds(source: &AerialSource, bounds: Bounds) -> io::Result<Self> {
         let bounds = bounds.pad(SOURCE_PIXEL_METERS * 2.0);

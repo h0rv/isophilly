@@ -11,10 +11,10 @@ use crate::{
     palette::{self, GROUND},
     projection::Projection,
     shadow_render::draw_cast_shadows,
-    texture::AerialTile,
+    texture::{AerialTile, missing_imagery},
     tile_codec::encode_rgba,
     transport_render::draw_transport,
-    tree_render::draw_street_trees,
+    tree_render::{draw_canopy_mass, draw_street_trees},
     world::{Bounds, PRIMARY_MESH_TEXTURE_LIMIT, Ring, View, World},
 };
 
@@ -128,6 +128,16 @@ pub fn render_tile(
         mesh_textures,
         &mut depth,
     )?;
+    if let Some(land_cover) = land_cover {
+        draw_canopy_mass(
+            &mut pixmap,
+            land_cover,
+            &projection,
+            aerial,
+            sampling_block,
+            &mut depth,
+        );
+    }
     draw_street_trees(
         &mut pixmap,
         world
@@ -457,10 +467,6 @@ fn block_size(bounds: Bounds) -> f32 {
 
 fn rich_block_size(bounds: Bounds) -> f32 {
     bounds.width() / TILE_SIZE as f32
-}
-
-fn missing_imagery(color: Option<[u8; 3]>) -> bool {
-    color.is_none_or(|color| color.iter().all(|channel| *channel >= 246))
 }
 
 const SHORELINE_PROBES: [(f32, f32); 4] = [
