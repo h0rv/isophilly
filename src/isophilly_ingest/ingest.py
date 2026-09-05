@@ -59,6 +59,8 @@ from .models import (
 )
 from .osm import building_parts, source_metadata
 from .quality import texture_coverage_report, write_texture_coverage
+from .terrain import ARTIFACT_NAME as TERRAIN_ARTIFACT_NAME
+from .terrain import TerrainBuild, build_if_evidence_present
 
 WORLD_MAGIC = b"GEOPHILY"
 VERSION = 10
@@ -242,6 +244,7 @@ def write_metadata(
     texture_bytes: int,
     texture_coverage: dict[str, object],
     lidar_height_count: int,
+    terrain: TerrainBuild | None,
 ) -> None:
     heights = [building.height for building in packed_buildings]
     mesh_heights = [mesh.height for mesh in meshes]
@@ -319,6 +322,24 @@ def write_metadata(
         },
         "sources": sources,
     }
+    if terrain is not None:
+        metadata["artifacts"][TERRAIN_ARTIFACT_NAME] = {
+            "bytes": terrain.path.stat().st_size,
+            "sha256": terrain.sha256,
+        }
+        metadata["terrain_relief"] = {
+            "grid": {
+                "cell_size_m": 256.0,
+                "width": terrain.grid.width,
+                "height": terrain.grid.height,
+            },
+            "coverage": {
+                "direct_cells": terrain.direct_cells,
+                "interpolated_cells": terrain.interpolated_cells,
+                "rejected_gap_cells": terrain.rejected_gap_cells,
+                "unsupported_cells": terrain.unsupported_cells,
+            },
+        }
     temporary = path.with_suffix(".json.part")
     temporary.write_text(json.dumps(metadata, indent=2) + "\n")
     temporary.replace(path)
@@ -441,6 +462,13 @@ async def main_async(*, refresh: bool = False) -> None:
 
     staged_world = staging / WORLD_BIN.name
     staged_metadata = staging / METADATA_JSON.name
+    terrain = build_if_evidence_present(staging / TERRAIN_ARTIFACT_NAME, bounds)
+    if terrain is not None:
+        print(
+            f"built terrain relief {terrain.grid.width}x{terrain.grid.height} "
+            f"({terrain.direct_cells:,} direct cells)",
+            flush=True,
+        )
     pack_world(
         staged_world,
         packed_buildings,
@@ -471,6 +499,7 @@ async def main_async(*, refresh: bool = False) -> None:
         texture_bytes,
         texture_coverage,
         len(height_evidence) if height_evidence is not None else 0,
+        terrain,
     )
     (staging / "streets.bin").unlink(missing_ok=True)
     publish_clean(staging)

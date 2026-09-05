@@ -11,6 +11,7 @@ use crate::{
     palette::{self, GROUND},
     projection::Projection,
     shadow_render::draw_cast_shadows,
+    terrain::Terrain,
     texture::{AerialTile, missing_imagery},
     tile_codec::encode_rgba,
     transport_render::draw_transport,
@@ -23,11 +24,17 @@ const PROCEDURAL_ROOF_MARGIN_METERS: f32 = 8.0;
 const SHORELINE_DISTANCE_METERS: f32 = 4.5;
 const SHORELINE_PROBE_METERS: f32 = 1.5;
 
+#[derive(Clone, Copy)]
+pub(crate) struct GroundInputs<'a> {
+    pub(crate) land_cover: Option<&'a LandCoverMask>,
+    pub(crate) terrain: Option<&'a Terrain>,
+}
+
 pub fn render_tile(
     world: &World,
     aerial: &AerialTile,
     mesh_textures: &MeshTextureSource,
-    land_cover: Option<&LandCoverMask>,
+    ground: GroundInputs<'_>,
     z: u8,
     x: u32,
     y: u32,
@@ -47,7 +54,8 @@ pub fn render_tile(
         &projection,
         sampling_block,
         aerial,
-        land_cover,
+        ground.land_cover,
+        ground.terrain,
     );
     let transport_query = transport_query(bounds, scale);
     draw_transport(
@@ -128,7 +136,7 @@ pub fn render_tile(
         mesh_textures,
         &mut depth,
     )?;
-    if let Some(land_cover) = land_cover {
+    if let Some(land_cover) = ground.land_cover {
         draw_canopy_mass(
             &mut pixmap,
             land_cover,
@@ -173,6 +181,7 @@ pub fn render_rich_tile(
         sampling_block,
         aerial,
         land_cover,
+        None,
     );
     let transport_query = transport_query(bounds.ground_source_bounds_for(view), scale);
     draw_transport(
@@ -271,6 +280,7 @@ fn draw_ground(
     block_size: f32,
     aerial: &AerialTile,
     land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
 ) {
     let bounds = projection.bounds;
     let scale = projection.scale;
@@ -326,13 +336,14 @@ fn draw_ground(
                     mask.sample(f64::from(sample_point.0), f64::from(sample_point.1))
                 });
                 let nearby_water = land_cover.is_some_and(|mask| nearby_water(mask, sample_point));
-                grade_ground_with_context(
+                grade_ground_with_terrain(
                     aerial_color,
                     sample_point,
                     &water,
                     &parks,
                     land_cover_class,
                     nearby_water,
+                    terrain,
                 )
             });
             let offset = ((py * TILE_SIZE + px) * 4) as usize;
@@ -395,6 +406,44 @@ fn grade_ground_with_context(
         None if aerial_vegetation => palette::mix(color, palette::AERIAL_VEGETATION, 0.24),
         None => color,
     }
+}
+
+fn grade_ground_with_terrain(
+    color: [u8; 3],
+    point: (f32, f32),
+    water: &[&Ring],
+    parks: &[&Ring],
+    land_cover: Option<LandCoverClass>,
+    nearby_water: bool,
+    terrain: Option<&Terrain>,
+) -> [u8; 3] {
+    grade_ground_with_hillshade(
+        color,
+        point,
+        water,
+        parks,
+        land_cover,
+        nearby_water,
+        terrain.map(|terrain| terrain.hillshade(point)),
+    )
+}
+
+fn grade_ground_with_hillshade(
+    color: [u8; 3],
+    point: (f32, f32),
+    water: &[&Ring],
+    parks: &[&Ring],
+    land_cover: Option<LandCoverClass>,
+    nearby_water: bool,
+    terrain_hillshade: Option<f32>,
+) -> [u8; 3] {
+    // Water has its own source-stable texture and must not acquire terrain
+    // relief, even when a LiDAR cell happens to overlap a shoreline sample.
+    if let Some(tone) = water_tone(point, water, land_cover, nearby_water) {
+        return grade_water_with_tone(color, point, tone);
+    }
+    let graded = grade_ground_with_context(color, point, water, parks, land_cover, nearby_water);
+    terrain_hillshade.map_or(graded, |hillshade| palette::scale(graded, hillshade))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -539,8 +588,9 @@ mod tests {
 
     use super::{
         SHORELINE_DISTANCE_METERS, SHORELINE_PROBE_METERS, TILE_SIZE, block_size,
-        canonical_block_sample, grade_ground, grade_ground_with_context, grade_water,
-        rich_block_size, transport_query, water_query_margin,
+        canonical_block_sample, grade_ground, grade_ground_with_context,
+        grade_ground_with_hillshade, grade_water, rich_block_size, transport_query,
+        water_query_margin,
     };
     use crate::land_cover::LandCoverClass;
     use crate::pyramid::ART_ZOOM;
@@ -626,6 +676,25 @@ mod tests {
 
         assert_eq!(overlap, water_only);
         assert!(overlap[2] > overlap[1]);
+    }
+
+    #[test]
+    fn terrain_hillshade_never_changes_water() {
+        let water = square();
+        let source = [112, 104, 88];
+        let unchanged =
+            grade_ground_with_hillshade(source, (5.0, 5.0), &[&water], &[], None, false, None);
+        let shaded = grade_ground_with_hillshade(
+            source,
+            (5.0, 5.0),
+            &[&water],
+            &[],
+            None,
+            false,
+            Some(0.92),
+        );
+
+        assert_eq!(shaded, unchanged);
     }
 
     #[test]

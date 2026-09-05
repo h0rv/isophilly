@@ -14,7 +14,8 @@ use crate::{
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     palette,
-    render::{render_rich_tile, render_tile},
+    render::{GroundInputs, render_rich_tile, render_tile},
+    terrain::Terrain,
     texture::{AerialSource, AerialTile},
     tile_codec::{EXTENSION, encode_image},
     world::{View, World},
@@ -40,6 +41,7 @@ pub fn build(
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
     land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
     root: &Path,
 ) -> io::Result<()> {
     fs::create_dir_all(root)?;
@@ -50,7 +52,7 @@ pub fn build(
             Err(error)
         }
     })?;
-    let mut changed = render_leaves(world, aerial, mesh_textures, land_cover, root)?;
+    let mut changed = render_leaves(world, aerial, mesh_textures, land_cover, terrain, root)?;
     for z in (0..ART_ZOOM).rev() {
         changed = derive_level(root, z, &changed)?;
         println!("built z{z} from z{}: {} written", z + 1, changed.len());
@@ -229,6 +231,7 @@ fn render_leaves(
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
     land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
     root: &Path,
 ) -> io::Result<Vec<u32>> {
     let count = 1_u32 << ART_ZOOM;
@@ -251,6 +254,7 @@ fn render_leaves(
         aerial,
         mesh_textures,
         land_cover,
+        terrain,
         root,
         count,
         rendered: &rendered,
@@ -347,6 +351,7 @@ struct LeafBuilder<'a> {
     aerial: &'a AerialSource,
     mesh_textures: &'a MeshTextureSource,
     land_cover: Option<&'a LandCoverMask>,
+    terrain: Option<&'a Terrain>,
     root: &'a Path,
     count: u32,
     rendered: &'a AtomicUsize,
@@ -370,7 +375,10 @@ impl LeafBuilder<'_> {
             self.world,
             &aerial,
             self.mesh_textures,
-            self.land_cover,
+            GroundInputs {
+                land_cover: self.land_cover,
+                terrain: self.terrain,
+            },
             ART_ZOOM,
             x,
             y,

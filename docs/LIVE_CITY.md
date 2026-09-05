@@ -49,6 +49,11 @@ orientation. It shares the scene depth buffer: buildings and mesh faces occlude 
 while the separate official street-tree inventory is drawn afterward and remains the explicit
 individual-tree layer.
 
+The terrain relief adds a deterministic tonal hillshade to the ground pass only. It does not move
+geometry or change water color, and the rich Center City mesh views do not use the terrain artifact.
+The eight rejected PASDA gaps stay neutral, so the relief does not add a visible seam where the
+LiDAR evidence stops.
+
 ## Neighborhood names
 
 The generated overlay comes from the Philadelphia City Planning Commission's

@@ -660,6 +660,39 @@ the canonical Parquet exists, and the evidence loader repeats that check. A
 reader never repairs writer state; it fails closed with instructions to run
 `poe lidar-merge`.
 
+### Terrain relief
+
+The LiDAR merge now also feeds `data/clean/terrain-v1.isoterrain`. The file is a
+256 metre EPSG:32129 grid, and the renderer uses it only as a deterministic
+tonal hillshade on the ground pass. It does not move geometry. The lighting
+calculation uses three times the measured slope and clamps the ground tone to
+92 through 108 percent, so gentle hills remain visible without replacing the
+aerial color.
+
+The current artifact reports a 108 by 121 grid. Its cells break down into 4,364
+direct cells, 3,172 interpolated cells, 133 rejected-gap cells, and 5,399
+unsupported cells. The eight rejected PASDA gaps remain neutral in the renderer.
+
+Direct cells come from at least three accepted ground observations. Interpolated
+cells come from nearby direct cells and then a local median pass. Rejected-gap
+cells are the cells that fall inside the eight rejected PASDA gaps, so they stay
+neutral and cannot introduce a seam. Unsupported cells also stay neutral.
+
+To reproduce the artifact and the cached tile identity, run these commands in
+order:
+
+```sh
+uv run --locked poe lidar-merge
+uv run --locked poe ingest
+uv run --locked poe terrain-audit
+uv run --locked poe prebuild
+```
+
+`poe ingest` writes the terrain artifact when the merged evidence is present.
+`poe terrain-audit` prints the artifact hash and the current counts. `poe
+prebuild` then folds the terrain digest into the scene and tile cache identity,
+so a changed terrain artifact cannot reuse an older cache.
+
 The remaining 2010 KML, 3DS, OpenFlight, DXF, SHP, ground-mesh, and texture-map
 archives are duplicate formats or lower LODs of the already-ingested 2,689
 downtown models. Their audited manifests add no photographed bounds or facades.

@@ -1,29 +1,39 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v57-inferred-roofs";
+const PYRAMID_VERSION: &str = "v58-terrain-relief";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
 // already has the baked continuous-color finish. The later canopy and
-// metre-correct morphology changes are intentionally citywide-only because the
-// rich mesh already photographs local vegetation and building form. Keep that
-// verified atlas immutable.
+// metre-correct morphology, inferred-roof, and terrain-relief changes are
+// intentionally citywide-only because the rich mesh already photographs local
+// vegetation and building form. Keep that verified atlas immutable.
 const BAKED_RICH_IDENTITY: &str = "v54-shared-palette-rich-style";
 
 pub(crate) fn base_tile_version(
     world_sha256: &[u8; 32],
     land_cover_sha256: Option<&[u8; 32]>,
+    terrain_sha256: Option<&[u8; 32]>,
 ) -> String {
     base_tile_version_hex(
         &digest_hex(world_sha256),
         land_cover_sha256.map(digest_hex).as_deref(),
+        terrain_sha256.map(digest_hex).as_deref(),
     )
 }
 
-pub(crate) fn base_tile_version_hex(world_sha256: &str, land_cover_sha256: Option<&str>) -> String {
+pub(crate) fn base_tile_version_hex(
+    world_sha256: &str,
+    land_cover_sha256: Option<&str>,
+    terrain_sha256: Option<&str>,
+) -> String {
     let world_prefix = &world_sha256[..16];
-    match land_cover_sha256 {
-        Some(digest) => format!("{PYRAMID_VERSION}-{world_prefix}-lc-{digest}"),
-        None => format!("{PYRAMID_VERSION}-{world_prefix}"),
+    let mut version = format!("{PYRAMID_VERSION}-{world_prefix}");
+    if let Some(digest) = land_cover_sha256 {
+        version.push_str(&format!("-lc-{digest}"));
     }
+    if let Some(digest) = terrain_sha256 {
+        version.push_str(&format!("-tr-{digest}"));
+    }
+    version
 }
 
 pub(crate) fn rich_tile_version(tile_version: &str, view: View) -> String {
@@ -69,14 +79,19 @@ mod tests {
         let second = [0x33; 32];
 
         assert_eq!(
-            base_tile_version(&world, None),
-            "v57-inferred-roofs-1111111111111111"
+            base_tile_version(&world, None, None),
+            "v58-terrain-relief-1111111111111111"
         );
         assert_ne!(
-            base_tile_version(&world, Some(&first)),
-            base_tile_version(&world, Some(&second))
+            base_tile_version(&world, Some(&first), None),
+            base_tile_version(&world, Some(&second), None)
         );
-        assert!(base_tile_version(&world, Some(&first)).ends_with(&"22".repeat(32)));
+        assert!(base_tile_version(&world, Some(&first), None).ends_with(&"22".repeat(32)));
+        assert_ne!(
+            base_tile_version(&world, None, Some(&first)),
+            base_tile_version(&world, None, Some(&second))
+        );
+        assert!(base_tile_version(&world, None, Some(&first)).ends_with(&"22".repeat(32)));
     }
 
     #[test]
@@ -91,7 +106,7 @@ mod tests {
             rich_tile_version("v1-abc", View::NorthWest),
             "v1-abc-rich-nw-z5-full"
         );
-        let citywide = base_tile_version(&[0x11; 32], Some(&[0x22; 32]));
+        let citywide = base_tile_version(&[0x11; 32], Some(&[0x22; 32]), Some(&[0x33; 32]));
         assert_eq!(
             rich_tile_version(&citywide, View::SouthEast),
             format!("{BAKED_RICH_IDENTITY}-rich-se-z5-full")

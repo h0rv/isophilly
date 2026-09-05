@@ -9,6 +9,7 @@ mod render;
 mod scene;
 mod server;
 mod shadow_render;
+mod terrain;
 mod texture;
 mod tile_codec;
 mod tile_identity;
@@ -25,6 +26,7 @@ use crate::{
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     server::{prebuild, prebuild_is_complete, serve},
+    terrain::Terrain,
     texture::AerialSource,
     world::{BuildingKind, World, load_world, world_digest},
 };
@@ -67,7 +69,13 @@ async fn main() -> io::Result<()> {
             let land_cover =
                 LandCoverMask::open_optional(Path::new("data/clean/land-cover-2018.isomask"))?;
             let land_cover_sha256 = land_cover.as_ref().map(LandCoverMask::artifact_sha256);
-            if prebuild_is_complete(&world_digest(world_path)?, land_cover_sha256.as_ref()) {
+            let terrain = Terrain::open_optional(Path::new("data/clean/terrain-v1.isoterrain"))?;
+            let terrain_sha256 = terrain.as_ref().map(Terrain::artifact_sha256);
+            if prebuild_is_complete(
+                &world_digest(world_path)?,
+                land_cover_sha256.as_ref(),
+                terrain_sha256.as_ref(),
+            ) {
                 return Ok(());
             }
             let world = load_world(world_path)?;
@@ -83,7 +91,15 @@ async fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
             println!("prebuild using {jobs} workers");
-            pool.install(|| prebuild(&world, &aerial, &mesh_textures, land_cover.as_ref()))
+            pool.install(|| {
+                prebuild(
+                    &world,
+                    &aerial,
+                    &mesh_textures,
+                    land_cover.as_ref(),
+                    terrain.as_ref(),
+                )
+            })
         }
         Command::Serve { port } => serve(port).await,
     }

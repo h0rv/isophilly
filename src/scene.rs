@@ -20,6 +20,8 @@ pub(crate) struct Scene {
     world_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     land_cover_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terrain_sha256: Option<String>,
     iso_bounds: [f32; 4],
     city_hall: Option<[f32; 2]>,
     landmarks: Vec<Landmark>,
@@ -73,6 +75,7 @@ impl Scene {
     pub(crate) fn from_world(
         world: &World,
         land_cover_sha256: Option<&[u8; 32]>,
+        terrain_sha256: Option<&[u8; 32]>,
         tile_version: String,
         rich_versions: &[(View, String)],
     ) -> io::Result<Self> {
@@ -83,6 +86,7 @@ impl Scene {
             schema_version: SCHEMA_VERSION,
             world_sha256,
             land_cover_sha256: land_cover_sha256.map(digest_hex),
+            terrain_sha256: terrain_sha256.map(digest_hex),
             iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
             city_hall: world.city_hall_focus(),
             landmarks: vec![Landmark {
@@ -172,9 +176,11 @@ impl Scene {
         &self,
         world_sha256: &[u8; 32],
         land_cover_sha256: Option<&[u8; 32]>,
+        terrain_sha256: Option<&[u8; 32]>,
     ) -> bool {
         self.world_sha256 == digest_hex(world_sha256)
             && self.land_cover_sha256.as_deref() == land_cover_sha256.map(digest_hex).as_deref()
+            && self.terrain_sha256.as_deref() == terrain_sha256.map(digest_hex).as_deref()
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -185,8 +191,14 @@ impl Scene {
         if let Some(digest) = &self.land_cover_sha256 {
             validate_sha256(digest)?;
         }
-        let base_version =
-            base_tile_version_hex(&self.world_sha256, self.land_cover_sha256.as_deref());
+        if let Some(digest) = &self.terrain_sha256 {
+            validate_sha256(digest)?;
+        }
+        let base_version = base_tile_version_hex(
+            &self.world_sha256,
+            self.land_cover_sha256.as_deref(),
+            self.terrain_sha256.as_deref(),
+        );
         if !is_generation_of(&self.tile_version, &base_version) {
             return Err(invalid("tile version does not match scene input digests"));
         }
@@ -281,11 +293,12 @@ mod tests {
 
     fn scene() -> Scene {
         let world_sha256 = "a".repeat(64);
-        let tile_version = base_tile_version_hex(&world_sha256, None);
+        let tile_version = base_tile_version_hex(&world_sha256, None, None);
         Scene {
             schema_version: SCHEMA_VERSION,
             world_sha256,
             land_cover_sha256: None,
+            terrain_sha256: None,
             iso_bounds: [1.0, 2.0, 3.0, 4.0],
             city_hall: Some([2.0, 3.0]),
             landmarks: vec![Landmark {
@@ -348,7 +361,7 @@ mod tests {
     #[test]
     fn rejects_tile_identity_that_disagrees_with_manifest_digests() {
         let mut invalid = scene();
-        invalid.tile_version = base_tile_version_hex(&"b".repeat(64), None);
+        invalid.tile_version = base_tile_version_hex(&"b".repeat(64), None, None);
         assert!(invalid.validate().is_err());
 
         let mut invalid = scene();
@@ -363,8 +376,11 @@ mod tests {
         current.land_cover_sha256 = Some("c".repeat(64));
         assert!(current.validate().is_err());
 
-        current.tile_version =
-            base_tile_version_hex(&current.world_sha256, current.land_cover_sha256.as_deref());
+        current.tile_version = base_tile_version_hex(
+            &current.world_sha256,
+            current.land_cover_sha256.as_deref(),
+            current.terrain_sha256.as_deref(),
+        );
         for (rich, view) in current.rich.views.iter_mut().zip(View::ALL) {
             rich.tile_version = rich_tile_version(&current.tile_version, view);
         }
@@ -388,13 +404,35 @@ mod tests {
         let mut current = scene();
         let world = [0xaa; 32];
         current.world_sha256 = digest_hex(&world);
-        assert!(current.matches_inputs(&world, None));
+        assert!(current.matches_inputs(&world, None, None));
 
         let land_cover = [0xbb; 32];
-        assert!(!current.matches_inputs(&world, Some(&land_cover)));
+        assert!(!current.matches_inputs(&world, Some(&land_cover), None));
         current.land_cover_sha256 = Some(digest_hex(&land_cover));
-        assert!(current.matches_inputs(&world, Some(&land_cover)));
-        assert!(!current.matches_inputs(&world, None));
+        assert!(current.matches_inputs(&world, Some(&land_cover), None));
+        assert!(!current.matches_inputs(&world, None, None));
+    }
+
+    #[test]
+    fn terrain_digest_is_optional_but_invalidates_only_citywide_identity() {
+        let mut current = scene();
+        let world = [0xaa; 32];
+        current.world_sha256 = digest_hex(&world);
+        let terrain = [0xcc; 32];
+        current.terrain_sha256 = Some(digest_hex(&terrain));
+        assert!(current.validate().is_err());
+
+        current.tile_version = base_tile_version_hex(
+            &current.world_sha256,
+            current.land_cover_sha256.as_deref(),
+            current.terrain_sha256.as_deref(),
+        );
+        for (rich, view) in current.rich.views.iter_mut().zip(View::ALL) {
+            rich.tile_version = rich_tile_version(&current.tile_version, view);
+        }
+        assert!(current.validate().is_ok());
+        assert!(current.matches_inputs(&world, None, Some(&terrain)));
+        assert!(!current.matches_inputs(&world, None, None));
     }
 
     #[test]
@@ -402,6 +440,7 @@ mod tests {
         let serialized = serde_json::to_value(scene()).map_err(std::io::Error::other)?;
         let parsed: Scene = serde_json::from_value(serialized).map_err(std::io::Error::other)?;
         assert!(parsed.land_cover_sha256.is_none());
+        assert!(parsed.terrain_sha256.is_none());
         parsed.validate()?;
         Ok(())
     }

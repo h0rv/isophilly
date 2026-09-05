@@ -13,6 +13,7 @@ services. The exact URLs, checksums, and clean counts are in
 | 2008 and 2009 legacy downtown | 2,689 `r0` models and 668,082 valid textured triangles before overlap suppression | The clean count is lower because the 2015 scene wins where they overlap. |
 | 2008 stadium area | 808 retained `r0` models and 126,181 textured triangles | Six obsolete Spectrum components are excluded. |
 | OpenStreetMap Center City building parts | 827 height-backed parts in the current snapshot | Parts improve setbacks and roof forms only where photographed meshes are absent. |
+| Terrain relief | 108 by 121 cells | 4,364 direct cells, 3,172 interpolated cells, 133 rejected-gap cells, and 5,399 unsupported cells. The eight rejected PASDA gaps stay neutral, and the artifact is tonal only. |
 
 The City Limits extent is about 27.29 by 30.52 kilometres in EPSG:32129. The
 boundary controls tile presence so the viewer does not create an unbounded
@@ -32,6 +33,24 @@ building:
 Both City fields are interpreted as feet. Values below 2.4 metres or above 400
 metres are rejected before fallback. The last packed snapshot had a 7.92 metre
 median, a 10.67 metre ninetieth percentile, and a 297.49 metre maximum.
+
+## Terrain relief
+
+The current terrain artifact is `data/clean/terrain-v1.isoterrain`. It uses 256
+metre cells in EPSG:32129 and a fixed sun tone. It does not displace buildings,
+roads, or water. The renderer multiplies the slope used for lighting by three
+so Philadelphia's gentle relief remains visible at this grid size. It does not
+change the recorded elevations, and the final tone stays within 92 to 108
+percent of the source ground color.
+
+Direct cells come from at least three accepted ground observations inside a
+cell. Interpolated cells use nearby direct cells and then a 3 by 3 median pass.
+Rejected-gap cells are the interpolated cells that fall inside one of the eight
+rejected PASDA gap tiles. Unsupported cells have no accepted ground support and
+remain neutral. The hillshade is a tone multiplier only, so the renderer leaves
+water alone and the rich Center City mesh tiles do not use the artifact. The
+terrain digest is part of the cache identity, so a changed artifact cannot reuse
+an older tile cache.
 
 ## What the image means
 

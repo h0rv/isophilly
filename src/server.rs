@@ -17,6 +17,7 @@ use crate::{
     pyramid::{self, ART_ZOOM, TileInventory, tile_path},
     render::render_blank_tile,
     scene::Scene,
+    terrain::Terrain,
     texture::AerialSource,
     tile_codec::{EXTENSION, MEDIA_TYPE},
     tile_identity::{base_tile_version, is_generation_of, rich_tile_version},
@@ -119,9 +120,15 @@ pub fn prebuild(
     aerial: &AerialSource,
     mesh_textures: &MeshTextureSource,
     land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
 ) -> io::Result<()> {
     let land_cover_sha256 = land_cover.map(LandCoverMask::artifact_sha256);
-    let base_version = base_tile_version(&world.world_sha256, land_cover_sha256.as_ref());
+    let terrain_sha256 = terrain.map(Terrain::artifact_sha256);
+    let base_version = base_tile_version(
+        &world.world_sha256,
+        land_cover_sha256.as_ref(),
+        terrain_sha256.as_ref(),
+    );
     let tile_root = PathBuf::from("data/tiles");
     std::fs::create_dir_all(&tile_root)?;
     let build_lock = OpenOptions::new()
@@ -139,7 +146,7 @@ pub fn prebuild(
         let tile_version = available_tile_version(&base_version)?;
         let tile_dir = tile_cache_dir(&tile_version);
         let staging = tile_root.join(format!(".{tile_version}.building"));
-        pyramid::build(world, aerial, mesh_textures, land_cover, &staging)?;
+        pyramid::build(world, aerial, mesh_textures, land_cover, terrain, &staging)?;
         std::fs::rename(&staging, &tile_dir)?;
         tile_version
     };
@@ -162,18 +169,23 @@ pub fn prebuild(
     let scene = Scene::from_world(
         world,
         land_cover_sha256.as_ref(),
+        terrain_sha256.as_ref(),
         tile_version,
         &rich_versions,
     )?;
     scene.write_current()
 }
 
-pub fn prebuild_is_complete(world_sha256: &[u8; 32], land_cover_sha256: Option<&[u8; 32]>) -> bool {
-    let base_version = base_tile_version(world_sha256, land_cover_sha256);
+pub fn prebuild_is_complete(
+    world_sha256: &[u8; 32],
+    land_cover_sha256: Option<&[u8; 32]>,
+    terrain_sha256: Option<&[u8; 32]>,
+) -> bool {
+    let base_version = base_tile_version(world_sha256, land_cover_sha256, terrain_sha256);
     let Ok(current) = Scene::read_current() else {
         return false;
     };
-    if !current.matches_inputs(world_sha256, land_cover_sha256)
+    if !current.matches_inputs(world_sha256, land_cover_sha256, terrain_sha256)
         || !is_generation_of(&current.tile_version, &base_version)
         || pyramid::validate_complete(&tile_cache_dir(&current.tile_version)).is_err()
         || current

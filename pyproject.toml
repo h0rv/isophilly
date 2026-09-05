@@ -60,6 +60,7 @@ lidar-next = { cmd = "python -m isophilly_ingest.lidar run --max-tiles 1 --disca
 lidar-status = { cmd = "python -m isophilly_ingest.lidar status", use_exec = true }
 lidar-merge = { cmd = "python -m isophilly_ingest.lidar merge", use_exec = true }
 lidar-recheck-rejected = { cmd = "python -m isophilly_ingest.lidar recheck-rejected --discard-raw", use_exec = true }
+terrain-audit = { cmd = "python -m isophilly_ingest.terrain audit", use_exec = true }
 oblique-plan = { cmd = "python -m isophilly_ingest.coastal_obliques plan", use_exec = true }
 oblique-next = { cmd = "python -m isophilly_ingest.coastal_obliques fetch --max-frames 1", use_exec = true }
 oblique-status = { cmd = "python -m isophilly_ingest.coastal_obliques status", use_exec = true }

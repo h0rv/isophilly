@@ -72,6 +72,12 @@ blankness, and detail metrics. Downtown mesh-boundary and Convention Center
 geometry quality still require human review of the citywide screenshots; there
 is not yet a dedicated mesh-edge pixel baseline.
 
+If the terrain artifact is present, the visual run should also be compared with
+`uv run --locked poe terrain-audit`. The terrain relief changes only the ground
+tone, so water and the rich Center City mesh views should stay visually stable.
+The run should keep the audited terrain hash and the four coverage counts with
+the other release evidence.
+
 ## Evidence layout
 
 Every invocation writes to a new directory:

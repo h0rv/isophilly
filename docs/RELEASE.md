@@ -12,6 +12,13 @@
 - Run `uv run --locked poe land-cover-audit` before prebuild. Archive the mask
   header and whole artifact SHA-256. Confirm that the scene uses the
   current renderer identity and the reviewed OSGeo image digest.
+- If the LiDAR merge is in scope, run `uv run --locked poe lidar-merge`, then
+  `uv run --locked poe ingest`, `uv run --locked poe terrain-audit`, and
+  `uv run --locked poe prebuild` in that order. Archive
+  `data/clean/terrain-v1.isoterrain`, the terrain audit output, and the terrain
+  digest in `data/clean/meta.json`. The current artifact reports a 108 by 121
+  grid with 4,364 direct cells, 3,172 interpolated cells, 133 rejected-gap
+  cells, and 5,399 unsupported cells.
 - A release does not use LiDAR heights until all 664 selected sources are
   accounted for and `poe lidar-merge` publishes the canonical schema-3 Parquet
   and JSON pair. Do not publish from a diagnostic partial merge. Archive the
@@ -46,6 +53,9 @@
   confirm that footprint and OpenStreetMap fallback buildings fill surrounding
   gaps, share correct depth with textured buildings, and keep their procedural
   walls visually distinct from photographed facades.
+- Check that the terrain relief only changes the ground tone. Water should keep
+  its own treatment, and the rich Center City mesh views should not show any
+  terrain shading at all.
 
 ## Publication
 
@@ -59,6 +69,9 @@
 - Serve immutable, versioned tile URLs with long cache lifetimes. Serve the HTML
   entry point with revalidation so a deployment cannot strand users on stale
   tile versions.
+- The scene and tile cache identity now include the terrain SHA-256 as well as
+  the world and land-cover hashes. A terrain change therefore invalidates the
+  cached pyramid.
 - Add the live URL and one current screenshot to the README, test the link in a
   signed-out browser, and verify that no secret or generated multi-megabyte data
   file is tracked.
