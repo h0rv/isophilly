@@ -985,10 +985,17 @@ fn squared_distance(left: (f32, f32), right: (f32, f32)) -> f32 {
     (left.0 - right.0).powi(2) + (left.1 - right.1).powi(2)
 }
 
-// EPSG:32129 stores horizontal coordinates in US survey feet. Heights are
-// normalized separately by ingest and remain metres.
-const PARTY_EDGE_GAP_FEET: f32 = 2.7;
-const MIN_PARTY_EDGE_OVERLAP_FEET: f32 = 8.0;
+// EPSG:32129 stores horizontal coordinates in metres. Heights are normalized
+// separately by ingest and remain metres.
+const PARTY_EDGE_GAP_METERS: f32 = 0.822_96; // 2.7 ft
+const MIN_PARTY_EDGE_OVERLAP_METERS: f32 = 2.438_4; // 8 ft
+const ROWHOUSE_AREA_SQUARE_METERS: std::ops::RangeInclusive<f32> = 29.728_973..=220.180_2;
+const ROWHOUSE_WIDTH_METERS: std::ops::RangeInclusive<f32> = 3.048..=9.144;
+const ROWHOUSE_DEPTH_METERS: std::ops::RangeInclusive<f32> = 7.924_8..=32.004;
+const ROWHOUSE_FAMILY_AREA_SQUARE_METERS: std::ops::RangeInclusive<f32> = 20.438_67..=315.870_33;
+const ROWHOUSE_FAMILY_WIDTH_METERS: std::ops::RangeInclusive<f32> = 2.438_4..=10.363_2;
+const ROWHOUSE_FAMILY_DEPTH_METERS: std::ops::RangeInclusive<f32> = 5.486_4..=36.576;
+const WAREHOUSE_AREA_SQUARE_METERS: f32 = 449.650_7; // 4,840 sq ft
 const PARALLEL_EDGE_DOT: f32 = 0.984_807_7; // cos(10 degrees)
 
 #[derive(Clone, Copy)]
@@ -1020,7 +1027,7 @@ fn derive_building_contexts(
     let mut family_attached = vec![Vec::new(); buildings.len()];
 
     for (left_index, left) in buildings.iter().enumerate() {
-        let bounds = left.ring.bounds.pad(PARTY_EDGE_GAP_FEET);
+        let bounds = left.ring.bounds.pad(PARTY_EDGE_GAP_METERS);
         let query = AABB::from_corners([bounds.min_x, bounds.min_y], [bounds.max_x, bounds.max_y]);
         for item in building_tree.locate_in_envelope_intersecting(query) {
             let right_index = item.index;
@@ -1033,7 +1040,7 @@ fn derive_building_contexts(
                     let Some(overlap) = parallel_edge_overlap(*left_edge, *right_edge) else {
                         continue;
                     };
-                    if overlap < MIN_PARTY_EDGE_OVERLAP_FEET
+                    if overlap < MIN_PARTY_EDGE_OVERLAP_METERS
                         || overlap < left_edge.length.min(right_edge.length) * 0.6
                     {
                         continue;
@@ -1084,10 +1091,10 @@ fn derive_building_contexts(
                 BuildingKind::Twin
             } else if profile.rowhouse_candidate || profile.rowhouse_family_candidate {
                 BuildingKind::RowhouseLike
-            } else if profile.area >= 4_840.0 && building.height <= 20.0 {
+            } else if profile.area >= WAREHOUSE_AREA_SQUARE_METERS && building.height <= 20.0 {
                 BuildingKind::Warehouse
             } else if party_edge_masks[index] == 0
-                && profile.area <= 4_840.0
+                && profile.area <= WAREHOUSE_AREA_SQUARE_METERS
                 && building.height < 18.0
             {
                 BuildingKind::Detached
@@ -1126,13 +1133,13 @@ fn footprint_profile(building: &Building) -> FootprintProfile {
     FootprintProfile {
         area,
         depth,
-        rowhouse_candidate: (320.0..=2_370.0).contains(&area)
-            && (10.0..=30.0).contains(&width)
-            && (26.0..=105.0).contains(&depth)
+        rowhouse_candidate: ROWHOUSE_AREA_SQUARE_METERS.contains(&area)
+            && ROWHOUSE_WIDTH_METERS.contains(&width)
+            && ROWHOUSE_DEPTH_METERS.contains(&depth)
             && (5.5..=16.0).contains(&building.height),
-        rowhouse_family_candidate: (220.0..=3_400.0).contains(&area)
-            && (8.0..=34.0).contains(&width)
-            && (18.0..=120.0).contains(&depth)
+        rowhouse_family_candidate: ROWHOUSE_FAMILY_AREA_SQUARE_METERS.contains(&area)
+            && ROWHOUSE_FAMILY_WIDTH_METERS.contains(&width)
+            && ROWHOUSE_FAMILY_DEPTH_METERS.contains(&depth)
             && (4.5..=20.0).contains(&building.height),
     }
 }
@@ -1209,8 +1216,8 @@ fn parallel_edge_overlap(left: FootprintEdge, right: FootprintEdge) -> Option<f3
         let offset = (point.0 - left.start.0, point.1 - left.start.1);
         offset.0.mul_add(-left.unit.1, offset.1 * left.unit.0).abs()
     };
-    if perpendicular_distance(right.start) > PARTY_EDGE_GAP_FEET
-        || perpendicular_distance(right_end) > PARTY_EDGE_GAP_FEET
+    if perpendicular_distance(right.start) > PARTY_EDGE_GAP_METERS
+        || perpendicular_distance(right_end) > PARTY_EDGE_GAP_METERS
     {
         return None;
     }
@@ -1347,14 +1354,23 @@ fn detailed_buildings(
 }
 
 fn ring_area(ring: &Ring) -> f32 {
+    let Some(&origin) = ring.points.first() else {
+        return 0.0;
+    };
     ring.points
         .iter()
         .zip(ring.points.iter().cycle().skip(1))
         .take(ring.points.len())
-        .map(|(left, right)| left.0.mul_add(right.1, -(right.0 * left.1)))
-        .sum::<f32>()
+        .map(|(left, right)| {
+            let left_x = f64::from(left.0 - origin.0);
+            let left_y = f64::from(left.1 - origin.1);
+            let right_x = f64::from(right.0 - origin.0);
+            let right_y = f64::from(right.1 - origin.1);
+            left_x.mul_add(right_y, -(right_x * left_y))
+        })
+        .sum::<f64>()
         .abs()
-        * 0.5
+        .mul_add(0.5, 0.0) as f32
 }
 fn index_building_meshes(meshes: &[BuildingMesh]) -> RTree<Indexed> {
     RTree::bulk_load(
@@ -1651,7 +1667,7 @@ mod tests {
         let buildings: Vec<_> = (0..5)
             .map(|index| Building {
                 height: 9.3,
-                ring: rectangle(index as f32 * 16.5, 0.0, (index + 1) as f32 * 16.5, 52.5),
+                ring: rectangle(index as f32 * 5.0, 0.0, (index + 1) as f32 * 5.0, 16.0),
             })
             .collect();
 
@@ -1676,7 +1692,7 @@ mod tests {
     fn isolated_narrow_footprint_is_rowhouse_like() {
         let buildings = vec![Building {
             height: 9.0,
-            ring: rectangle(0.0, 0.0, 16.5, 52.5),
+            ring: rectangle(0.0, 0.0, 5.0, 16.0),
         }];
 
         let contexts = contextualize(&buildings);
@@ -1690,11 +1706,11 @@ mod tests {
         let buildings = vec![
             Building {
                 height: 9.0,
-                ring: rectangle(0.0, 0.0, 31.0, 50.0),
+                ring: rectangle(0.0, 0.0, 9.5, 15.0),
             },
             Building {
                 height: 9.0,
-                ring: rectangle(31.0, 0.0, 62.0, 50.0),
+                ring: rectangle(9.5, 0.0, 19.0, 15.0),
             },
         ];
 
@@ -1718,19 +1734,19 @@ mod tests {
         let buildings = vec![
             Building {
                 height: 9.0,
-                ring: rectangle(0.0, 0.0, 16.5, 52.5),
+                ring: rectangle(0.0, 0.0, 5.0, 16.0),
             },
             Building {
                 height: 9.0,
-                ring: rectangle(16.5, 0.0, 33.0, 52.5),
+                ring: rectangle(5.0, 0.0, 10.0, 16.0),
             },
             Building {
                 height: 8.0,
-                ring: rectangle(100.0, 0.0, 135.0, 35.0),
+                ring: rectangle(30.0, 0.0, 41.0, 11.0),
             },
             Building {
                 height: 12.0,
-                ring: rectangle(200.0, 0.0, 365.0, 66.0),
+                ring: rectangle(60.0, 0.0, 110.0, 21.0),
             },
         ];
 
@@ -1747,7 +1763,7 @@ mod tests {
         let buildings: Vec<_> = (0..5)
             .map(|index| Building {
                 height: 8.8 + index as f32 * 0.2,
-                ring: rectangle(index as f32 * 16.5, 0.0, (index + 1) as f32 * 16.5, 52.5),
+                ring: rectangle(index as f32 * 5.0, 0.0, (index + 1) as f32 * 5.0, 16.0),
             })
             .collect();
         let forward = contextualize(&buildings);
@@ -1767,6 +1783,63 @@ mod tests {
         assert_eq!(
             summarize(&buildings, &forward),
             summarize(&reversed_buildings, &reversed)
+        );
+    }
+
+    #[test]
+    fn metre_scale_party_gap_keeps_only_close_rowhouses_attached() {
+        let joined = contextualize(&[
+            Building {
+                height: 9.0,
+                ring: rectangle(0.0, 0.0, 5.0, 16.0),
+            },
+            Building {
+                height: 9.0,
+                ring: rectangle(5.8, 0.0, 10.8, 16.0),
+            },
+        ]);
+        let separate = contextualize(&[
+            Building {
+                height: 9.0,
+                ring: rectangle(0.0, 0.0, 5.0, 16.0),
+            },
+            Building {
+                height: 9.0,
+                ring: rectangle(5.9, 0.0, 10.9, 16.0),
+            },
+        ]);
+
+        assert!(
+            joined
+                .iter()
+                .all(|context| context.kind == BuildingKind::Twin)
+        );
+        assert!(
+            separate
+                .iter()
+                .all(|context| context.kind == BuildingKind::RowhouseLike)
+        );
+    }
+
+    #[test]
+    fn small_metre_footprints_keep_their_area_and_context_near_city_coordinates() {
+        let local = Building {
+            height: 9.0,
+            ring: rectangle(0.0, 0.0, 5.0, 16.0),
+        };
+        let translated = Building {
+            height: 9.0,
+            ring: rectangle(820_000.0, 72_000.0, 820_005.0, 72_016.0),
+        };
+
+        assert!((super::ring_area(&local.ring) - 80.0).abs() < f32::EPSILON);
+        assert!((super::ring_area(&translated.ring) - 80.0).abs() < f32::EPSILON);
+        let local_context = contextualize(&[local]);
+        let translated_context = contextualize(&[translated]);
+        assert_eq!(local_context[0].kind, translated_context[0].kind);
+        assert_eq!(
+            local_context[0].party_edge_mask,
+            translated_context[0].party_edge_mask
         );
     }
 

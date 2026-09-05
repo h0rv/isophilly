@@ -11,6 +11,20 @@ use crate::{
 
 const TILE_SIZE: usize = 256;
 const MIN_FACE_AREA: f32 = 0.3;
+const ROWHOUSE_AREA_SQUARE_METERS: std::ops::RangeInclusive<f32> = 29.728_973..=239.689_85;
+const ROWHOUSE_SHORT_SIDE_METERS: std::ops::RangeInclusive<f32> = 3.048..=11.582_4;
+const ROWHOUSE_LONG_SIDE_METERS: std::ops::RangeInclusive<f32> = 7.010_4..=32.004;
+const INDUSTRIAL_AREA_SQUARE_METERS: f32 = 650.321_3; // 7,000 sq ft
+const INDUSTRIAL_SHORT_SIDE_METERS: f32 = 17.983_2; // 59 ft
+const ROWHOUSE_ROOF_FEATURE_AREA_SQUARE_METERS: f32 = 44.593_46; // 480 sq ft
+const LARGE_INDUSTRIAL_ROOF_AREA_SQUARE_METERS: f32 = 2_499.091_8; // 26,900 sq ft
+const MIDRISE_ROOF_FEATURE_AREA_SQUARE_METERS: f32 = 350.244_45; // 3,770 sq ft
+const LOW_RISE_ROOF_FEATURE_AREA_SQUARE_METERS: f32 = 999.636_7; // 10,760 sq ft
+const MINIMUM_ROOF_FEATURE_SIDE_METERS: f32 = 0.609_6; // 2 ft
+const ROWHOUSE_ROOF_FEATURE_MAX_SIDE_METERS: f32 = 1.158_24; // 3.8 ft
+const INDUSTRIAL_ROOF_FEATURE_SIDE_METERS: std::ops::RangeInclusive<f32> = 2.438_4..=7.924_8;
+const INDUSTRIAL_ROOF_FEATURE_DEPTH_METERS: std::ops::RangeInclusive<f32> = 2.438_4..=10.058_4;
+const TALL_ROOF_FEATURE_SIDE_METERS: std::ops::RangeInclusive<f32> = 3.048..=12.192;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -292,11 +306,20 @@ impl Rasterizer<'_, '_> {
     fn draw_roof_furniture(&mut self, ring: &Ring, roof_height: f32, style: BuildingStyle) {
         let area = polygon_area(&ring.points);
         let count = match style.kind {
-            FacadeKind::Rowhouse if style.seed.is_multiple_of(4) && area >= 480.0 => 1,
-            FacadeKind::Industrial if area >= 26_900.0 => 3,
-            FacadeKind::Industrial if area >= 7_000.0 => 2,
-            FacadeKind::MidRise | FacadeKind::Tower if area >= 3_770.0 => 1,
-            FacadeKind::LowRise if area >= 10_760.0 => 1,
+            FacadeKind::Rowhouse
+                if style.seed.is_multiple_of(4)
+                    && area >= ROWHOUSE_ROOF_FEATURE_AREA_SQUARE_METERS =>
+            {
+                1
+            }
+            FacadeKind::Industrial if area >= LARGE_INDUSTRIAL_ROOF_AREA_SQUARE_METERS => 3,
+            FacadeKind::Industrial if area >= INDUSTRIAL_AREA_SQUARE_METERS => 2,
+            FacadeKind::MidRise | FacadeKind::Tower
+                if area >= MIDRISE_ROOF_FEATURE_AREA_SQUARE_METERS =>
+            {
+                1
+            }
+            FacadeKind::LowRise if area >= LOW_RISE_ROOF_FEATURE_AREA_SQUARE_METERS => 1,
             _ => 0,
         };
         for index in 0..count {
@@ -573,14 +596,16 @@ fn classify_building(ring: &Ring, height: f32) -> FacadeKind {
         0.0
     };
     if (5.5..=16.0).contains(&height)
-        && (320.0..=2_580.0).contains(&area)
-        && (10.0..=38.0).contains(&short)
-        && (23.0..=105.0).contains(&long)
+        && ROWHOUSE_AREA_SQUARE_METERS.contains(&area)
+        && ROWHOUSE_SHORT_SIDE_METERS.contains(&short)
+        && ROWHOUSE_LONG_SIDE_METERS.contains(&long)
         && long / short.max(0.1) >= 1.25
         && compactness >= 0.5
     {
         FacadeKind::Rowhouse
-    } else if height <= 18.0 && (area >= 7_000.0 || short >= 59.0) {
+    } else if height <= 18.0
+        && (area >= INDUSTRIAL_AREA_SQUARE_METERS || short >= INDUSTRIAL_SHORT_SIDE_METERS)
+    {
         FacadeKind::Industrial
     } else if height >= 55.0 || (height >= 30.0 && height / short.max(1.0) >= 2.5) {
         FacadeKind::Tower
@@ -595,14 +620,21 @@ fn polygon_area(points: &[(f32, f32)]) -> f32 {
     if points.len() < 3 {
         return 0.0;
     }
+    let origin = points[0];
     points
         .iter()
         .zip(points.iter().cycle().skip(1))
         .take(points.len())
-        .map(|(left, right)| left.0 * right.1 - right.0 * left.1)
-        .sum::<f32>()
+        .map(|(left, right)| {
+            let left_x = f64::from(left.0 - origin.0);
+            let left_y = f64::from(left.1 - origin.1);
+            let right_x = f64::from(right.0 - origin.0);
+            let right_y = f64::from(right.1 - origin.1);
+            left_x.mul_add(right_y, -(right_x * left_y))
+        })
+        .sum::<f64>()
         .abs()
-        * 0.5
+        .mul_add(0.5, 0.0) as f32
 }
 
 // The citywide walls are deliberately illustrative. Their material starts with the
@@ -669,24 +701,46 @@ fn roof_feature(
 ) -> Option<(Ring, f32)> {
     let width = ring.bounds.width();
     let depth = ring.bounds.height();
-    if width <= 2.0 || depth <= 2.0 {
+    if width <= MINIMUM_ROOF_FEATURE_SIDE_METERS || depth <= MINIMUM_ROOF_FEATURE_SIDE_METERS {
         return None;
     }
     let (feature_width, feature_depth, height) = match style.kind {
-        FacadeKind::Rowhouse => (width.min(3.8), depth.min(3.8), 1.15),
+        FacadeKind::Rowhouse => (
+            width.min(ROWHOUSE_ROOF_FEATURE_MAX_SIDE_METERS),
+            depth.min(ROWHOUSE_ROOF_FEATURE_MAX_SIDE_METERS),
+            1.15,
+        ),
         FacadeKind::Industrial => (
-            (width * 0.1).clamp(8.0, 26.0),
-            (depth * 0.12).clamp(8.0, 33.0),
+            (width * 0.1).clamp(
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.start(),
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.end(),
+            ),
+            (depth * 0.12).clamp(
+                *INDUSTRIAL_ROOF_FEATURE_DEPTH_METERS.start(),
+                *INDUSTRIAL_ROOF_FEATURE_DEPTH_METERS.end(),
+            ),
             1.4 + (style.seed & 3) as f32 * 0.35,
         ),
         FacadeKind::MidRise | FacadeKind::Tower => (
-            (width * 0.2).clamp(10.0, 40.0),
-            (depth * 0.18).clamp(10.0, 40.0),
+            (width * 0.2).clamp(
+                *TALL_ROOF_FEATURE_SIDE_METERS.start(),
+                *TALL_ROOF_FEATURE_SIDE_METERS.end(),
+            ),
+            (depth * 0.18).clamp(
+                *TALL_ROOF_FEATURE_SIDE_METERS.start(),
+                *TALL_ROOF_FEATURE_SIDE_METERS.end(),
+            ),
             2.4 + (style.seed & 3) as f32 * 0.7,
         ),
         FacadeKind::LowRise => (
-            (width * 0.12).clamp(8.0, 26.0),
-            (depth * 0.12).clamp(8.0, 26.0),
+            (width * 0.12).clamp(
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.start(),
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.end(),
+            ),
+            (depth * 0.12).clamp(
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.start(),
+                *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.end(),
+            ),
             1.5,
         ),
     };
@@ -978,20 +1032,45 @@ mod tests {
     }
 
     #[test]
-    fn morphology_separates_rowhouses_warehouses_and_towers() {
+    fn morphology_uses_metre_scale_footprints_and_metre_heights() {
         assert_eq!(
-            classify_building(&ring(17.0, 49.0), 9.2),
+            classify_building(&ring(5.2, 15.0), 9.2),
             FacadeKind::Rowhouse
         );
         assert_eq!(
-            classify_building(&ring(140.0, 200.0), 10.0),
+            classify_building(&ring(43.0, 61.0), 10.0),
             FacadeKind::Industrial
         );
         assert_eq!(
             classify_building(&ring(72.0, 80.0), 90.0),
             FacadeKind::Tower
         );
-        assert!((polygon_area(&ring(17.0, 49.0).points) - 833.0).abs() < 0.01);
+        assert!((polygon_area(&ring(5.2, 15.0).points) - 78.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn small_metre_footprints_keep_their_area_and_classification_near_city_coordinates() {
+        let local = ring(5.0, 16.0);
+        let translated = Ring {
+            bounds: Bounds {
+                min_x: 820_000.0,
+                min_y: 72_000.0,
+                max_x: 820_005.0,
+                max_y: 72_016.0,
+            },
+            points: vec![
+                (820_000.0, 72_000.0),
+                (820_005.0, 72_000.0),
+                (820_005.0, 72_016.0),
+                (820_000.0, 72_016.0),
+            ],
+        };
+
+        assert!((polygon_area(&translated.points) - 80.0).abs() < f32::EPSILON);
+        assert_eq!(
+            classify_building(&local, 9.0),
+            classify_building(&translated, 9.0)
+        );
     }
 
     #[test]
@@ -1050,12 +1129,12 @@ mod tests {
 
     #[test]
     fn synthesized_roof_feature_is_deterministic_and_inside_its_roof() -> Result<(), &'static str> {
-        let roof = ring(40.0, 30.0);
+        let roof = ring(12.2, 9.1);
         let style = super::BuildingStyle {
             kind: FacadeKind::Industrial,
             facade: [160, 150, 140],
             seed: 42,
-            short_side: 30.0,
+            short_side: 9.1,
             party_edge_mask: 0,
         };
         let first = roof_feature(&roof, style, 0, 2);
@@ -1066,6 +1145,21 @@ mod tests {
         assert!(feature.points.iter().all(|&point| roof.contains(point)));
         assert!((1.4..=2.45).contains(&height));
         Ok::<(), &'static str>(())
+    }
+
+    #[test]
+    fn roof_feature_uses_metre_scale_minimum_side() {
+        let roof = ring(12.2, 9.1);
+        let style = super::BuildingStyle {
+            kind: FacadeKind::Industrial,
+            facade: [160, 150, 140],
+            seed: 42,
+            short_side: 9.1,
+            party_edge_mask: 0,
+        };
+
+        assert!(roof_feature(&roof, style, 0, 1).is_some());
+        assert!(roof_feature(&ring(0.60, 3.0), style, 0, 1).is_none());
     }
 
     #[test]

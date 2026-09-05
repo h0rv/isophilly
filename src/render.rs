@@ -254,10 +254,10 @@ fn encode_display_pixmap(pixmap: &mut Pixmap) -> io::Result<Vec<u8>> {
 }
 
 fn transport_query(bounds: Bounds, scale: f32) -> AABB<[f32; 2]> {
-    // Centerline widths are in feet, while their scale floor is in pixels.
+    // Centerline widths are in metres, while their scale floor is in pixels.
     // Include both in the query so a route just outside a tile still paints
     // its visible stroke at the edge. This keeps prebuilt neighbors seamless.
-    let margin = 10.0 + 2.0 / scale.max(f32::EPSILON);
+    let margin = 3.048 + 2.0 / scale.max(f32::EPSILON);
     AABB::from_corners(
         [bounds.min_x - margin, bounds.min_y - margin],
         [bounds.max_x + margin, bounds.max_y + margin],
@@ -587,7 +587,7 @@ mod tests {
         };
         // This line is just beyond the left tile's source bounds, but an
         // expressway stroke can still reach its rightmost output pixels.
-        let line = rstar::AABB::from_corners([104.0, 40.0], [106.0, 60.0]);
+        let line = rstar::AABB::from_corners([102.0, 40.0], [103.0, 60.0]);
 
         assert!(transport_query(left, 1.0).intersects(&line));
         assert!(transport_query(right, 1.0).intersects(&line));

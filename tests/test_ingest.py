@@ -13,6 +13,7 @@ from isophilly_ingest.config import (
 )
 from isophilly_ingest.geometry import (
     DEFAULT_TREE_DIAMETER_METERS,
+    TRANSPORT_SIMPLIFY_METERS,
     buildings,
     footprint_id,
     height_from_values,
@@ -217,6 +218,21 @@ class StreetTreeTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_transport_simplification_uses_metres_after_projection(self) -> None:
+        import geopandas as gpd
+        from shapely.geometry import LineString, Polygon
+
+        frame = gpd.GeoDataFrame(
+            {"class": [1]},
+            geometry=[LineString(((0, 10), (10, 10.95), (20, 10)))],
+            crs=32129,
+        )
+
+        result = transport_lines(frame, Polygon(((0, 0), (20, 0), (20, 20), (0, 20))))
+
+        self.assertEqual(TRANSPORT_SIMPLIFY_METERS, 0.9144)
+        self.assertEqual(result[0].points, ((0.0, 10.0), (10.0, 10.95), (20.0, 10.0)))
+
     def test_transport_keeps_only_citywide_ranked_roads(self) -> None:
         import geopandas as gpd
         from shapely.geometry import LineString, Polygon

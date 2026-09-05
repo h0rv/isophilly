@@ -5,12 +5,12 @@ use crate::{
     world::{TransportKind, TransportLine},
 };
 
-// EPSG:32129 horizontal coordinates in this dataset are US survey feet. These
+// EPSG:32129 horizontal coordinates in this dataset are metres. These
 // widths are deliberately narrower than an actual carriageway: the aerial
 // remains the road surface and the linework is only a hierarchy cue.
-const EXPRESSWAY_WIDTH_FEET: f32 = 18.0;
-const ARTERIAL_WIDTH_FEET: f32 = 10.0;
-const CONNECTOR_WIDTH_FEET: f32 = 5.5;
+const EXPRESSWAY_WIDTH_METERS: f32 = 5.486_4; // 18 ft
+const ARTERIAL_WIDTH_METERS: f32 = 3.048; // 10 ft
+const CONNECTOR_WIDTH_METERS: f32 = 1.676_4; // 5.5 ft
 
 /// Draw only City-ranked through routes over the aerial before shadows and
 /// buildings. The physical width is world-anchored, so adjacent prebuilt tiles
@@ -33,12 +33,12 @@ pub(crate) fn draw_transport<'a>(
         let Some(path) = path.finish() else {
             continue;
         };
-        let (color, width_feet, minimum_pixels) = style(kind);
+        let (color, width_meters, minimum_pixels) = style(kind);
         let mut paint = Paint::default();
         paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
         paint.anti_alias = true;
         let stroke = Stroke {
-            width: (width_feet * projection.scale).max(minimum_pixels),
+            width: (width_meters * projection.scale).max(minimum_pixels),
             ..Stroke::default()
         };
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
@@ -61,9 +61,9 @@ fn style(kind: TransportKind) -> ([u8; 4], f32, f32) {
     match kind {
         // A cool, low-alpha hierarchy keeps the additional information from
         // repainting the photography. Each higher class is only subtly darker.
-        TransportKind::Expressway => ([70, 76, 81, 92], EXPRESSWAY_WIDTH_FEET, 1.1),
-        TransportKind::Arterial => ([91, 94, 91, 69], ARTERIAL_WIDTH_FEET, 0.8),
-        TransportKind::Connector => ([111, 108, 100, 42], CONNECTOR_WIDTH_FEET, 0.55),
+        TransportKind::Expressway => ([70, 76, 81, 92], EXPRESSWAY_WIDTH_METERS, 1.1),
+        TransportKind::Arterial => ([91, 94, 91, 69], ARTERIAL_WIDTH_METERS, 0.8),
+        TransportKind::Connector => ([111, 108, 100, 42], CONNECTOR_WIDTH_METERS, 0.55),
     }
 }
 
@@ -71,7 +71,7 @@ fn style(kind: TransportKind) -> ([u8; 4], f32, f32) {
 mod tests {
     use tiny_skia::Pixmap;
 
-    use super::draw_transport;
+    use super::{draw_transport, style};
     use crate::{
         projection::Projection,
         world::{Bounds, TransportKind, TransportLine, View},
@@ -113,6 +113,13 @@ mod tests {
         );
         assert!(pixmap.data().chunks_exact(4).any(|pixel| pixel[3] > 0));
         Ok(())
+    }
+
+    #[test]
+    fn transport_styles_keep_their_intended_metre_widths() {
+        assert_eq!(style(TransportKind::Expressway).1, 5.4864);
+        assert_eq!(style(TransportKind::Arterial).1, 3.048);
+        assert_eq!(style(TransportKind::Connector).1, 1.6764);
     }
 
     #[test]

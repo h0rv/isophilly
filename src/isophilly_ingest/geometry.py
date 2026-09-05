@@ -36,7 +36,7 @@ DEFAULT_TREE_DIAMETER_METERS = 0.15
 MIN_TREE_DIAMETER_METERS = 0.0254
 MAX_TREE_DIAMETER_METERS = 2.0
 TREE_LOCATION_TOLERANCE_METERS = 1.0
-TRANSPORT_SIMPLIFY_FEET = 3.0
+TRANSPORT_SIMPLIFY_METERS = 0.9144  # 3 ft
 
 
 def transport_lines(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[TransportLine]:
@@ -61,7 +61,7 @@ def transport_lines(frame: gpd.GeoDataFrame, city: BaseGeometry) -> list[Transpo
         if kind_value != int(kind_value) or geometry is None or geometry.is_empty:
             continue
         clipped = geometry.intersection(city).simplify(
-            TRANSPORT_SIMPLIFY_FEET, preserve_topology=True
+            TRANSPORT_SIMPLIFY_METERS, preserve_topology=True
         )
         geometries = (
             [clipped]

@@ -68,7 +68,7 @@ parser, validation rules, texture store, and output types.
 ## Geometry rules
 
 - Horizontal coordinates use EPSG:32129 as retained by the City pipeline
-  (US survey feet). Building and mesh heights remain metres. Do not reuse a
+  (metres). Building and mesh heights remain metres. Do not reuse a
   height threshold as a horizontal distance.
 - City Limits defines the world bounds and tile presence.
 - Building `approx_hgt` is the primary height in US survey feet. `max_hgt` is

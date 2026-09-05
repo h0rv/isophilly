@@ -140,8 +140,8 @@ impl BuildingContextCounts {
         }
 
         // These intentionally broad bounds are not a claim about land use. They
-        // are a production tripwire for interpreting EPSG:32129 horizontal feet
-        // as metres: that regression classified most of Philadelphia as large
+        // are a production tripwire for interpreting EPSG:32129 horizontal metres
+        // as feet: that regression classified most of Philadelphia as large
         // warehouses and almost no narrow residential footprints.
         if building_count >= 100_000
             && (self.warehouses > building_count / 4

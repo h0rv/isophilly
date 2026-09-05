@@ -1,10 +1,11 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v55-canopy-mass";
+const PYRAMID_VERSION: &str = "v56-metre-morphology";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
-// already has the baked continuous-color finish, and the v55 canopy surface is
-// intentionally citywide-only because the rich mesh already photographs local
-// vegetation. Keep that verified atlas immutable.
+// already has the baked continuous-color finish. The later canopy and
+// metre-correct morphology changes are intentionally citywide-only because the
+// rich mesh already photographs local vegetation and building form. Keep that
+// verified atlas immutable.
 const BAKED_RICH_IDENTITY: &str = "v54-shared-palette-rich-style";
 
 pub(crate) fn base_tile_version(
@@ -69,7 +70,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None),
-            "v55-canopy-mass-1111111111111111"
+            "v56-metre-morphology-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first)),

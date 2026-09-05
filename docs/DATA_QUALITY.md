@@ -77,6 +77,16 @@ receive wider structural bays and restrained ground-level openings. Some
 compatible flat roofs receive deterministic, footprint-contained chimneys or
 mechanical units to avoid featureless roof slabs.
 
+The morphology calculations use EPSG:32129 metres and square metres. Earlier
+renderer revisions incorrectly applied feet and square-foot thresholds directly
+to those packed coordinates, and also accumulated small footprint areas from
+large absolute `f32` products. The current implementation converts the intended
+physical thresholds explicitly and computes area relative to the first vertex
+with an `f64` sum. On the pinned production world this recovers 286,338
+high-confidence attached rowhouses, 51,849 rowhouse-like footprints, and
+139,080 two-building/twin cases. These are rendering classes, not land-use or
+architectural survey labels.
+
 The added facade and roof detail is synthesis. It does not report the real
 number of floors, window positions, door positions, wall material, building
 use, or condition. It also does not report real chimney or mechanical-unit locations.
