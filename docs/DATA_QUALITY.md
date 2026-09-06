@@ -77,10 +77,12 @@ an older tile cache.
 
 The detailed I3S and COLLADA areas use observed source geometry, UV coordinates,
 and photographs. Outside those areas, the renderer uses the City footprint and
-height, refined by height-backed OpenStreetMap parts where available. It samples
-the 2025 aerial image for the roof and derives a restrained pixel wall palette
-from nearby pixels. Floor lines and window bands are procedural illustrations,
-not observed facades.
+height, refined by height-backed OpenStreetMap parts where available. Those OSM
+parts are separate from the inferred detached-roof fallback: when no explicit
+part exists, the renderer derives a restrained roof shape from footprint
+geometry and context. It samples the 2025 aerial image for the roof and derives
+a restrained pixel wall palette from nearby pixels. Floor lines and window
+bands are procedural illustrations, not observed facades.
 
 The 2025 orthophoto is suitable for the ground and roofs. It is not a facade
 source. Orthorectification moves roof pixels back onto their mapped footprint
@@ -114,13 +116,13 @@ gets a limited material palette and a different pattern of wall and roof
 detail. Rowhouses can get a cornice, floor courses, doors, and aligned window
 bays on exposed short walls. The v12 data can mark one likely front edge from an exact City address,
 street name, address range, edge length, distance, and parallel alignment. A known edge limits the
-openings and cornice to that one nonparty edge on a high confidence attached rowhouse. The same
-known edge can receive a two tier entrance stoop when it also passes the short face rule. The lower
-step is 0.70 metres deep and 0.18 metres high. The upper step is 0.38 metres deep and 0.36 metres
-high. Both steps align with the drawn door and use the same depth buffer as the building. An unknown
-edge keeps the earlier exposed short wall rule. Rowhouse-like footprints and twins use a known
-nonparty edge only to select painted openings. Their component seed shares floor cadence while wall
-seeds retain material and glass variation. High-confidence attached runs also receive a
+painted openings and cornice to that one nonparty edge on a high confidence attached
+rowhouse. The same known edge can receive a two tier entrance stoop when it also passes the short
+face rule. The lower step is 0.70 metres deep and 0.18 metres high. The upper step is 0.38 metres
+deep and 0.36 metres high. Both steps align with the drawn door and use the same depth buffer as the
+building. An unknown edge keeps the earlier exposed short wall rule. Rowhouse-like footprints and
+twins use a known nonparty edge only to select painted openings. Their component seed shares floor
+cadence while wall seeds retain material and glass variation. High-confidence attached runs also receive a
 shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
 metres long. The ledge projects 0.24 metres and occupies the top 0.42 metres of
 the recorded building height, so it does not make the building taller. Detected
@@ -130,19 +132,26 @@ compatible flat roofs receive deterministic, footprint-contained chimneys or
 mechanical units to avoid featureless roof slabs. A separate conservative roof
 pass gives only simple, unattached detached-house footprints a low pitched
 silhouette. Compact near-square rectangles get a hipped apex; elongated
-rectangles get a ridge along their long axis. The recorded City height remains
-the roof top, with the wall top lowered by a bounded 1.0 to 2.8 metre rise.
-Rowhouse, rowhouse-like, twin, warehouse, generic, and non-rectangular
-footprints remain flat. Pitched roofs use the same aerial-derived roof color
-and depth buffer as flat roofs, and never receive synthetic roof furniture.
+rectangles get a ridge along their long axis. The recorded City height remains the roof top, with the wall top lowered by a
+bounded 1.0 to 2.8 metre rise. Rowhouse, rowhouse-like, twin, warehouse,
+generic, and non-rectangular footprints remain flat. Pitched roofs use the same
+aerial-derived roof color and depth buffer as flat roofs, and never receive
+synthetic roof furniture.
+
+OpenStreetMap building parts use their explicit roof tags instead. The current
+renderer draws 50 rectangular gables with a long-axis ridge from 56 tagged
+gabled parts. Unsupported tagged gables keep the prior deterministic
+center-apex fallback.
 
 The current packed world has 438,804 known frontages and 106,868 unknown frontages. The renderer
-uses 257,183 known frontages among 286,338 high confidence attached rowhouses. The remaining 29,155
-attached rowhouses keep the earlier exposed short wall rule. The street match does not claim that
-the drawn doors, windows, window surrounds, painted base, cornice, or stoop were observed. On known
-high-confidence rowhouse frontages, the first two upper floors can receive painted stone toned
-surrounds aligned with the generated window openings. A painted stone base reaches no higher than
-0.56 metres outside the door. These treatments add no geometry outside the footprint.
+uses 257,183 known frontages among 286,338 high confidence attached rowhouses, plus 4,760 eligible
+detached named-frontage buildings among 42,365 detached buildings. The remaining 37,605 detached
+buildings keep their earlier facade classification and drawing rules. The street match does not claim that the drawn
+doors, windows, window surrounds, painted base, cornice, or stoop were observed. On exact front
+matches, the painted openings stay symmetric and front-only. On known high-confidence rowhouse
+frontages, the first two upper floors can receive painted stone toned surrounds aligned with the
+generated window openings. A painted stone base reaches no higher than 0.56 metres outside the door.
+These treatments add no geometry outside the footprint.
 
 The morphology calculations use EPSG:32129 metres and square metres. Earlier
 renderer revisions incorrectly applied feet and square-foot thresholds directly
@@ -157,10 +166,10 @@ architectural survey labels.
 The added facade, window surround, painted base, cornice, stoop, and roof detail is synthesis. It
 does not report the real number of floors, window positions, door positions, wall material,
 building use, or condition. It also does not report real chimney or
-mechanical-unit locations. The exposed rowhouse frontage, cornice, and stoop are
-inferred from footprint proportions and attached edges rather than an address,
-entrance record, or street survey. The class names describe drawing rules and
-should not be used as property data.
+mechanical-unit locations. The exposed rowhouse frontage, detached named
+frontage, cornice, and stoop are inferred from footprint proportions and
+attached edges rather than an address, entrance record, or street survey. The
+class names describe drawing rules and should not be used as property data.
 
 The synthesis is deterministic. Every detected attached run shares one material
 family derived from the sorted geometry of its members. Other buildings use a

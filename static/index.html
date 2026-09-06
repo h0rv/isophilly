@@ -20,7 +20,6 @@
     h1 { margin: 0; font-size: 1.08rem; letter-spacing: -.035em; }
     #status { color: #c7bfb2; font-size: .8rem; }
     .orientation { color: #9f978c; font-size: .72rem; white-space: nowrap; }
-    #sun-state { color: #9f978c; font-size: .7rem; white-space: nowrap; }
     .controls { display: flex; gap: .3rem; margin-left: auto; }
     button { min-width: 2rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: 999px; padding: .34rem .65rem; cursor: pointer; font: inherit; font-size: .78rem; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
     button:hover { background: #464039; transform: translateY(-1px); }
@@ -38,7 +37,7 @@
     @media (max-width: 620px) {
       header { top: .4rem; left: .4rem; right: .4rem; gap: .35rem; padding: .35rem .4rem .35rem .65rem; }
       h1 { font-size: .95rem; }
-      #status, #sun-state, #zoom-out, #zoom-in, #home, #rocky { display: none; }
+      #status, #zoom-out, #zoom-in, #home, #rocky { display: none; }
       #neighborhoods-toggle, #local-areas-toggle { font-size: 0; padding: .25rem; }
       #neighborhoods-toggle::after { content: "N"; font-size: .78rem; }
       #local-areas-toggle::after { content: "Local"; font-size: .72rem; }
@@ -54,9 +53,8 @@
 <body>
   <header>
     <h1>IsoPhilly</h1>
-    <span id="status" aria-live="polite">loading city geometry…</span>
+    <span id="status" aria-live="polite">Loading map...</span>
     <span id="orientation" class="orientation" title="North points up and right">↗ N</span>
-    <span id="sun-state" aria-live="off"></span>
     <nav class="controls" aria-label="Map controls">
       <button id="neighborhoods-toggle" aria-pressed="false" title="Loading planning neighborhood boundaries" disabled>Neighborhoods</button>
       <button id="local-areas-toggle" aria-pressed="false" title="Loading local cultural and commercial areas" disabled>Local areas</button>
@@ -69,26 +67,22 @@
     <details>
       <summary>Info</summary>
       <div class="legend">
-        <div>Drag or use arrow keys to explore.</div>
-        <div>Wheel, pinch, or use + and − to zoom.</div>
-        <div>Press 0 to return to City Hall.</div>
-        <div>Press R or choose Rocky to visit the Philadelphia Museum of Art steps.</div>
-        <div>The citywide illustrated view combines aerial photography, building geometry, and open city data.</div>
-        <div>Rocky is marked on the Philadelphia Museum of Art steps.</div>
-        <div>Neighborhoods shows the Planning Commission's general boundaries. Local areas separately highlights selected cultural and commercial districts at useful close zooms.</div>
-        <div>Inventoried 2025 street trees are rendered from trunk locations; crown sizes are illustrative.</div>
-        <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">planning neighborhoods: Philadelphia City Planning Commission</a></div>
-        <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">2025 aerial: City of Philadelphia / PASDA</a></div>
-        <div><a href="https://opendataphilly.org/datasets/philadelphia-tree-inventory/" target="_blank" rel="noreferrer">2025 tree inventory: Philadelphia Parks &amp; Recreation</a></div>
-        <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 textured buildings: City of Philadelphia</a></div>
-        <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">city data: City of Philadelphia</a></div>
+        <div>Drag or use arrow keys to move around. Use the wheel, pinch, plus, or minus to zoom.</div>
+        <div>Press 0 or choose City Hall to center the map there. Press R or choose Rocky to see the museum steps.</div>
+        <div>This map uses 2025 aerial photos, city building data, and 2025 street tree locations. Tree crowns are estimates.</div>
+        <div>Neighborhoods shows Planning Commission areas. Local areas shows selected cultural and shopping areas when you zoom in.</div>
+        <div><a href="https://github.com/h0rv/isophilly" target="_blank" rel="noreferrer">Repository: h0rv/isophilly</a></div>
+        <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">Planning neighborhoods from the Philadelphia City Planning Commission</a></div>
+        <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">2025 aerial photos from the City of Philadelphia and PASDA</a></div>
+        <div><a href="https://opendataphilly.org/datasets/philadelphia-tree-inventory/" target="_blank" rel="noreferrer">2025 tree inventory from Philadelphia Parks and Recreation</a></div>
+        <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 building textures from the City of Philadelphia</a></div>
       </div>
     </details>
   </header>
-  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press zero for City Hall or R for Rocky at the Philadelphia Museum of Art.</p>
+  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press 0 for City Hall. Press R for Rocky at the Philadelphia Museum of Art steps.</p>
   <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
     Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
   </canvas>
-  <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a> · <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></footer>
+  <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a>, <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></footer>
 </body>
 </html>

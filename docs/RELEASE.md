@@ -9,6 +9,8 @@
 - Run a fresh `uv run --locked poe ingest` and archive `data/clean/meta.json`
   with the exact source commit and every raw snapshot. Confirm that every source
   has a URL, retrieval time, byte count, and SHA-256 checksum.
+- Run `uv run --locked poe world-audit` and record the v65 tile identity plus
+  the detached named-frontage and explicit gable counts in the release notes.
 - Run `uv run --locked poe frontage-audit --output /tmp/frontage-audit.json` from the pinned local
   snapshots. Confirm the rule digest, accepted record digest, rejection counts, packed known and
   unknown counts, and packed edge digest against the reviewed data record.

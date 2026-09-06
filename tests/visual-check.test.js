@@ -45,6 +45,18 @@ test("the public UI always opens the vivid citywide scene", async () => {
   assert.match(visualCheck, /defaultMode: "city"/);
 });
 
+test("the map header stays focused and City Hall returns to the normal view", async () => {
+  const index = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const app = await readFile(new URL("../static/app.js", import.meta.url), "utf8");
+
+  assert.doesNotMatch(index, /id="sun-state"/);
+  assert.doesNotMatch(app, /citywide buildings|sunState|z\$\{viewZoom\}/);
+  assert.match(app, /function currentTileZoom\(\) \{\n  return Math\.max\(0, Math\.min\(sceneMaxZoom\(\), Math\.round\(Math\.log2\(zoom\) \+ BASE_TILE_ZOOM\)\)\);\n\}/);
+  assert.match(app, /function centerCityHall\(tileZoom = currentTileZoom\(\)\)/);
+  assert.match(app, /event\.key === "0"\) centerCityHall\(\)/);
+  assert.match(index, /Repository: h0rv\/isophilly/);
+});
+
 test("integer settings use the fallback and reject ambiguous input", () => {
   assert.equal(integerSetting(undefined, 3107, "PORT", 1, 65_535), 3107);
   assert.equal(integerSetting("3108", 3107, "PORT", 1, 65_535), 3108);
@@ -170,6 +182,23 @@ test("tile response evidence must be nonempty, successful, and sized", () => {
     { status: 200, bytes: 1.5 },
   ]) {
     assert.throws(() => validateTileResponseSnapshot([response]), /invalid content length|unsuccessful/);
+  }
+});
+
+test("tile smoke and diff defaults stay aligned", async () => {
+  const smoke = await readFile(new URL("../scripts/tile-smoke.sh", import.meta.url), "utf8");
+  const diff = await readFile(new URL("../scripts/tile-diff-audit.sh", import.meta.url), "utf8");
+  for (const name of [
+    "rittenhouse",
+    "point-breeze",
+    "italian-market",
+    "east-passyunk",
+    "chestnut-hill",
+    "fox-chase",
+    "somerton",
+  ]) {
+    assert.match(smoke, new RegExp(`render_mosaic ${name} `));
+    assert.match(diff, new RegExp(`${name}\\.png`));
   }
 });
 

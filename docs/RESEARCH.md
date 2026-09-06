@@ -142,14 +142,15 @@ a reviewed block face source or a new evidence artifact built for this purpose.
 
 The accepted conservative treatment uses the renderer's existing openings.
 An exact named nonparty frontage selects painted openings for rowhouses,
-rowhouse-like footprints, and twins. Their attached component shares a floor
-rhythm while walls keep deterministic local material and glass variation. Only
-exact high-confidence rowhouses can add a shallow entrance stoop, painted upper
-window surrounds, and a painted stone base. Cornices remain limited to eligible
-exposed edges on high-confidence rowhouses, whether or not the frontage is
-known. Unknown frontages keep the earlier exposed-short-wall treatment. These
-features are illustrative and do not claim an observed facade, entrance, or
-historical style.
+rowhouse-like footprints, twins, and eligible detached named-frontage buildings.
+Their attached component shares a floor rhythm while walls keep deterministic
+local material and glass variation. Only exact high-confidence rowhouses can
+add a shallow entrance stoop, painted upper window surrounds, and a painted
+stone base. Cornices remain limited to eligible exposed edges on high-confidence
+rowhouses, whether or not the frontage is known. Unknown frontages keep the
+earlier exposed-short-wall treatment. Eligible detached buildings use symmetric,
+front-only openings. These features are illustrative and do
+not claim an observed facade, entrance, or historical style.
 
 Priority order for that work:
 

@@ -36,6 +36,13 @@ uv run --locked poe prebuild
 uv run --locked poe serve
 ```
 
+To inspect the loaded building-context and known-frontage coverage without
+rendering or changing any files, run:
+
+```sh
+uv run --locked poe world-audit
+```
+
 Open <http://127.0.0.1:3000>. The renderer uses deterministic pixel processing.
 `ingest` downloads official City Limits, Building Footprints, hydrology, park
 boundaries, the byte-pinned 2025 tree inventory, OpenStreetMap building parts,

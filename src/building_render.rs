@@ -49,6 +49,8 @@ const ROWHOUSE_STOOP_MINIMUM_WIDTH_METERS: f32 = 0.85;
 const ROWHOUSE_WINDOW_TRIM_WIDTH_METERS: f32 = 0.24;
 const ROWHOUSE_WINDOW_TRIM_STORIES: std::ops::RangeInclusive<usize> = 1..=2;
 const ROWHOUSE_PLINTH_HEIGHT_METERS: f32 = 0.56;
+const DETACHED_FRONTAGE_EDGE_METERS: std::ops::RangeInclusive<f32> = 4.8..=15.0;
+const DETACHED_FACADE_AREA_SQUARE_METERS: std::ops::RangeInclusive<f32> = 36.0..=300.0;
 
 pub fn draw_city_buildings<'a>(
     pixmap: &mut Pixmap,
@@ -152,6 +154,20 @@ impl Rasterizer<'_, '_> {
         if part.roof_shape == RoofShape::Flat || part.roof_height <= f32::EPSILON {
             self.draw_flat_roof(&part.ring, part.height, style);
             self.draw_roof_furniture(&part.ring, part.height, style);
+        } else if part.roof_shape == RoofShape::Gabled {
+            if let Some(form) = rectangular_gable_form(&part.ring) {
+                self.draw_inferred_pitched_roof(
+                    &part.ring,
+                    InferredRoof {
+                        wall_top,
+                        roof_top: part.height,
+                        form,
+                    },
+                    style,
+                );
+            } else {
+                self.draw_pitched_roof(part, wall_top, style.facade);
+            }
         } else {
             self.draw_pitched_roof(part, wall_top, style.facade);
         }
@@ -185,11 +201,14 @@ impl Rasterizer<'_, '_> {
         context: &BuildingContext,
         frontage_edge: Option<usize>,
     ) -> BuildingStyle {
+        let eligible_detached_frontage = context.kind == WorldBuildingKind::Detached
+            && detached_facade_eligible(ring, height, frontage_edge);
         let kind = match context.kind {
             WorldBuildingKind::Rowhouse
             | WorldBuildingKind::RowhouseLike
             | WorldBuildingKind::Twin => FacadeKind::Rowhouse,
             WorldBuildingKind::Warehouse => FacadeKind::Industrial,
+            WorldBuildingKind::Detached if eligible_detached_frontage => FacadeKind::Detached,
             WorldBuildingKind::Detached | WorldBuildingKind::Generic => {
                 classify_building(ring, height)
             }
@@ -209,16 +228,14 @@ impl Rasterizer<'_, '_> {
             rhythm_seed,
             short_side: ring.bounds.width().min(ring.bounds.height()),
             party_edge_mask: context.party_edge_mask,
-            frontage_edge: if matches!(
+            frontage_edge: (matches!(
                 context.kind,
                 WorldBuildingKind::Rowhouse
                     | WorldBuildingKind::RowhouseLike
                     | WorldBuildingKind::Twin
-            ) {
-                frontage_edge
-            } else {
-                None
-            },
+            ) || eligible_detached_frontage)
+                .then_some(frontage_edge)
+                .flatten(),
         }
     }
 
@@ -274,7 +291,8 @@ impl Rasterizer<'_, '_> {
         let style = WallStyle {
             facade: building.facade,
             kind: building.kind,
-            frontage: rowhouse_frontage_edge(building, edge_index, edge_length),
+            frontage: rowhouse_frontage_edge(building, edge_index, edge_length)
+                || detached_frontage_edge(building, edge_index, edge_length),
             light,
             bottom,
             top,
@@ -886,6 +904,36 @@ fn rowhouse_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: 
         && edge_length <= (style.short_side * 1.35).max(4.5)
 }
 
+fn detached_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: f32) -> bool {
+    style.kind == FacadeKind::Detached
+        && style.frontage_edge == Some(edge_index)
+        && DETACHED_FRONTAGE_EDGE_METERS.contains(&edge_length)
+}
+
+// A packed street-facing edge orients this paint-only grammar. Unlike pitched
+// roofs, it does not need a rectangular plan: the symmetric door/window layout
+// remains bounded to that one selected wall on irregular detached footprints.
+fn detached_facade_eligible(ring: &Ring, height: f32, frontage_edge: Option<usize>) -> bool {
+    let Some(edge) = frontage_edge.filter(|edge| *edge < ring.points.len()) else {
+        return false;
+    };
+    let left = ring.points[edge];
+    let right = ring.points[(edge + 1) % ring.points.len()];
+    let frontage_length = (right.0 - left.0).hypot(right.1 - left.1);
+    (5.0..=18.0).contains(&height)
+        && DETACHED_FACADE_AREA_SQUARE_METERS.contains(&polygon_area(&ring.points))
+        && DETACHED_FRONTAGE_EDGE_METERS.contains(&frontage_length)
+}
+
+pub(crate) fn eligible_detached_frontage(building: &Building, context: &BuildingContext) -> bool {
+    context.kind == WorldBuildingKind::Detached
+        && detached_facade_eligible(
+            &building.ring,
+            building.height,
+            building.frontage_edge.map(usize::from),
+        )
+}
+
 fn attached_rhythm_seed(context: &BuildingContext, fallback: u64) -> u64 {
     // An attached component is one repeated facade run: make its floor rhythm
     // shared while retaining the per-wall seed for local material and glass.
@@ -1060,6 +1108,7 @@ enum InferredRoofForm {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FacadeKind {
     Rowhouse,
+    Detached,
     LowRise,
     Industrial,
     MidRise,
@@ -1118,12 +1167,7 @@ fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<
     if !INFERRED_ROOF_AREA_SQUARE_METERS.contains(&area) {
         return None;
     }
-    let edges: [(f32, f32); 4] = std::array::from_fn(|index| {
-        let left = building.ring.points[index];
-        let right = building.ring.points[(index + 1) % building.ring.points.len()];
-        (right.0 - left.0, right.1 - left.1)
-    });
-    let lengths = edges.map(|edge| edge.0.hypot(edge.1));
+    let lengths = rectangle_edge_lengths(&building.ring)?;
     let short = lengths.iter().copied().fold(f32::INFINITY, f32::min);
     let long = lengths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     if !short.is_finite()
@@ -1132,18 +1176,6 @@ fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<
     {
         return None;
     }
-    let unit = |edge: (f32, f32), length: f32| (edge.0 / length, edge.1 / length);
-    let units: [(f32, f32); 4] = std::array::from_fn(|index| unit(edges[index], lengths[index]));
-    let dot = |left: (f32, f32), right: (f32, f32)| left.0.mul_add(right.0, left.1 * right.1);
-    if (0..4).any(|index| dot(units[index], units[(index + 1) % 4]).abs() > 0.16)
-        || dot(units[0], units[2]).abs() < 0.985
-        || dot(units[1], units[3]).abs() < 0.985
-        || (lengths[0] - lengths[2]).abs() > lengths[0].max(lengths[2]) * 0.12
-        || (lengths[1] - lengths[3]).abs() > lengths[1].max(lengths[3]) * 0.12
-    {
-        return None;
-    }
-
     let rise = (short * 0.28)
         .clamp(INFERRED_ROOF_MIN_RISE_METERS, INFERRED_ROOF_MAX_RISE_METERS)
         .min(building.height * 0.25)
@@ -1159,17 +1191,7 @@ fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<
     let ratio = edge_pair_lengths[0].max(edge_pair_lengths[1])
         / edge_pair_lengths[0].min(edge_pair_lengths[1]);
     let form = if ratio >= INFERRED_GABLE_RATIO {
-        let long_pair = usize::from(edge_pair_lengths[1] > edge_pair_lengths[0]);
-        let gable_edges = if long_pair == 0 { (1, 3) } else { (0, 2) };
-        let midpoint = |edge: usize| {
-            let left = building.ring.points[edge];
-            let right = building.ring.points[(edge + 1) % building.ring.points.len()];
-            ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)
-        };
-        InferredRoofForm::Gabled {
-            ridge: [midpoint(gable_edges.0), midpoint(gable_edges.1)],
-            gable_edges,
-        }
+        rectangular_gable_form(&building.ring)?
     } else if ratio <= INFERRED_HIP_RATIO {
         InferredRoofForm::Hipped {
             apex: building.ring.center(),
@@ -1181,6 +1203,56 @@ fn infer_pitched_roof(building: &Building, context: &BuildingContext) -> Option<
         wall_top,
         roof_top: building.height,
         form,
+    })
+}
+
+fn rectangle_edge_lengths(ring: &Ring) -> Option<[f32; 4]> {
+    if ring.points.len() != 4 {
+        return None;
+    }
+    let edges: [(f32, f32); 4] = std::array::from_fn(|index| {
+        let left = ring.points[index];
+        let right = ring.points[(index + 1) % ring.points.len()];
+        (right.0 - left.0, right.1 - left.1)
+    });
+    let lengths = edges.map(|edge| edge.0.hypot(edge.1));
+    if lengths.iter().any(|length| *length <= f32::EPSILON) {
+        return None;
+    }
+    let units: [(f32, f32); 4] = std::array::from_fn(|index| {
+        (
+            edges[index].0 / lengths[index],
+            edges[index].1 / lengths[index],
+        )
+    });
+    let dot = |left: (f32, f32), right: (f32, f32)| left.0.mul_add(right.0, left.1 * right.1);
+    if (0..4).any(|index| dot(units[index], units[(index + 1) % 4]).abs() > 0.16)
+        || dot(units[0], units[2]).abs() < 0.985
+        || dot(units[1], units[3]).abs() < 0.985
+        || (lengths[0] - lengths[2]).abs() > lengths[0].max(lengths[2]) * 0.12
+        || (lengths[1] - lengths[3]).abs() > lengths[1].max(lengths[3]) * 0.12
+    {
+        return None;
+    }
+    Some(lengths)
+}
+
+fn rectangular_gable_form(ring: &Ring) -> Option<InferredRoofForm> {
+    let lengths = rectangle_edge_lengths(ring)?;
+    let edge_pair_lengths = [
+        (lengths[0] + lengths[2]) * 0.5,
+        (lengths[1] + lengths[3]) * 0.5,
+    ];
+    let long_pair = usize::from(edge_pair_lengths[1] > edge_pair_lengths[0]);
+    let gable_edges = if long_pair == 0 { (1, 3) } else { (0, 2) };
+    let midpoint = |edge: usize| {
+        let left = ring.points[edge];
+        let right = ring.points[(edge + 1) % ring.points.len()];
+        ((left.0 + right.0) * 0.5, (left.1 + right.1) * 0.5)
+    };
+    Some(InferredRoofForm::Gabled {
+        ridge: [midpoint(gable_edges.0), midpoint(gable_edges.1)],
+        gable_edges,
     })
 }
 
@@ -1360,7 +1432,7 @@ fn wall_material(
             let variant = (seed as usize) % family.len();
             (family[variant], 0.42)
         }
-        FacadeKind::LowRise => (
+        FacadeKind::Detached | FacadeKind::LowRise => (
             palette::LOW_RISE_FACADES[(block as usize) % palette::LOW_RISE_FACADES.len()],
             0.24,
         ),
@@ -1388,7 +1460,7 @@ fn roof_material(aerial: [u8; 3], point: (f32, f32), ring: &Ring, style: Buildin
     let (reference, amount) = match style.kind {
         FacadeKind::Rowhouse => ([112, 105, 94], 0.38),
         FacadeKind::Industrial => ([170, 166, 151], 0.3),
-        FacadeKind::LowRise => (style.facade, 0.2),
+        FacadeKind::Detached | FacadeKind::LowRise => (style.facade, 0.2),
         FacadeKind::MidRise | FacadeKind::Tower => ([159, 158, 151], 0.18),
     };
     let mut color = palette::mix(aerial, reference, amount);
@@ -1437,7 +1509,7 @@ fn roof_feature(
             ),
             2.4 + (style.seed & 3) as f32 * 0.7,
         ),
-        FacadeKind::LowRise => (
+        FacadeKind::Detached | FacadeKind::LowRise => (
             (width * 0.12).clamp(
                 *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.start(),
                 *INDUSTRIAL_ROOF_FEATURE_SIDE_METERS.end(),
@@ -1523,6 +1595,9 @@ fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
     if style.kind == FacadeKind::Rowhouse {
         return rowhouse_detail(point, z, style);
     }
+    if style.kind == FacadeKind::Detached {
+        return detached_detail(point, z, style);
+    }
     if style.kind == FacadeKind::Industrial {
         return industrial_detail(point, z, style);
     }
@@ -1558,6 +1633,42 @@ fn facade_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
                 0.34
             },
         );
+    }
+    style.facade
+}
+
+fn detached_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
+    if !style.frontage {
+        return style.facade;
+    }
+    let height = style.top - style.bottom;
+    let edge = (style.right.0 - style.left.0, style.right.1 - style.left.1);
+    let length = edge.0.hypot(edge.1);
+    if !(5.0..=18.0).contains(&height) || !DETACHED_FRONTAGE_EDGE_METERS.contains(&length) {
+        return style.facade;
+    }
+    let along = ((point.0 - style.left.0) * edge.0 + (point.1 - style.left.1) * edge.1) / length;
+    let relative_z = z - style.bottom;
+    let door_width = 1.0_f32.min(length * 0.18);
+    let door_start = (length - door_width) * 0.5;
+    if (0.15..=2.1).contains(&relative_z) && (door_start..=door_start + door_width).contains(&along)
+    {
+        return palette::mix(style.facade, [69, 63, 56], 0.52);
+    }
+    let floor_height = 3.0;
+    let floor = relative_z.rem_euclid(floor_height);
+    let story = (relative_z / floor_height).floor() as usize;
+    let window_band = (0.82..=2.15).contains(&floor) && relative_z >= 0.72;
+    let window_width = (length * 0.18).clamp(0.85, 1.45);
+    let left_center = length * 0.25;
+    let right_center = length * 0.75;
+    let in_window =
+        |center: f32| (center - window_width * 0.5..=center + window_width * 0.5).contains(&along);
+    if window_band
+        && (story > 0 || !in_window(length * 0.5))
+        && (in_window(left_center) || in_window(right_center))
+    {
+        return palette::mix(style.facade, [76, 89, 94], 0.46);
     }
     style.facade
 }
@@ -1697,7 +1808,9 @@ mod tests {
     use crate::{
         projection::Projection,
         texture::AerialTile,
-        world::{Bounds, Building, BuildingContext, BuildingKind, Ring, View},
+        world::{
+            Bounds, Building, BuildingContext, BuildingKind, BuildingPart, Ring, RoofShape, View,
+        },
     };
     use sha2::{Digest, Sha256};
     use tiny_skia::Pixmap;
@@ -1800,8 +1913,13 @@ mod tests {
 
         let detached = context(BuildingKind::Detached);
         let style = rasterizer.contextual_building_style(&footprint, 9.0, 29, &detached, Some(0));
-        assert_eq!(style.frontage_edge, None);
+        assert_eq!(style.kind, FacadeKind::Detached);
+        assert_eq!(style.frontage_edge, Some(0));
         assert_eq!(style.rhythm_seed, 29);
+
+        let ineligible = rasterizer.contextual_building_style(&footprint, 9.0, 29, &detached, None);
+        assert_eq!(ineligible.kind, classify_building(&footprint, 9.0));
+        assert_eq!(ineligible.frontage_edge, None);
         Ok(())
     }
 
@@ -1819,6 +1937,110 @@ mod tests {
         assert!(point_in_polygon((0.5, 3.0), &ring));
         assert!(point_in_polygon((3.0, 0.5), &ring));
         assert!(!point_in_polygon((3.0, 3.0), &ring));
+    }
+
+    #[test]
+    fn explicit_rectangular_gable_uses_a_long_axis_ridge() -> Result<(), &'static str> {
+        let footprint = ring(16.0, 8.0);
+        let form = super::rectangular_gable_form(&footprint).ok_or("gable form")?;
+        let InferredRoofForm::Gabled { ridge, .. } = form else {
+            return Err("expected a gabled form");
+        };
+        assert!((ridge[1].0 - ridge[0].0).abs() > (ridge[1].1 - ridge[0].1).abs() * 10.0);
+
+        let mut reversed = footprint.clone();
+        reversed.points.reverse();
+        let InferredRoofForm::Gabled {
+            ridge: reversed, ..
+        } = super::rectangular_gable_form(&reversed).ok_or("reversed gable form")?
+        else {
+            return Err("expected a reversed gabled form");
+        };
+        let mut ridge = ridge;
+        let mut reversed = reversed;
+        ridge.sort_by(|left, right| left.0.total_cmp(&right.0));
+        reversed.sort_by(|left, right| left.0.total_cmp(&right.0));
+        assert_eq!(ridge, reversed);
+        Ok(())
+    }
+
+    #[test]
+    fn detached_facade_requires_a_known_bounded_frontage() {
+        let footprint = ring(8.0, 12.0);
+        let building = Building {
+            height: 9.0,
+            frontage_edge: Some(0),
+            ring: footprint.clone(),
+        };
+        assert!(super::eligible_detached_frontage(
+            &building,
+            &context(BuildingKind::Detached)
+        ));
+        assert!(!super::eligible_detached_frontage(
+            &building,
+            &context(BuildingKind::Generic)
+        ));
+        assert!(!super::eligible_detached_frontage(
+            &Building {
+                frontage_edge: None,
+                ..building.clone()
+            },
+            &context(BuildingKind::Detached)
+        ));
+        assert!(!super::eligible_detached_frontage(
+            &Building {
+                height: 19.0,
+                ..building.clone()
+            },
+            &context(BuildingKind::Detached)
+        ));
+
+        let mut irregular = footprint.clone();
+        irregular.points[2].0 -= 1.5;
+        assert!(super::eligible_detached_frontage(
+            &Building {
+                ring: irregular,
+                ..building
+            },
+            &context(BuildingKind::Detached)
+        ));
+        assert!(!super::eligible_detached_frontage(
+            &Building {
+                ring: ring(4.0, 12.0),
+                ..building
+            },
+            &context(BuildingKind::Detached)
+        ));
+    }
+
+    #[test]
+    fn detached_detail_only_paints_the_selected_frontage() {
+        let style = WallStyle {
+            facade: [150, 132, 112],
+            kind: FacadeKind::Detached,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: 9.0,
+            left: (0.0, 0.0),
+            right: (8.0, 0.0),
+            seed: 0,
+            rhythm_seed: 0,
+            entry: None,
+        };
+        assert_ne!(facade_detail((4.0, 1.0), 1.0, style), style.facade);
+        assert_ne!(facade_detail((2.0, 0.0), 1.2, style), style.facade);
+        assert_eq!(
+            facade_detail(
+                (2.0, 0.0),
+                1.2,
+                WallStyle {
+                    frontage: false,
+                    ..style
+                }
+            ),
+            style.facade
+        );
     }
 
     #[test]
@@ -2805,6 +3027,71 @@ mod tests {
         assert_eq!(first_pixels, second_pixels);
         assert_eq!(first_depth, second_depth);
         assert!(first_depth.iter().any(|depth| depth.is_finite()));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_rectangular_gable_dispatches_to_a_deterministic_ridge_renderer()
+    -> Result<(), &'static str> {
+        let rectangular = BuildingPart {
+            osm_id: 41,
+            height: 10.0,
+            min_height: 0.0,
+            roof_height: 2.0,
+            roof_shape: RoofShape::Gabled,
+            ring: ring(16.0, 8.0),
+        };
+        let mut non_gabled = rectangular.clone();
+        non_gabled.roof_shape = RoofShape::Hipped;
+        let mut non_rectangular = rectangular.clone();
+        non_rectangular.ring.points.insert(3, (8.0, 8.0));
+        let mut fallback = non_rectangular.clone();
+        fallback.roof_shape = RoofShape::Hipped;
+
+        let render = |part: &BuildingPart, view| {
+            let bounds = part.ring.bounds.projected(part.height, view).pad(3.0);
+            let projection = Projection {
+                bounds,
+                scale: 256.0 / bounds.width().max(bounds.height()),
+                view,
+            };
+            let aerial = AerialTile::solid_for_tests([144, 136, 120]);
+            let mut pixmap = Pixmap::new(256, 256).ok_or("pixmap")?;
+            let mut depth = vec![f32::NEG_INFINITY; 256 * 256];
+            super::draw_city_building_parts(
+                &mut pixmap,
+                [part],
+                &projection,
+                &aerial,
+                1.0,
+                &mut depth,
+            );
+            Ok::<_, &'static str>((pixmap.data().to_vec(), depth))
+        };
+
+        for view in [
+            View::SouthEast,
+            View::SouthWest,
+            View::NorthWest,
+            View::NorthEast,
+        ] {
+            let (first_pixels, first_depth) = render(&rectangular, view)?;
+            let (second_pixels, second_depth) = render(&rectangular, view)?;
+            let (hipped_pixels, hipped_depth) = render(&non_gabled, view)?;
+            let (fallback_pixels, fallback_depth) = render(&fallback, view)?;
+            let (non_rectangular_pixels, non_rectangular_depth) = render(&non_rectangular, view)?;
+
+            assert_eq!(first_pixels, second_pixels, "{view:?}");
+            assert_eq!(first_depth, second_depth, "{view:?}");
+            assert!(
+                first_depth.iter().any(|depth| depth.is_finite()),
+                "{view:?}"
+            );
+            assert_ne!(first_pixels, hipped_pixels, "{view:?}");
+            assert_ne!(first_depth, hipped_depth, "{view:?}");
+            assert_eq!(non_rectangular_pixels, fallback_pixels, "{view:?}");
+            assert_eq!(non_rectangular_depth, fallback_depth, "{view:?}");
+        }
         Ok(())
     }
 

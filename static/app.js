@@ -32,7 +32,6 @@ const retryElement = document.querySelector("#retry");
 const neighborhoodsElement = document.querySelector("#neighborhoods-toggle");
 const localAreasElement = document.querySelector("#local-areas-toggle");
 const orientationElement = document.querySelector("#orientation");
-const sunElement = document.querySelector("#sun-state");
 if (
   !(canvasElement instanceof HTMLCanvasElement) ||
   !(statusElement instanceof HTMLSpanElement) ||
@@ -43,8 +42,7 @@ if (
   !(retryElement instanceof HTMLButtonElement) ||
   !(neighborhoodsElement instanceof HTMLButtonElement) ||
   !(localAreasElement instanceof HTMLButtonElement) ||
-  !(orientationElement instanceof HTMLSpanElement) ||
-  !(sunElement instanceof HTMLSpanElement)
+  !(orientationElement instanceof HTMLSpanElement)
 ) {
   throw new Error("map controls are missing");
 }
@@ -58,7 +56,6 @@ const retry = retryElement;
 const neighborhoodsToggle = neighborhoodsElement;
 const localAreasToggle = localAreasElement;
 const orientation = orientationElement;
-const sunState = sunElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
 const ctx = context;
@@ -313,7 +310,6 @@ function draw() {
 
 function drawNow() {
   if (meta === undefined) return;
-  const { counts } = city();
   const maxZoom = sceneMaxZoom();
   const maxTileZoom = sceneMaxTileZoom();
   const bounds = sceneBounds();
@@ -389,11 +385,15 @@ function drawNow() {
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
   canvas.dataset.landmarks = JSON.stringify(drawLandmarks(viewZoom, panX, panY, scale));
   const pending = requested - loaded - failed;
-  const scope =
-    richView() === undefined
-      ? `${counts.buildings.toLocaleString()} citywide buildings`
-      : `Center City · ${richView()?.label}`;
-  statusText.textContent = `${scope} · z${viewZoom}${pending > 0 ? ` · loading ${pending}` : ""}${failed > 0 ? ` · ${failed} failed` : ""}`;
+  if (pending > 0) {
+    statusText.hidden = false;
+    statusText.textContent = "Loading map...";
+  } else if (failed > 0) {
+    statusText.hidden = false;
+    statusText.textContent = "Some map tiles could not load.";
+  } else {
+    statusText.hidden = true;
+  }
   canvas.dataset.zoom = String(viewZoom);
   canvas.dataset.tileZoom = String(z);
   canvas.dataset.requested = String(requested);
@@ -412,7 +412,6 @@ function drawLighting() {
   const solar = solarPosition(instant, 39.9526, -75.1652);
   const lighting = lightingState(solar.altitude);
   canvas.dataset.light = lighting.phase;
-  sunState.textContent = `${lighting.phase} · sun ${Math.round(solar.altitude)}°`;
   if (lighting.alpha === 0) return;
   ctx.save();
   ctx.globalAlpha = lighting.alpha;
@@ -675,8 +674,12 @@ function setZoom(nextZoom) {
 }
 
 /** @param {number} tileZoom */
-function centerCityHall(tileZoom = sceneHomeZoom()) {
+function centerCityHall(tileZoom = currentTileZoom()) {
   centerAt(sceneCityHall() ?? boundsCenter(), tileZoom);
+}
+
+function currentTileZoom() {
+  return Math.max(0, Math.min(sceneMaxZoom(), Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
 }
 
 function centerRocky() {
@@ -851,8 +854,8 @@ async function activateScene(initial = false) {
   failures.clear();
   const view = richView();
   orientation.textContent = "↗ N";
-  statusText.textContent =
-    view === undefined ? "loading city…" : `loading ${view.label.toLowerCase()} view…`;
+  statusText.hidden = false;
+  statusText.textContent = "Loading map...";
   const url = view === undefined ? "/coverage.json" : `/rich/${view.id}/coverage.json`;
   canvas.dataset.mode = view === undefined ? "city" : "detailed";
   canvas.dataset.view = view?.id ?? "city";
@@ -916,7 +919,7 @@ async function loadMeta() {
     await activateScene(true);
     void loadNeighborhoods();
   } catch {
-    statusText.textContent = "Run the ingest command to load city geometry.";
+    statusText.textContent = "The map could not load.";
   }
 }
 

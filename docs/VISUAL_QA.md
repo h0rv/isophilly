@@ -21,10 +21,13 @@ uv run --locked poe tile-smoke
 ```
 
 This creates fixed 1536 by 1280 mosaics for Rittenhouse, Point Breeze, Italian
-Market, and East Passyunk under `artifacts/visual/tile-smoke-<tile-version>/`.
-It fails on a missing tile or incomplete active pyramid and prints each PNG's
-dimensions and SHA-256. It is a visual fallback, not a replacement for the
-interaction, overlay, mobile, and network checks in the Playwright matrix.
+Market, East Passyunk, Chestnut Hill, Fox Chase, and Somerton under
+`artifacts/visual/tile-smoke-<tile-version>/`. The added outer-neighborhood
+mosaics stay on fixed z8 tile windows centered on the label anchors, so the
+same command keeps working across runs without a browser. It fails on a missing
+tile or incomplete active pyramid and prints each PNG's dimensions and SHA-256.
+It is a visual fallback, not a replacement for the interaction, overlay,
+mobile, and network checks in the Playwright matrix.
 
 Strict mode rejects a dirty worktree, noncanonical zooms, a disabled secondary
 city audit, and an active tile manifest whose world SHA-256 differs from

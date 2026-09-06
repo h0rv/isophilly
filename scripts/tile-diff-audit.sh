@@ -18,7 +18,15 @@ new_dir=$2
 shift 2
 images=("$@")
 if [[ ${#images[@]} -eq 0 ]]; then
-  images=(rittenhouse.png point-breeze.png italian-market.png east-passyunk.png)
+  images=(
+    rittenhouse.png
+    point-breeze.png
+    italian-market.png
+    east-passyunk.png
+    chestnut-hill.png
+    fox-chase.png
+    somerton.png
+  )
 fi
 
 printf 'image\tchanged_pixels\ttotal_pixels\tcoverage_percent\n'

@@ -47,3 +47,6 @@ render_mosaic rittenhouse 79 71 6 5
 render_mosaic point-breeze 72 75 6 5
 render_mosaic italian-market 83 76 6 5
 render_mosaic east-passyunk 76 78 6 5
+render_mosaic chestnut-hill 113 30 6 5
+render_mosaic fox-chase 172 50 6 5
+render_mosaic somerton 213 47 6 5

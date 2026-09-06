@@ -20,9 +20,11 @@ mod world;
 use std::{io, path::Path};
 
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
+    building_render::eligible_detached_frontage,
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     server::{prebuild, prebuild_is_complete, serve},
@@ -51,6 +53,8 @@ enum Command {
         )]
         jobs: u8,
     },
+    /// Print deterministic building-context and frontage coverage counts.
+    WorldAudit,
 }
 
 #[tokio::main]
@@ -102,10 +106,19 @@ async fn main() -> io::Result<()> {
             })
         }
         Command::Serve { port } => serve(port).await,
+        Command::WorldAudit => {
+            let world = load_world(Path::new("data/clean/philly.bin"))?;
+            let audit = WorldAudit::from_world(&world)?;
+            println!(
+                "{}",
+                serde_json::to_string(&audit).map_err(io::Error::other)?
+            );
+            Ok(())
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct BuildingContextCounts {
     rowhouses: usize,
     rowhouse_like: usize,
@@ -115,23 +128,42 @@ struct BuildingContextCounts {
     generic: usize,
 }
 
+#[derive(Serialize)]
+struct WorldAudit {
+    schema_version: u8,
+    building_count: usize,
+    building_kind_counts: BuildingContextCounts,
+    known_frontage_counts_by_kind: BuildingContextCounts,
+    eligible_detached_frontage_count: usize,
+}
+
 impl BuildingContextCounts {
     fn from_world(world: &World) -> Self {
-        let count = |kind| {
-            world
-                .building_contexts
-                .iter()
-                .filter(|context| context.kind == kind)
-                .count()
+        Self::from_contexts(world.building_contexts.iter())
+    }
+
+    fn from_contexts<'a>(
+        contexts: impl Iterator<Item = &'a crate::world::BuildingContext>,
+    ) -> Self {
+        let mut counts = Self {
+            rowhouses: 0,
+            rowhouse_like: 0,
+            twins: 0,
+            detached: 0,
+            warehouses: 0,
+            generic: 0,
         };
-        Self {
-            rowhouses: count(BuildingKind::Rowhouse),
-            rowhouse_like: count(BuildingKind::RowhouseLike),
-            twins: count(BuildingKind::Twin),
-            detached: count(BuildingKind::Detached),
-            warehouses: count(BuildingKind::Warehouse),
-            generic: count(BuildingKind::Generic),
+        for context in contexts {
+            match context.kind {
+                BuildingKind::Rowhouse => counts.rowhouses += 1,
+                BuildingKind::RowhouseLike => counts.rowhouse_like += 1,
+                BuildingKind::Twin => counts.twins += 1,
+                BuildingKind::Detached => counts.detached += 1,
+                BuildingKind::Warehouse => counts.warehouses += 1,
+                BuildingKind::Generic => counts.generic += 1,
+            }
         }
+        counts
     }
 
     fn total(self) -> usize {
@@ -168,6 +200,59 @@ impl BuildingContextCounts {
                 self.warehouses,
                 self.inferred_residential()
             )));
+        }
+        Ok(())
+    }
+}
+
+impl WorldAudit {
+    fn from_world(world: &World) -> io::Result<Self> {
+        let building_kind_counts = BuildingContextCounts::from_world(world);
+        let known_frontage_counts_by_kind = BuildingContextCounts::from_contexts(
+            world
+                .buildings
+                .iter()
+                .zip(&world.building_contexts)
+                .filter_map(|(building, context)| {
+                    building.frontage_edge.is_some().then_some(context)
+                }),
+        );
+        let eligible_detached_frontage_count = world
+            .buildings
+            .iter()
+            .zip(&world.building_contexts)
+            .filter(|(building, context)| eligible_detached_frontage(building, context))
+            .count();
+        let audit = Self {
+            schema_version: 2,
+            building_count: world.buildings.len(),
+            building_kind_counts,
+            known_frontage_counts_by_kind,
+            eligible_detached_frontage_count,
+        };
+        audit.validate()?;
+        Ok(audit)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        self.building_kind_counts.validate(self.building_count)?;
+        let known = self.known_frontage_counts_by_kind;
+        let total = self.building_kind_counts;
+        if known.rowhouses > total.rowhouses
+            || known.rowhouse_like > total.rowhouse_like
+            || known.twins > total.twins
+            || known.detached > total.detached
+            || known.warehouses > total.warehouses
+            || known.generic > total.generic
+        {
+            return Err(io::Error::other(
+                "known frontage counts exceed their building-context counts",
+            ));
+        }
+        if self.eligible_detached_frontage_count > known.detached {
+            return Err(io::Error::other(
+                "eligible detached frontage count exceeds known detached frontages",
+            ));
         }
         Ok(())
     }
@@ -213,7 +298,123 @@ fn default_jobs() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::BuildingContextCounts;
+    use super::{BuildingContextCounts, WorldAudit};
+    use crate::world::{BuildingContext, BuildingKind};
+
+    fn context(kind: BuildingKind) -> BuildingContext {
+        BuildingContext {
+            kind,
+            material_group_seed: 0,
+            party_edge_mask: 0,
+        }
+    }
+
+    #[test]
+    fn context_count_aggregation_keeps_each_kind_separate() {
+        let contexts = [
+            context(BuildingKind::Rowhouse),
+            context(BuildingKind::Rowhouse),
+            context(BuildingKind::RowhouseLike),
+            context(BuildingKind::Twin),
+            context(BuildingKind::Detached),
+            context(BuildingKind::Warehouse),
+            context(BuildingKind::Generic),
+        ];
+
+        assert_eq!(
+            BuildingContextCounts::from_contexts(contexts.iter()),
+            BuildingContextCounts {
+                rowhouses: 2,
+                rowhouse_like: 1,
+                twins: 1,
+                detached: 1,
+                warehouses: 1,
+                generic: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn world_audit_json_schema_is_stable() -> Result<(), Box<dyn std::error::Error>> {
+        let audit = WorldAudit {
+            schema_version: 2,
+            building_count: 3,
+            building_kind_counts: BuildingContextCounts {
+                rowhouses: 1,
+                rowhouse_like: 0,
+                twins: 1,
+                detached: 1,
+                warehouses: 0,
+                generic: 0,
+            },
+            known_frontage_counts_by_kind: BuildingContextCounts {
+                rowhouses: 1,
+                rowhouse_like: 0,
+                twins: 0,
+                detached: 1,
+                warehouses: 0,
+                generic: 0,
+            },
+            eligible_detached_frontage_count: 1,
+        };
+
+        audit.validate()?;
+
+        assert_eq!(
+            serde_json::to_string(&audit)?,
+            r#"{"schema_version":2,"building_count":3,"building_kind_counts":{"rowhouses":1,"rowhouse_like":0,"twins":1,"detached":1,"warehouses":0,"generic":0},"known_frontage_counts_by_kind":{"rowhouses":1,"rowhouse_like":0,"twins":0,"detached":1,"warehouses":0,"generic":0},"eligible_detached_frontage_count":1}"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn world_audit_rejects_inconsistent_frontage_coverage() {
+        let audit = WorldAudit {
+            schema_version: 2,
+            building_count: 1,
+            building_kind_counts: BuildingContextCounts {
+                rowhouses: 0,
+                rowhouse_like: 0,
+                twins: 0,
+                detached: 1,
+                warehouses: 0,
+                generic: 0,
+            },
+            known_frontage_counts_by_kind: BuildingContextCounts {
+                rowhouses: 0,
+                rowhouse_like: 0,
+                twins: 0,
+                detached: 0,
+                warehouses: 1,
+                generic: 0,
+            },
+            eligible_detached_frontage_count: 1,
+        };
+
+        assert!(
+            audit
+                .validate()
+                .is_err_and(|error| error.to_string().contains("known frontage counts"))
+        );
+
+        let audit = WorldAudit {
+            known_frontage_counts_by_kind: BuildingContextCounts {
+                rowhouses: 0,
+                rowhouse_like: 0,
+                twins: 0,
+                detached: 1,
+                warehouses: 0,
+                generic: 0,
+            },
+            eligible_detached_frontage_count: 2,
+            ..audit
+        };
+        assert!(audit.validate().is_err_and(|error| {
+            error
+                .to_string()
+                .contains("eligible detached frontage count")
+        }));
+    }
 
     #[test]
     fn building_context_sanity_guard_accepts_a_broad_plausible_distribution() {
