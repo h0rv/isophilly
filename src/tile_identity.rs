@@ -1,6 +1,6 @@
 use crate::world::View;
 
-const PYRAMID_VERSION: &str = "v65-detached-frontages-gables";
+const PYRAMID_VERSION: &str = "v66-canopy-envelope";
 // The multi-angle mesh viewer is hidden from the launch UI. Its v54 atlas
 // already has the baked continuous-color finish. The later canopy and
 // metre-correct morphology, inferred-roof, terrain-relief, and
@@ -81,7 +81,7 @@ mod tests {
 
         assert_eq!(
             base_tile_version(&world, None, None),
-            "v65-detached-frontages-gables-1111111111111111"
+            "v66-canopy-envelope-1111111111111111"
         );
         assert_ne!(
             base_tile_version(&world, Some(&first), None),

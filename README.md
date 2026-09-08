@@ -19,6 +19,10 @@ matching 2025 aerial pixels instead of replacing them. Official City hydrology
 has first priority, and park grading applies only where the land cover class is
 tree canopy or grass and shrub.
 
+The citywide canopy surface follows the classified canopy areas and their
+interior shape. Its height and shading are illustrative. They do not measure
+individual trees or record observed canopy height.
+
 The expensive geospatial import happens once in Python. A Rust prebuilder loads
 that result and renders lossless WebP tiles in parallel. The small HTTP service
 reads only a scene manifest and the finished tiles. The viewer is typed

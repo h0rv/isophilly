@@ -11,8 +11,10 @@ builder combines them with the audited 2018 Philadelphia land cover mask. The ra
 from 2018 LiDAR and 2017 NAIP imagery, while the displayed ground remains the 2025 aerial image.
 Tree canopy and grass or shrub classes receive different restrained green grading. Building, road,
 railroad, paved, and bare earth classes keep their aerial color. The tree-canopy class also draws a
-single low, depth-tested foliage surface in the renderer. This makes parks and woodlands read as
-continuous leafy mass without turning raster cells into invented street-tree points.
+depth-tested foliage surface in the renderer. Its low edge and higher interior follow the
+classified canopy area, so parks and woodlands read as continuous leafy mass without turning raster
+cells into invented street-tree points. The height and shading are illustrative. They do not measure
+individual trees or observed canopy height.
 
 All tile types now share one baked color contract. The restrained ground, vegetation, water,
 building, and tree anchors live in the renderer, and the final continuous saturation and contrast
@@ -59,12 +61,14 @@ the same stable scene. The citywide tile identity includes the exact mask digest
 after changing the mask or renderer to view the result.
 
 The canopy surface samples the PASDA class and its broad foliage tone from source coordinates for
-each output pixel. It blends that tone with the corresponding sampled aerial color, preserving local
-canopy detail instead of replacing it with a flat green fill. It is bounded to the 256 by 256 output
-tile, creates no retained canopy geometry, and cannot reset at a tile edge or when the city changes
-orientation. It shares the scene depth buffer: buildings and mesh faces occlude it where closer,
-while the separate official street-tree inventory is drawn afterward and remains the explicit
-individual-tree layer.
+each output pixel. It uses a capped measure of three nearby raster cells inside the canopy area to set an
+illustrative height and slope shade. It blends that tone with the corresponding sampled aerial color,
+preserving local canopy detail instead of replacing it with a flat green fill. It is bounded to the
+256 by 256 output tile, creates no retained canopy geometry, and cannot reset at a tile edge or when
+the city changes orientation. It shares the scene depth buffer: buildings and mesh faces occlude it
+where closer, while the separate official street-tree inventory is drawn afterward and remains the
+explicit individual-tree layer. This envelope is used only in the citywide tiles. The Center City
+mesh views keep their photographed vegetation treatment.
 
 The separate 2025 street-tree inventory retains its measured location and DBH-derived size. A
 strict subset also uses an explicit source label to select a bounded conifer, columnar, weeping, or

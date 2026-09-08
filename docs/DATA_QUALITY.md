@@ -126,8 +126,10 @@ cadence while wall seeds retain material and glass variation. High-confidence at
 shallow cornice ledge with real depth on exposed edges between 3.048 and 9.144
 metres long. The ledge projects 0.24 metres and occupies the top 0.42 metres of
 the recorded building height, so it does not make the building taller. Detected
-party walls remain solid. Warehouses
-receive wider structural bays and restrained ground-level openings. Some
+party walls remain solid. Warehouses receive wider structural bays on all
+eligible walls, but restrained ground-level openings only on an exact known
+frontage edge; unknown and nonselected warehouse walls keep no painted
+openings. Some
 compatible flat roofs receive deterministic, footprint-contained chimneys or
 mechanical units to avoid featureless roof slabs. A separate conservative roof
 pass gives only simple, unattached detached-house footprints a low pitched

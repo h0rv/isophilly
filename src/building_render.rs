@@ -233,6 +233,7 @@ impl Rasterizer<'_, '_> {
                 WorldBuildingKind::Rowhouse
                     | WorldBuildingKind::RowhouseLike
                     | WorldBuildingKind::Twin
+                    | WorldBuildingKind::Warehouse
             ) || eligible_detached_frontage)
                 .then_some(frontage_edge)
                 .flatten(),
@@ -292,7 +293,8 @@ impl Rasterizer<'_, '_> {
             facade: building.facade,
             kind: building.kind,
             frontage: rowhouse_frontage_edge(building, edge_index, edge_length)
-                || detached_frontage_edge(building, edge_index, edge_length),
+                || detached_frontage_edge(building, edge_index, edge_length)
+                || industrial_frontage_edge(building, edge_index),
             light,
             bottom,
             top,
@@ -908,6 +910,10 @@ fn detached_frontage_edge(style: BuildingStyle, edge_index: usize, edge_length: 
     style.kind == FacadeKind::Detached
         && style.frontage_edge == Some(edge_index)
         && DETACHED_FRONTAGE_EDGE_METERS.contains(&edge_length)
+}
+
+fn industrial_frontage_edge(style: BuildingStyle, edge_index: usize) -> bool {
+    style.kind == FacadeKind::Industrial && style.frontage_edge == Some(edge_index)
 }
 
 // A packed street-facing edge orients this paint-only grammar. Unlike pitched
@@ -1693,7 +1699,10 @@ fn industrial_detail(point: (f32, f32), z: f32, style: WallStyle) -> [u8; 3] {
         return style.facade.map(|channel| scale_channel(channel, 0.78));
     }
     let relative_z = z - style.bottom;
-    if relative_z < height.min(4.2) && (2.4..=bay_width - 2.4).contains(&bay) {
+    // A warehouse frontage record identifies one street-facing wall. Retain
+    // structural bays on other walls, but do not synthesize a ground opening
+    // unless that exact edge is known.
+    if style.frontage && relative_z < height.min(4.2) && (2.4..=bay_width - 2.4).contains(&bay) {
         return palette::mix(style.facade, [74, 78, 77], 0.36);
     }
     if height - relative_z < 0.35 {
@@ -1800,10 +1809,11 @@ mod tests {
         FacadeKind, InferredRoofForm, ROWHOUSE_CORNICE_HEIGHT_METERS,
         ROWHOUSE_CORNICE_OUTSET_METERS, ROWHOUSE_PLINTH_HEIGHT_METERS,
         ROWHOUSE_WINDOW_TRIM_WIDTH_METERS, WallStyle, attached_rhythm_seed, block_seed,
-        classify_building, facade_detail, infer_pitched_roof, palette, point_in_polygon,
-        polygon_area, roof_feature, rowhouse_cornice_segment, rowhouse_cornice_segments,
-        rowhouse_entry_layout, rowhouse_entry_stoop, rowhouse_floor_height, rowhouse_frontage_edge,
-        shade, wall_light, wall_material, wall_seed, wall_surface_light,
+        classify_building, facade_detail, industrial_frontage_edge, infer_pitched_roof, palette,
+        point_in_polygon, polygon_area, roof_feature, rowhouse_cornice_segment,
+        rowhouse_cornice_segments, rowhouse_entry_layout, rowhouse_entry_stoop,
+        rowhouse_floor_height, rowhouse_frontage_edge, shade, wall_light, wall_material, wall_seed,
+        wall_surface_light,
     };
     use crate::{
         projection::Projection,
@@ -1920,6 +1930,25 @@ mod tests {
         let ineligible = rasterizer.contextual_building_style(&footprint, 9.0, 29, &detached, None);
         assert_eq!(ineligible.kind, classify_building(&footprint, 9.0));
         assert_eq!(ineligible.frontage_edge, None);
+
+        let warehouse_footprint = ring(43.0, 61.0);
+        let warehouse = context(BuildingKind::Warehouse);
+        let known_warehouse = rasterizer.contextual_building_style(
+            &warehouse_footprint,
+            10.0,
+            29,
+            &warehouse,
+            Some(0),
+        );
+        assert_eq!(known_warehouse.kind, FacadeKind::Industrial);
+        assert_eq!(known_warehouse.frontage_edge, Some(0));
+        assert!(industrial_frontage_edge(known_warehouse, 0));
+        assert!(!industrial_frontage_edge(known_warehouse, 1));
+
+        let unknown_warehouse =
+            rasterizer.contextual_building_style(&warehouse_footprint, 10.0, 29, &warehouse, None);
+        assert_eq!(unknown_warehouse.frontage_edge, None);
+        assert!(!industrial_frontage_edge(unknown_warehouse, 0));
         Ok(())
     }
 
@@ -2196,6 +2225,36 @@ mod tests {
             ),
             base
         );
+    }
+
+    #[test]
+    fn warehouse_openings_require_the_exact_known_frontage() {
+        let base = [160, 150, 140];
+        let selected = WallStyle {
+            facade: base,
+            kind: FacadeKind::Industrial,
+            frontage: true,
+            light: 1.0,
+            bottom: 0.0,
+            top: 10.0,
+            left: (0.0, 0.0),
+            right: (20.0, 0.0),
+            seed: 0,
+            rhythm_seed: 0,
+            entry: None,
+        };
+        let opening = (5.0, 0.0);
+        assert_ne!(facade_detail(opening, 1.0, selected), base);
+
+        let nonselected = WallStyle {
+            frontage: false,
+            ..selected
+        };
+        assert_eq!(facade_detail(opening, 1.0, nonselected), base);
+
+        // Structural bay seams remain, but an unknown frontage has no painted
+        // ground-level opening.
+        assert_ne!(facade_detail((0.2, 0.0), 5.0, nonselected), base);
     }
 
     #[test]

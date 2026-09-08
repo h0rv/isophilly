@@ -14,6 +14,19 @@ const PREFIX_BYTES: usize = 16;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_GRID_PIXELS: usize = 100_000_000;
 const MAX_ARTIFACT_BYTES: usize = PREFIX_BYTES + MAX_HEADER_BYTES + MAX_GRID_PIXELS;
+// The 3 m land-cover cells support a small, bounded interior measure for the
+// illustrative canopy surface. The raw artifact uses only values 0 through 7,
+// so these derived thresholds fit in unused high bits without changing class
+// semantics or the artifact digest.
+const CLASS_MASK: u8 = 0b0000_0111;
+const CANOPY_INTERIOR_ONE: u8 = 0b0010_0000;
+const CANOPY_INTERIOR_TWO: u8 = 0b0100_0000;
+const CANOPY_INTERIOR_THREE: u8 = 0b1000_0000;
+const CANOPY_INTERIOR_BITS: [u8; 3] = [
+    CANOPY_INTERIOR_ONE,
+    CANOPY_INTERIOR_TWO,
+    CANOPY_INTERIOR_THREE,
+];
 const EPSG: u64 = 32129;
 const ARCHIVE_BYTES: u64 = 521_373_667;
 const ARCHIVE_URL: &str =
@@ -35,6 +48,15 @@ pub enum LandCoverClass {
     Building,
     RoadRailroad,
     OtherPaved,
+}
+
+/// A source-backed canopy cell and its bounded interior clearance.
+///
+/// Clearance is illustrative. It describes how far the classified cell is
+/// from a non-canopy cell, not a measured tree height.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanopyProfile {
+    pub clearance_cells: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +91,7 @@ const PRODUCTION_GRID: Grid = Grid {
 pub struct LandCoverMask {
     grid: Grid,
     classes: Vec<u8>,
+    canopy_envelope_prepared: bool,
     artifact_sha256: [u8; 32],
 }
 
@@ -94,6 +117,45 @@ impl LandCoverMask {
     }
 
     pub fn sample(&self, x: f64, y: f64) -> Option<LandCoverClass> {
+        let index = self.sample_index(x, y)?;
+        match self.classes[index] & CLASS_MASK {
+            0 => None,
+            1 => Some(LandCoverClass::TreeCanopy),
+            2 => Some(LandCoverClass::GrassShrub),
+            3 => Some(LandCoverClass::BareEarth),
+            4 => Some(LandCoverClass::Water),
+            5 => Some(LandCoverClass::Building),
+            6 => Some(LandCoverClass::RoadRailroad),
+            7 => Some(LandCoverClass::OtherPaved),
+            _ => None,
+        }
+    }
+
+    pub fn canopy_profile(&self, x: f64, y: f64) -> Option<CanopyProfile> {
+        if !self.canopy_envelope_prepared {
+            return None;
+        }
+        let index = self.sample_index(x, y)?;
+        let encoded = self.classes[index];
+        ((encoded & CLASS_MASK) == 1).then_some(CanopyProfile {
+            clearance_cells: CANOPY_INTERIOR_BITS
+                .iter()
+                .filter(|bit| encoded & **bit != 0)
+                .count() as u8,
+        })
+    }
+
+    /// Prepare the bounded illustrative canopy envelope when rendering is
+    /// actually needed. A complete cached pyramid never pays this cost.
+    pub fn prepare_canopy_envelope(&mut self) {
+        if self.canopy_envelope_prepared {
+            return;
+        }
+        prepare_canopy_envelope(&mut self.classes, self.grid);
+        self.canopy_envelope_prepared = true;
+    }
+
+    fn sample_index(&self, x: f64, y: f64) -> Option<usize> {
         if !x.is_finite()
             || !y.is_finite()
             || x < self.grid.min_x
@@ -113,17 +175,7 @@ impl LandCoverMask {
         } else {
             ((self.grid.max_y - y) / self.grid.pixel_height()).floor() as usize
         };
-        match self.classes[row * self.grid.width + column] {
-            0 => None,
-            1 => Some(LandCoverClass::TreeCanopy),
-            2 => Some(LandCoverClass::GrassShrub),
-            3 => Some(LandCoverClass::BareEarth),
-            4 => Some(LandCoverClass::Water),
-            5 => Some(LandCoverClass::Building),
-            6 => Some(LandCoverClass::RoadRailroad),
-            7 => Some(LandCoverClass::OtherPaved),
-            _ => None,
-        }
+        Some(row * self.grid.width + column)
     }
 
     fn parse(bytes: &[u8], audited_source_sha256: Option<&str>) -> io::Result<Self> {
@@ -184,8 +236,49 @@ impl LandCoverMask {
         Ok(Self {
             grid,
             classes,
+            canopy_envelope_prepared: false,
             artifact_sha256: Sha256::digest(bytes).into(),
         })
+    }
+}
+
+fn prepare_canopy_envelope(classes: &mut [u8], grid: Grid) {
+    // Each pass reads a stable one-byte threshold field, then records that
+    // threshold in an unused class bit. The temporary field is dropped after
+    // preparation, so the loaded mask does not retain a second citywide array.
+    let mut interior: Vec<u8> = classes
+        .iter()
+        .map(|class| u8::from((*class & CLASS_MASK) == 1))
+        .collect();
+    for bit in CANOPY_INTERIOR_BITS {
+        for row in 1..grid.height.saturating_sub(1) {
+            for column in 1..grid.width.saturating_sub(1) {
+                let index = row * grid.width + column;
+                if interior[index] == 0 {
+                    continue;
+                }
+                let above = index - grid.width;
+                let below = index + grid.width;
+                if [
+                    above - 1,
+                    above,
+                    above + 1,
+                    index - 1,
+                    index + 1,
+                    below - 1,
+                    below,
+                    below + 1,
+                ]
+                .into_iter()
+                .all(|neighbor| interior[neighbor] != 0)
+                {
+                    classes[index] |= bit;
+                }
+            }
+        }
+        for (value, class) in interior.iter_mut().zip(classes.iter()) {
+            *value = u8::from(*class & bit != 0);
+        }
     }
 }
 
@@ -392,7 +485,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        Grid, LandCoverClass, LandCoverMask, PREFIX_BYTES, PRODUCTION_GRID, digest_hex,
+        CLASS_MASK, Grid, LandCoverClass, LandCoverMask, PREFIX_BYTES, PRODUCTION_GRID, digest_hex,
         parse_header,
     };
 
@@ -433,7 +526,17 @@ mod tests {
     }
 
     fn artifact(classes: &[u8]) -> Vec<u8> {
-        let header = header(classes);
+        artifact_for_grid(classes, SYNTHETIC_GRID)
+    }
+
+    fn artifact_for_grid(classes: &[u8], grid: Grid) -> Vec<u8> {
+        let mut header = header(classes);
+        header["grid"] = json!({
+            "epsg": 32129, "width": grid.width, "height": grid.height,
+            "min_x": grid.min_x, "min_y": grid.min_y,
+            "max_x": grid.max_x, "max_y": grid.max_y,
+            "row_order": "north_to_south", "resampling": "nearest"
+        });
         let header = serde_json::to_vec(&header).unwrap_or_else(|_| std::process::abort());
         let mut bytes = Vec::with_capacity(PREFIX_BYTES + header.len() + classes.len());
         bytes.extend_from_slice(super::MAGIC);
@@ -442,6 +545,13 @@ mod tests {
         bytes.extend_from_slice(&header);
         bytes.extend_from_slice(classes);
         bytes
+    }
+
+    fn cell_center(grid: Grid, row: usize, column: usize) -> (f64, f64) {
+        (
+            grid.min_x + (column as f64 + 0.5) * grid.pixel_width(),
+            grid.max_y - (row as f64 + 0.5) * grid.pixel_height(),
+        )
     }
 
     #[test]
@@ -513,6 +623,151 @@ mod tests {
         let expected: [u8; 32] = Sha256::digest(&bytes).into();
 
         assert_eq!(mask.artifact_sha256(), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn canopy_clearance_is_bounded_by_the_mask_edge() -> std::io::Result<()> {
+        let grid = Grid {
+            width: 9,
+            height: 9,
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 9.0,
+            max_y: 9.0,
+        };
+        let mut mask = LandCoverMask::parse_for_grid(
+            &artifact_for_grid(&vec![1; grid.width * grid.height], grid),
+            Some(SOURCE_SHA256),
+            grid,
+        )?;
+        mask.prepare_canopy_envelope();
+
+        for ((row, column), expected) in [((0, 0), 0), ((1, 1), 1), ((2, 2), 2), ((4, 4), 3)] {
+            let (x, y) = cell_center(grid, row, column);
+            assert_eq!(
+                mask.canopy_profile(x, y)
+                    .map(|profile| profile.clearance_cells),
+                Some(expected),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_canopy_cells_never_gain_height_clearance() -> std::io::Result<()> {
+        let grid = Grid {
+            width: 5,
+            height: 5,
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 5.0,
+            max_y: 5.0,
+        };
+        let mut classes = vec![0; grid.width * grid.height];
+        classes[2 * grid.width + 2] = 1;
+        let mut mask = LandCoverMask::parse_for_grid(
+            &artifact_for_grid(&classes, grid),
+            Some(SOURCE_SHA256),
+            grid,
+        )?;
+        mask.prepare_canopy_envelope();
+        let (x, y) = cell_center(grid, 2, 2);
+
+        assert_eq!(
+            mask.canopy_profile(x, y)
+                .map(|profile| profile.clearance_cells),
+            Some(0),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clearance_cache_does_not_change_land_cover_classes() -> std::io::Result<()> {
+        let grid = Grid {
+            width: 5,
+            height: 5,
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 5.0,
+            max_y: 5.0,
+        };
+        let mut classes = vec![1; grid.width * grid.height];
+        classes[2 * grid.width + 3] = 4;
+        classes[4 * grid.width + 4] = 7;
+        let mut mask = LandCoverMask::parse_for_grid(
+            &artifact_for_grid(&classes, grid),
+            Some(SOURCE_SHA256),
+            grid,
+        )?;
+        let artifact_sha256 = mask.artifact_sha256();
+        assert!(mask.canopy_profile(2.5, 2.5).is_none());
+        mask.prepare_canopy_envelope();
+        assert_eq!(mask.artifact_sha256(), artifact_sha256);
+
+        assert_eq!(
+            mask.classes
+                .iter()
+                .map(|class| class & CLASS_MASK)
+                .collect::<Vec<_>>(),
+            classes,
+        );
+        for (row, column) in [(2, 3), (4, 4)] {
+            let (x, y) = cell_center(grid, row, column);
+            assert!(mask.canopy_profile(x, y).is_none());
+        }
+        let (water_x, water_y) = cell_center(grid, 2, 3);
+        let (paved_x, paved_y) = cell_center(grid, 4, 4);
+        assert_eq!(mask.sample(water_x, water_y), Some(LandCoverClass::Water));
+        assert_eq!(
+            mask.sample(paved_x, paved_y),
+            Some(LandCoverClass::OtherPaved)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canopy_clearance_handles_holes_diagonals_and_the_cap() -> std::io::Result<()> {
+        let grid = Grid {
+            width: 11,
+            height: 11,
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 11.0,
+            max_y: 11.0,
+        };
+        let mut classes = vec![1; grid.width * grid.height];
+        classes[5 * grid.width + 5] = 4;
+        let mut mask = LandCoverMask::parse_for_grid(
+            &artifact_for_grid(&classes, grid),
+            Some(SOURCE_SHA256),
+            grid,
+        )?;
+        mask.prepare_canopy_envelope();
+
+        let diagonal_to_hole = cell_center(grid, 4, 4);
+        assert_eq!(
+            mask.canopy_profile(diagonal_to_hole.0, diagonal_to_hole.1)
+                .map(|profile| profile.clearance_cells),
+            Some(0),
+        );
+        let (hole_x, hole_y) = cell_center(grid, 5, 5);
+        assert_eq!(mask.sample(hole_x, hole_y), Some(LandCoverClass::Water));
+        assert!(mask.canopy_profile(hole_x, hole_y).is_none());
+
+        let mut solid = LandCoverMask::parse_for_grid(
+            &artifact_for_grid(&vec![1; grid.width * grid.height], grid),
+            Some(SOURCE_SHA256),
+            grid,
+        )?;
+        solid.prepare_canopy_envelope();
+        let center = cell_center(grid, 5, 5);
+        assert_eq!(
+            solid
+                .canopy_profile(center.0, center.1)
+                .map(|profile| profile.clearance_cells),
+            Some(3),
+        );
         Ok(())
     }
 

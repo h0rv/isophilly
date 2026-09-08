@@ -188,6 +188,10 @@ test("tile response evidence must be nonempty, successful, and sized", () => {
 test("tile smoke and diff defaults stay aligned", async () => {
   const smoke = await readFile(new URL("../scripts/tile-smoke.sh", import.meta.url), "utf8");
   const diff = await readFile(new URL("../scripts/tile-diff-audit.sh", import.meta.url), "utf8");
+  const visualCheck = await readFile(
+    new URL("../scripts/visual-check.mjs", import.meta.url),
+    "utf8",
+  );
   for (const name of [
     "rittenhouse",
     "point-breeze",
@@ -199,6 +203,9 @@ test("tile smoke and diff defaults stay aligned", async () => {
   ]) {
     assert.match(smoke, new RegExp(`render_mosaic ${name} `));
     assert.match(diff, new RegExp(`${name}\\.png`));
+  }
+  for (const name of ["chestnut-hill", "fox-chase", "somerton"]) {
+    assert.match(visualCheck, new RegExp(`name: "${name}"`));
   }
 });
 

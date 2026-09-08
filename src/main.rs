@@ -70,7 +70,7 @@ async fn main() -> io::Result<()> {
     match cli.command {
         Command::Prebuild { jobs } => {
             let world_path = Path::new("data/clean/philly.bin");
-            let land_cover =
+            let mut land_cover =
                 LandCoverMask::open_optional(Path::new("data/clean/land-cover-2018.isomask"))?;
             let land_cover_sha256 = land_cover.as_ref().map(LandCoverMask::artifact_sha256);
             let terrain = Terrain::open_optional(Path::new("data/clean/terrain-v1.isoterrain"))?;
@@ -90,6 +90,9 @@ async fn main() -> io::Result<()> {
                 &world.texture_ids,
                 world.texture_sha256,
             )?;
+            if let Some(mask) = land_cover.as_mut() {
+                mask.prepare_canopy_envelope();
+            }
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(usize::from(jobs))
                 .build()

@@ -215,6 +215,30 @@ const pyramidAudits = [
     rows: 5,
     limits: { equalAdjacent: 55, uniformTwoByTwo: 30, edgeDensity: 45 },
   },
+  {
+    name: "chestnut-hill",
+    x: 113,
+    y: 30,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 52, uniformTwoByTwo: 24, edgeDensity: 40 },
+  },
+  {
+    name: "fox-chase",
+    x: 172,
+    y: 50,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 52, uniformTwoByTwo: 24, edgeDensity: 40 },
+  },
+  {
+    name: "somerton",
+    x: 213,
+    y: 47,
+    columns: 6,
+    rows: 5,
+    limits: { equalAdjacent: 52, uniformTwoByTwo: 24, edgeDensity: 40 },
+  },
 ];
 
 /**

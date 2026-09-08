@@ -1,7 +1,7 @@
 use tiny_skia::Pixmap;
 
 use crate::{
-    land_cover::{LandCoverClass, LandCoverMask},
+    land_cover::{CanopyProfile, LandCoverMask},
     palette,
     projection::Projection,
     texture::{AerialTile, missing_imagery},
@@ -17,16 +17,18 @@ const CROWN_LOBE_COUNT: usize = 4;
 // The PASDA mask is a continuous area classification, not a second tree
 // inventory. Keep it as one low canopy surface so woods read as woods instead
 // of materializing a point tree for every raster cell.
-const CANOPY_MASS_HEIGHT: f32 = 4.5;
+const CANOPY_EDGE_HEIGHT: f32 = 1.0;
+const CANOPY_HEIGHT_PER_CLEARANCE_CELL: f32 = 2.25;
+const CANOPY_SLOPE_SAMPLE_METERS: f32 = 3.0;
 const CANOPY_TONE_PATCH_METERS: f32 = 12.0;
 const CANOPY_FOLIAGE_MIX: f32 = 0.56;
 
-/// Draw the PASDA tree-canopy class as a low, depth-tested foliage surface.
+/// Draw the PASDA tree-canopy class as a depth-tested illustrative foliage envelope.
 ///
 /// This is intentionally bounded to the output tile: it samples one source
 /// coordinate per output pixel and allocates no citywide geometry. Source
-/// coordinates, rather than tile-local indices, select both the mask and
-/// foliage tone, keeping adjacent tiles and all views phase-stable.
+/// coordinates, rather than tile-local indices, select the mask, envelope,
+/// and foliage tone, keeping adjacent tiles and all views phase-stable.
 pub fn draw_canopy_mass(
     pixmap: &mut Pixmap,
     land_cover: &LandCoverMask,
@@ -39,7 +41,7 @@ pub fn draw_canopy_mass(
         pixmap,
         projection,
         depth,
-        |point| land_cover.sample(f64::from(point.0), f64::from(point.1)),
+        |point| land_cover.canopy_profile(f64::from(point.0), f64::from(point.1)),
         |point| aerial.sample(point.0, point.1, block_size),
     );
 }
@@ -48,21 +50,25 @@ fn draw_canopy_mass_with_samples(
     pixmap: &mut Pixmap,
     projection: &Projection,
     depth: &mut [f32],
-    sample_land_cover: impl Fn((f32, f32)) -> Option<LandCoverClass>,
+    sample_canopy: impl Fn((f32, f32)) -> Option<CanopyProfile>,
     sample_aerial: impl Fn((f32, f32)) -> Option<[u8; 3]>,
 ) {
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
-            let (source, pixel_depth) = canopy_surface_at_pixel(projection, x, y);
-            if sample_land_cover(source) != Some(LandCoverClass::TreeCanopy) {
+            let Some((source, pixel_depth, _)) =
+                canopy_surface_at_pixel(projection, x, y, &sample_canopy)
+            else {
                 continue;
-            }
+            };
             let offset = y * TILE_SIZE + x;
             if pixel_depth <= depth[offset] {
                 continue;
             }
             depth[offset] = pixel_depth;
-            let color = grade_canopy_color(source, sample_aerial(source));
+            let color = palette::scale(
+                grade_canopy_color(source, sample_aerial(source)),
+                canopy_light(source, &sample_canopy),
+            );
             let start = offset * 4;
             pixmap.data_mut()[start..start + 4]
                 .copy_from_slice(&[color[0], color[1], color[2], 255]);
@@ -74,15 +80,56 @@ fn canopy_surface_at_pixel(
     projection: &Projection,
     pixel_x: usize,
     pixel_y: usize,
-) -> ((f32, f32), f32) {
+    sample_canopy: &impl Fn((f32, f32)) -> Option<CanopyProfile>,
+) -> Option<((f32, f32), f32, f32)> {
     let projected = (
         (pixel_x as f32 + 0.5).mul_add(1.0 / projection.scale, projection.bounds.min_x),
         (pixel_y as f32 + 0.5).mul_add(1.0 / projection.scale, projection.bounds.min_y),
     );
-    // Raising a horizontal surface by h shifts its screen y by -h. Recover the
-    // source location from the corresponding ground-coordinate projection.
-    let source = projection.inverse((projected.0, projected.1 + CANOPY_MASS_HEIGHT));
-    (source, projection.depth(source, CANOPY_MASS_HEIGHT))
+    canopy_surface_at_projected_point(projection, projected, sample_canopy)
+}
+
+fn canopy_surface_at_projected_point(
+    projection: &Projection,
+    projected: (f32, f32),
+    sample_canopy: &impl Fn((f32, f32)) -> Option<CanopyProfile>,
+) -> Option<((f32, f32), f32, f32)> {
+    // The source height has four legal bands. Test every band directly instead
+    // of iterating from a guessed point. A retained candidate therefore
+    // reprojects exactly to this output pixel even at a discontinuous canopy
+    // edge. Multiple valid surfaces can overlap there, so the depth rule picks
+    // the same nearest surface used by the rest of the renderer.
+    (0..=3)
+        .filter_map(|clearance_cells| {
+            let height = canopy_height(CanopyProfile { clearance_cells });
+            let source = projection.inverse((projected.0, projected.1 + height));
+            let profile = sample_canopy(source)?;
+            (profile.clearance_cells == clearance_cells).then_some((
+                source,
+                projection.depth(source, height),
+                height,
+            ))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+}
+
+fn canopy_height(profile: CanopyProfile) -> f32 {
+    CANOPY_EDGE_HEIGHT + f32::from(profile.clearance_cells) * CANOPY_HEIGHT_PER_CLEARANCE_CELL
+}
+
+fn canopy_light(
+    point: (f32, f32),
+    sample_canopy: &impl Fn((f32, f32)) -> Option<CanopyProfile>,
+) -> f32 {
+    let height_at = |point| sample_canopy(point).map_or(0.0, canopy_height);
+    let east = (height_at((point.0 + CANOPY_SLOPE_SAMPLE_METERS, point.1))
+        - height_at((point.0 - CANOPY_SLOPE_SAMPLE_METERS, point.1)))
+        / (CANOPY_SLOPE_SAMPLE_METERS * 2.0);
+    let north = (height_at((point.0, point.1 + CANOPY_SLOPE_SAMPLE_METERS))
+        - height_at((point.0, point.1 - CANOPY_SLOPE_SAMPLE_METERS)))
+        / (CANOPY_SLOPE_SAMPLE_METERS * 2.0);
+    let light = (0.88 - east * 0.15 + north * 0.1).clamp(0.7, 1.0);
+    (light * 8.0).round() / 8.0
 }
 
 fn canopy_mass_color(point: (f32, f32)) -> [u8; 3] {
@@ -491,13 +538,14 @@ mod tests {
     use tiny_skia::Pixmap;
 
     use super::{
-        CANOPY_MASS_HEIGHT, CANOPY_TONE_PATCH_METERS, CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS,
-        TILE_SIZE, TRUNK_COLOR, canopy_mass_color, canopy_surface_at_pixel, crown_lobes,
-        crown_style, draw_canopy_mass_with_samples, draw_street_trees, grade_canopy_color,
-        sphere_surface, street_tree_palette, tree_palette, trunk_top,
+        CANOPY_EDGE_HEIGHT, CANOPY_HEIGHT_PER_CLEARANCE_CELL, CANOPY_TONE_PATCH_METERS,
+        CROWN_LOBE_COUNT, MIN_CROWN_RADIUS_PIXELS, TILE_SIZE, TRUNK_COLOR, canopy_mass_color,
+        canopy_surface_at_pixel, canopy_surface_at_projected_point, crown_lobes, crown_style,
+        draw_canopy_mass_with_samples, draw_street_trees, grade_canopy_color, sphere_surface,
+        street_tree_palette, tree_palette, trunk_top,
     };
     use crate::{
-        land_cover::LandCoverClass,
+        land_cover::CanopyProfile,
         palette,
         projection::Projection,
         world::{Bounds, StreetTree, TreeForm, View},
@@ -569,10 +617,13 @@ mod tests {
     }
 
     #[test]
-    fn canopy_surface_recovers_source_coordinates_and_depth_in_every_view() {
+    fn canopy_envelope_recovers_source_coordinates_and_depth_in_every_view()
+    -> Result<(), &'static str> {
         let source = (823_456.25, 74_321.75);
+        let profile = CanopyProfile { clearance_cells: 2 };
+        let height = CANOPY_EDGE_HEIGHT + 2.0 * CANOPY_HEIGHT_PER_CLEARANCE_CELL;
         for view in View::ALL {
-            let projected = view.project(source.0, source.1, CANOPY_MASS_HEIGHT);
+            let projected = view.project(source.0, source.1, height);
             let projection = Projection {
                 bounds: Bounds {
                     min_x: projected.0 - 0.5,
@@ -583,12 +634,115 @@ mod tests {
                 scale: 1.0,
                 view,
             };
-            let (recovered, depth) = canopy_surface_at_pixel(&projection, 0, 0);
+            let (recovered, depth, recovered_height) =
+                canopy_surface_at_pixel(&projection, 0, 0, &|_| Some(profile))
+                    .ok_or("constant canopy profile should cover the pixel")?;
 
             assert!((recovered.0 - source.0).abs() < 0.1, "{}", view.id());
             assert!((recovered.1 - source.1).abs() < 0.1, "{}", view.id());
-            assert!((depth - projection.depth(source, CANOPY_MASS_HEIGHT)).abs() < 0.1);
+            assert!((recovered_height - height).abs() < f32::EPSILON);
+            assert!((depth - projection.depth(source, height)).abs() < 0.1);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn variable_canopy_envelope_is_deterministic() -> Result<(), &'static str> {
+        let projection = projection(1.0);
+        let sample = |point: (f32, f32)| {
+            Some(CanopyProfile {
+                clearance_cells: if point.0 < 0.0 { 0 } else { 3 },
+            })
+        };
+        let first = canopy_surface_at_pixel(&projection, 200, 128, &sample);
+        let second = canopy_surface_at_pixel(&projection, 200, 128, &sample);
+
+        assert_eq!(first, second);
+        let (_, depth, height) = first.ok_or("profile should cover the pixel")?;
+        assert!(depth.is_finite());
+        assert_eq!(
+            height,
+            CANOPY_EDGE_HEIGHT + 3.0 * CANOPY_HEIGHT_PER_CLEARANCE_CELL
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discontinuous_canopy_bands_are_exact_at_world_coordinate_tile_seams()
+    -> Result<(), &'static str> {
+        for view in View::ALL {
+            let vertical_left = Projection {
+                bounds: Bounds {
+                    min_x: -256.0,
+                    min_y: -128.0,
+                    max_x: 0.0,
+                    max_y: 128.0,
+                },
+                scale: 1.0,
+                view,
+            };
+            let vertical_right = Projection {
+                bounds: Bounds {
+                    min_x: 0.0,
+                    min_y: -128.0,
+                    max_x: 256.0,
+                    max_y: 128.0,
+                },
+                scale: 1.0,
+                view,
+            };
+            let horizontal_top = Projection {
+                bounds: Bounds {
+                    min_x: -128.0,
+                    min_y: -256.0,
+                    max_x: 128.0,
+                    max_y: 0.0,
+                },
+                scale: 1.0,
+                view,
+            };
+            let horizontal_bottom = Projection {
+                bounds: Bounds {
+                    min_x: -128.0,
+                    min_y: 0.0,
+                    max_x: 128.0,
+                    max_y: 256.0,
+                },
+                scale: 1.0,
+                view,
+            };
+            let sample = |point: (f32, f32)| {
+                let ground = view.project(point.0, point.1, 0.0);
+                Some(CanopyProfile {
+                    clearance_cells: u8::from(ground.0 >= 0.0 && ground.1 >= 4.0) * 3,
+                })
+            };
+
+            for projected in [(-0.01, -5.0), (0.0, 0.0), (0.01, 5.0)] {
+                let surfaces = [
+                    canopy_surface_at_projected_point(&vertical_left, projected, &sample),
+                    canopy_surface_at_projected_point(&vertical_right, projected, &sample),
+                    canopy_surface_at_projected_point(&horizontal_top, projected, &sample),
+                    canopy_surface_at_projected_point(&horizontal_bottom, projected, &sample),
+                ];
+                let first = surfaces[0].ok_or("canopy should cover seam coordinate")?;
+                for surface in surfaces.into_iter().skip(1) {
+                    assert_eq!(surface, Some(first), "{}", view.id());
+                }
+                let reprojected = view.project(first.0.0, first.0.1, first.2);
+                assert!(
+                    (reprojected.0 - projected.0).abs() < 0.000_1,
+                    "{}",
+                    view.id()
+                );
+                assert!(
+                    (reprojected.1 - projected.1).abs() < 0.000_1,
+                    "{}",
+                    view.id()
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -597,7 +751,7 @@ mod tests {
         let mut second = Pixmap::new(TILE_SIZE as u32, TILE_SIZE as u32).ok_or("pixmap")?;
         let mut first_depth = vec![f32::NEG_INFINITY; TILE_SIZE * TILE_SIZE];
         let mut second_depth = first_depth.clone();
-        let sample = |_| Some(LandCoverClass::TreeCanopy);
+        let sample = |_| Some(CanopyProfile { clearance_cells: 2 });
 
         draw_canopy_mass_with_samples(
             &mut first,
@@ -642,7 +796,7 @@ mod tests {
             &mut pixmap,
             &projection,
             &mut depth,
-            |_| Some(LandCoverClass::TreeCanopy),
+            |_| Some(CanopyProfile { clearance_cells: 2 }),
             |_| Some([92, 128, 72]),
         );
         let before = pixmap.data().to_vec();
