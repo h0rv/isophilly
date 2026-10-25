@@ -6,7 +6,7 @@
     "@biomejs/biome": "2.5.11",
     "playwright-core": "1.62.1",
     "typescript": "7.0.2",
-    "wrangler": "4.127.1"
+    "wrangler": "4.151.3"
   },
   "scripts": {
     "check": "biome check static/app.js static/city-overlay.js tests/city-overlay.test.js tests/visual-check.test.js scripts/visual-check.mjs scripts/visual-check-lib.mjs && tsc --noEmit && node --test tests/city-overlay.test.js tests/visual-check.test.js",
