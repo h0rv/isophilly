@@ -3,6 +3,12 @@
 Build one detailed isometric scene of Philadelphia from public data. Present it
 as deterministic pixel art without generated imagery.
 
+The optional [Google Earth workflow](docs/GOOGLE_EARTH.md) supplies citywide
+photographed detail without an API key. It uses three.js and Chromium to capture
+native geometry on the current pixel grid, then applies the existing color
+finish. It writes a separate static atlas. Normal ingest, the City world, and
+its rich views remain unchanged.
+
 ## Pipeline
 
 ```text

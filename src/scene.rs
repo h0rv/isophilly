@@ -3,16 +3,18 @@ use std::{fs, io, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    google_imagery::GoogleImagery,
     pyramid::{ART_ZOOM, RICH_ART_ZOOM},
-    tile_identity::{base_tile_version_hex, is_generation_of, rich_tile_version},
-    world::{View, World, isometric},
+    tile_identity::{
+        base_tile_version_hex, google_tile_version, is_generation_of, rich_tile_version,
+    },
+    world::{View, World},
 };
 
 const SCHEMA_VERSION: u8 = 2;
 const CURRENT_SCENE: &str = "data/tiles/current.json";
 const MAX_VIEW_ZOOM: u8 = 10;
 const HOME_ZOOM: u8 = 3;
-const ROCKY_SOURCE: (f32, f32, f32) = (819_514.06, 73_343.64, 15.0);
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct Scene {
@@ -22,6 +24,10 @@ pub(crate) struct Scene {
     land_cover_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terrain_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    google_imagery_sha256: Option<String>,
+    #[serde(default)]
+    google_attributions: Vec<String>,
     iso_bounds: [f32; 4],
     city_hall: Option<[f32; 2]>,
     landmarks: Vec<Landmark>,
@@ -78,23 +84,22 @@ impl Scene {
         terrain_sha256: Option<&[u8; 32]>,
         tile_version: String,
         rich_versions: &[(View, String)],
+        google: Option<&GoogleImagery>,
     ) -> io::Result<Self> {
         let bounds = world.iso_bounds;
-        let rocky = isometric(ROCKY_SOURCE.0, ROCKY_SOURCE.1, ROCKY_SOURCE.2);
         let world_sha256 = digest_hex(&world.world_sha256);
         let scene = Self {
             schema_version: SCHEMA_VERSION,
             world_sha256,
             land_cover_sha256: land_cover_sha256.map(digest_hex),
             terrain_sha256: terrain_sha256.map(digest_hex),
+            google_imagery_sha256: google.map(|google| digest_hex(google.sha256())),
+            google_attributions: google
+                .map(|google| google.attributions().to_vec())
+                .unwrap_or_default(),
             iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
             city_hall: world.city_hall_focus(),
-            landmarks: vec![Landmark {
-                name: "Rocky".to_owned(),
-                point: [rocky.0, rocky.1],
-                min_zoom: 7,
-                color: "#8f5f3b".to_owned(),
-            }],
+            landmarks: vec![],
             counts: Counts {
                 buildings: world.buildings.len(),
                 building_meshes: world.building_meshes.len(),
@@ -117,19 +122,7 @@ impl Scene {
                             label: view_label(*view).to_owned(),
                             iso_bounds: [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y],
                             city_hall: world.city_hall_focus_for(*view),
-                            landmarks: vec![Landmark {
-                                name: "Rocky".to_owned(),
-                                point: {
-                                    let point = view.project(
-                                        ROCKY_SOURCE.0,
-                                        ROCKY_SOURCE.1,
-                                        ROCKY_SOURCE.2,
-                                    );
-                                    [point.0, point.1]
-                                },
-                                min_zoom: 4,
-                                color: "#8f5f3b".to_owned(),
-                            }],
+                            landmarks: vec![],
                             tile_version: version.clone(),
                         })
                     })
@@ -183,6 +176,13 @@ impl Scene {
             && self.terrain_sha256.as_deref() == terrain_sha256.map(digest_hex).as_deref()
     }
 
+    pub(crate) fn matches_google_imagery(&self, google: Option<&GoogleImagery>) -> bool {
+        self.google_imagery_sha256.as_deref()
+            == google.map(|google| digest_hex(google.sha256())).as_deref()
+            && self.google_attributions.as_slice()
+                == google.map(GoogleImagery::attributions).unwrap_or_default()
+    }
+
     fn validate(&self) -> io::Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(invalid("unsupported tile manifest version"));
@@ -194,10 +194,35 @@ impl Scene {
         if let Some(digest) = &self.terrain_sha256 {
             validate_sha256(digest)?;
         }
-        let base_version = base_tile_version_hex(
-            &self.world_sha256,
-            self.land_cover_sha256.as_deref(),
-            self.terrain_sha256.as_deref(),
+        if let Some(digest) = &self.google_imagery_sha256 {
+            validate_sha256(digest)?;
+        }
+        if self.google_imagery_sha256.is_some() == self.google_attributions.is_empty()
+            || (self.google_imagery_sha256.is_some()
+                && !self
+                    .google_attributions
+                    .iter()
+                    .any(|value| value == "Google Maps"))
+            || self
+                .google_attributions
+                .iter()
+                .any(|value| value.trim().is_empty())
+            || self
+                .google_attributions
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(invalid(
+                "Google digest and sorted unique attributions must agree",
+            ));
+        }
+        let base_version = google_tile_version(
+            base_tile_version_hex(
+                &self.world_sha256,
+                self.land_cover_sha256.as_deref(),
+                self.terrain_sha256.as_deref(),
+            ),
+            self.google_imagery_sha256.as_deref(),
         );
         if !is_generation_of(&self.tile_version, &base_version) {
             return Err(invalid("tile version does not match scene input digests"));
@@ -299,6 +324,8 @@ mod tests {
             world_sha256,
             land_cover_sha256: None,
             terrain_sha256: None,
+            google_imagery_sha256: None,
+            google_attributions: Vec::new(),
             iso_bounds: [1.0, 2.0, 3.0, 4.0],
             city_hall: Some([2.0, 3.0]),
             landmarks: vec![Landmark {
@@ -436,11 +463,56 @@ mod tests {
     }
 
     #[test]
+    fn google_digest_requires_matching_identity_and_sorted_nonempty_attribution() {
+        let mut current = scene();
+        current.google_imagery_sha256 = Some("d".repeat(64));
+        assert!(current.validate().is_err());
+        current.google_attributions = vec!["Google Maps".to_owned(), "Provider".to_owned()];
+        assert!(current.validate().is_err());
+        let rich_before: Vec<_> = current
+            .rich
+            .views
+            .iter()
+            .map(|v| v.tile_version.clone())
+            .collect();
+        current.tile_version = crate::tile_identity::google_tile_version(
+            current.tile_version,
+            current.google_imagery_sha256.as_deref(),
+        );
+        assert!(current.validate().is_ok());
+        assert_eq!(
+            rich_before,
+            current
+                .rich
+                .views
+                .iter()
+                .map(|v| v.tile_version.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(!current.matches_google_imagery(None));
+        current.google_attributions.reverse();
+        assert!(current.validate().is_err());
+        current.google_attributions = vec!["Google".to_owned(), "Google".to_owned()];
+        assert!(current.validate().is_err());
+        current.google_attributions = vec![" ".to_owned()];
+        assert!(current.validate().is_err());
+        current.google_imagery_sha256 = None;
+        assert!(current.validate().is_err());
+    }
+
+    #[test]
     fn legacy_scene_without_land_cover_digest_remains_readable() -> std::io::Result<()> {
-        let serialized = serde_json::to_value(scene()).map_err(std::io::Error::other)?;
+        let mut serialized = serde_json::to_value(scene()).map_err(std::io::Error::other)?;
+        if let Some(object) = serialized.as_object_mut() {
+            object.remove("google_imagery_sha256");
+            object.remove("google_attributions");
+        }
         let parsed: Scene = serde_json::from_value(serialized).map_err(std::io::Error::other)?;
         assert!(parsed.land_cover_sha256.is_none());
         assert!(parsed.terrain_sha256.is_none());
+        assert!(parsed.google_imagery_sha256.is_none());
+        assert!(parsed.google_attributions.is_empty());
+        assert!(parsed.matches_google_imagery(None));
         parsed.validate()?;
         Ok(())
     }

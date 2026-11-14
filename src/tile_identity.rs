@@ -37,6 +37,13 @@ pub(crate) fn base_tile_version_hex(
     version
 }
 
+pub(crate) fn google_tile_version(base: String, google_sha256: Option<&str>) -> String {
+    match google_sha256 {
+        Some(digest) => format!("{base}-gi-{digest}"),
+        None => base,
+    }
+}
+
 pub(crate) fn rich_tile_version(tile_version: &str, view: View) -> String {
     let rich_source = if tile_version.starts_with(PYRAMID_VERSION) {
         BAKED_RICH_IDENTITY.to_owned()
@@ -93,6 +100,24 @@ mod tests {
             base_tile_version(&world, None, Some(&second))
         );
         assert!(base_tile_version(&world, None, Some(&first)).ends_with(&"22".repeat(32)));
+    }
+
+    #[test]
+    fn google_identity_binds_the_full_manifest_but_preserves_rich_views() {
+        let base = base_tile_version(&[0x11; 32], None, None);
+        let first = super::google_tile_version(base.clone(), Some(&"2".repeat(64)));
+        let second =
+            super::google_tile_version(base.clone(), Some(&format!("{}3", "2".repeat(63))));
+        assert_ne!(first, second);
+        assert_eq!(super::google_tile_version(base.clone(), None), base);
+        assert!(first.ends_with(&format!("-gi-{}", "2".repeat(64))));
+        assert!(is_generation_of(&format!("{first}-r2"), &first));
+        for view in View::ALL {
+            assert_eq!(
+                rich_tile_version(&base, view),
+                rich_tile_version(&first, view)
+            );
+        }
     }
 
     #[test]

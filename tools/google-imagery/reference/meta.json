@@ -1,0 +1,147 @@
+{
+  "schema_version": 2,
+  "world_sha256": "800628be026c3d7e7ab6e908b5fbc8588d6f747122140eb24f6f5a6639419661",
+  "land_cover_sha256": "217fdf2e5aeed51b7bbee3f798b1f136b7c016843385bd3af3202ecc22b35643",
+  "terrain_sha256": "d1fde8146efed1c765f9ce0f3ca92caf38def8218541df71c203eed5b7fad58c",
+  "iso_bounds": [
+    966777.6,
+    294079.7,
+    1023616.9,
+    323277.88
+  ],
+  "city_hall": [
+    986286.75,
+    310337.9
+  ],
+  "landmarks": [
+    {
+      "name": "Rocky",
+      "point": [
+        985764.5,
+        309110.2
+      ],
+      "min_zoom": 7,
+      "color": "#8f5f3b"
+    }
+  ],
+  "counts": {
+    "buildings": 545672,
+    "building_meshes": 3498,
+    "street_trees": 151371,
+    "transport_lines": 9360
+  },
+  "tile_version": "v66-canopy-envelope-800628be026c3d7e-lc-217fdf2e5aeed51b7bbee3f798b1f136b7c016843385bd3af3202ecc22b35643-tr-d1fde8146efed1c765f9ce0f3ca92caf38def8218541df71c203eed5b7fad58c",
+  "max_tile_zoom": 8,
+  "max_zoom": 10,
+  "home_zoom": 3,
+  "rich": {
+    "views": [
+      {
+        "id": "se",
+        "label": "Southeast",
+        "iso_bounds": [
+          983760.1,
+          308326.94,
+          989476.25,
+          311405.06
+        ],
+        "city_hall": [
+          986286.75,
+          310337.9
+        ],
+        "landmarks": [
+          {
+            "name": "Rocky",
+            "point": [
+              985764.5,
+              309110.2
+            ],
+            "min_zoom": 4,
+            "color": "#8f5f3b"
+          }
+        ],
+        "tile_version": "v54-shared-palette-rich-style-rich-se-z5-full"
+      },
+      {
+        "id": "sw",
+        "label": "Southwest",
+        "iso_bounds": [
+          -622810.1,
+          491539.06,
+          -617335.9,
+          494738.12
+        ],
+        "city_hall": [
+          -621015.4,
+          492973.6
+        ],
+        "landmarks": [
+          {
+            "name": "Rocky",
+            "point": [
+              -618250.4,
+              492867.25
+            ],
+            "min_zoom": 4,
+            "color": "#8f5f3b"
+          }
+        ],
+        "tile_version": "v54-shared-palette-rich-style-rich-sw-z5-full"
+      },
+      {
+        "id": "nw",
+        "label": "Northwest",
+        "iso_bounds": [
+          -989476.25,
+          -311746.06,
+          -983760.1,
+          -308667.94
+        ],
+        "city_hall": [
+          -986286.75,
+          -310677.47
+        ],
+        "landmarks": [
+          {
+            "name": "Rocky",
+            "point": [
+              -985764.5,
+              -309140.2
+            ],
+            "min_zoom": 4,
+            "color": "#8f5f3b"
+          }
+        ],
+        "tile_version": "v54-shared-palette-rich-style-rich-nw-z5-full"
+      },
+      {
+        "id": "ne",
+        "label": "Northeast",
+        "iso_bounds": [
+          617335.9,
+          -495079.12,
+          622810.1,
+          -491880.06
+        ],
+        "city_hall": [
+          621015.4,
+          -493313.16
+        ],
+        "landmarks": [
+          {
+            "name": "Rocky",
+            "point": [
+              618250.4,
+              -492897.25
+            ],
+            "min_zoom": 4,
+            "color": "#8f5f3b"
+          }
+        ],
+        "tile_version": "v54-shared-palette-rich-style-rich-ne-z5-full"
+      }
+    ],
+    "home_zoom": 4,
+    "max_tile_zoom": 5
+  }
+}

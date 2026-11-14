@@ -16,10 +16,7 @@
 /texture-coverage.json
   Cache-Control: public, max-age=3600
 
-/app.js
-  Cache-Control: no-cache
-
-/city-overlay.js
+/*.js
   Cache-Control: no-cache
 
 /neighborhoods.json

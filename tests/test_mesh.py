@@ -4,7 +4,6 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from isophilly_ingest.mesh import (
     MeshParseError,
@@ -103,9 +102,8 @@ class I3SMeshTests(unittest.TestCase):
             (texture_dir / "1.jpg").write_bytes(b"first")
             (texture_dir / "2.jpg").write_bytes(b"second")
 
-            with patch("isophilly_ingest.mesh.MESH_TEXTURE_DIR", texture_dir):
-                forward = texture_digest([first, second])
-                reverse = texture_digest([second, first])
+            forward = texture_digest([first, second], texture_dir)
+            reverse = texture_digest([second, first], texture_dir)
 
             self.assertEqual(forward, reverse)
 

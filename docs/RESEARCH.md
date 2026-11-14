@@ -1,5 +1,21 @@
 # Research: deterministic isometric Philadelphia
 
+Implementation update, 2026-11-14. The project owner authorized a Google imagery
+integration after reviewing Isometric SF. The optional
+[capture workflow](GOOGLE_IMAGERY.md) uses Google's photographed 3D geometry
+with IsoPhilly's existing projection and deterministic color finish. It does
+not train a model or copy SF's artwork. Existing photographed mesh coverage is
+protected. The workflow assumes permission under the operator's applicable
+imagery agreement; it does not change the standard-terms findings below.
+The complete 9,214-tile Google Earth source atlas has been captured without an
+API key. Matching viewer comparisons cover Center City and the outer
+neighborhoods. The existing projection and color finish are retained. A separate
+water mask allows the existing water treatment without overwriting source photos.
+See the [citywide capture workflow](GOOGLE_EARTH.md). Full-city file checks and
+visual review remain required for each generated release.
+The public viewer currently opens citywide, not at the earlier recommended
+Center City extent.
+
 Research updated: 2026-09-05. This is deliberately a **data-and-rendering**
 recommendation, not a proposal to train or ship a generative-image product.
 

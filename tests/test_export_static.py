@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.export_static import export_site, parse_inventory
+from scripts.export_static import STATIC_FILES, export_site, parse_inventory
 
 
 class StaticExportTests(unittest.TestCase):
@@ -15,13 +15,7 @@ class StaticExportTests(unittest.TestCase):
             root = Path(directory)
             static = root / "static"
             static.mkdir()
-            for name in (
-                "index.html",
-                "app.js",
-                "city-overlay.js",
-                "neighborhoods.json",
-                "_headers",
-            ):
+            for name in STATIC_FILES:
                 (static / name).write_text(name)
 
             version = "v1-test"
@@ -49,7 +43,7 @@ class StaticExportTests(unittest.TestCase):
             output = root / "dist"
             files, _ = export_site(root, output)
 
-            self.assertEqual(files, 16)
+            self.assertEqual(files, 11 + len(STATIC_FILES))
             self.assertEqual((output / "tiles/0/0/0.webp").read_bytes(), tile_bytes)
             coverage = json.loads((output / "coverage.json").read_text())
             self.assertEqual(coverage["tile_version"], version)

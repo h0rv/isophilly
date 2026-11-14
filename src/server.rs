@@ -12,6 +12,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::{
+    google_imagery::GoogleImagery,
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     pyramid::{self, ART_ZOOM, TileInventory, tile_path},
@@ -20,7 +21,7 @@ use crate::{
     terrain::Terrain,
     texture::AerialSource,
     tile_codec::{EXTENSION, MEDIA_TYPE},
-    tile_identity::{base_tile_version, is_generation_of, rich_tile_version},
+    tile_identity::{base_tile_version, google_tile_version, is_generation_of, rich_tile_version},
     world::World,
 };
 
@@ -98,6 +99,7 @@ pub async fn serve(port: u16) -> io::Result<()> {
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/city-overlay.js", get(city_overlay_js))
+        .route("/{asset}", get(presentation_asset))
         .route("/neighborhoods.json", get(neighborhoods))
         .route("/meta", get(meta))
         .route("/coverage.json", get(coverage))
@@ -122,12 +124,30 @@ pub fn prebuild(
     land_cover: Option<&LandCoverMask>,
     terrain: Option<&Terrain>,
 ) -> io::Result<()> {
+    prebuild_with_google(world, aerial, mesh_textures, land_cover, terrain, None)
+}
+
+pub(crate) fn prebuild_with_google(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
+    google: Option<&GoogleImagery>,
+) -> io::Result<()> {
+    if let Some(google) = google {
+        google.validate(world)?;
+    }
     let land_cover_sha256 = land_cover.map(LandCoverMask::artifact_sha256);
     let terrain_sha256 = terrain.map(Terrain::artifact_sha256);
-    let base_version = base_tile_version(
-        &world.world_sha256,
-        land_cover_sha256.as_ref(),
-        terrain_sha256.as_ref(),
+    let google_digest = google.map(|google| digest_hex(google.sha256()));
+    let base_version = google_tile_version(
+        base_tile_version(
+            &world.world_sha256,
+            land_cover_sha256.as_ref(),
+            terrain_sha256.as_ref(),
+        ),
+        google_digest.as_deref(),
     );
     let tile_root = PathBuf::from("data/tiles");
     std::fs::create_dir_all(&tile_root)?;
@@ -146,7 +166,19 @@ pub fn prebuild(
         let tile_version = available_tile_version(&base_version)?;
         let tile_dir = tile_cache_dir(&tile_version);
         let staging = tile_root.join(format!(".{tile_version}.building"));
-        pyramid::build(world, aerial, mesh_textures, land_cover, terrain, &staging)?;
+        if let Some(google) = google {
+            pyramid::build_with_google(
+                world,
+                aerial,
+                mesh_textures,
+                land_cover,
+                terrain,
+                Some(google),
+                &staging,
+            )?;
+        } else {
+            pyramid::build(world, aerial, mesh_textures, land_cover, terrain, &staging)?;
+        }
         std::fs::rename(&staging, &tile_dir)?;
         tile_version
     };
@@ -172,6 +204,7 @@ pub fn prebuild(
         terrain_sha256.as_ref(),
         tile_version,
         &rich_versions,
+        google,
     )?;
     scene.write_current()
 }
@@ -181,11 +214,44 @@ pub fn prebuild_is_complete(
     land_cover_sha256: Option<&[u8; 32]>,
     terrain_sha256: Option<&[u8; 32]>,
 ) -> bool {
-    let base_version = base_tile_version(world_sha256, land_cover_sha256, terrain_sha256);
+    prebuild_is_complete_for_inputs(world_sha256, land_cover_sha256, terrain_sha256, None)
+}
+
+pub(crate) fn prebuild_is_complete_with_google(
+    world: &World,
+    land_cover_sha256: Option<&[u8; 32]>,
+    terrain_sha256: Option<&[u8; 32]>,
+    google: &GoogleImagery,
+) -> io::Result<bool> {
+    google.validate(world)?;
+    Ok(prebuild_is_complete_for_inputs(
+        &world.world_sha256,
+        land_cover_sha256,
+        terrain_sha256,
+        Some(google),
+    ))
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn prebuild_is_complete_for_inputs(
+    world_sha256: &[u8; 32],
+    land_cover_sha256: Option<&[u8; 32]>,
+    terrain_sha256: Option<&[u8; 32]>,
+    google: Option<&GoogleImagery>,
+) -> bool {
+    let google_digest = google.map(|google| digest_hex(google.sha256()));
+    let base_version = google_tile_version(
+        base_tile_version(world_sha256, land_cover_sha256, terrain_sha256),
+        google_digest.as_deref(),
+    );
     let Ok(current) = Scene::read_current() else {
         return false;
     };
     if !current.matches_inputs(world_sha256, land_cover_sha256, terrain_sha256)
+        || !current.matches_google_imagery(google)
         || !is_generation_of(&current.tile_version, &base_version)
         || pyramid::validate_complete(&tile_cache_dir(&current.tile_version)).is_err()
         || current
@@ -217,6 +283,19 @@ async fn app_js() -> Result<impl IntoResponse, StatusCode> {
 
 async fn city_overlay_js() -> Result<impl IntoResponse, StatusCode> {
     static_file("static/city-overlay.js", "text/javascript; charset=utf-8").await
+}
+
+async fn presentation_asset(AxumPath(asset): AxumPath<String>) -> Result<Response, StatusCode> {
+    let content_type = match asset.as_str() {
+        "map-presentation.js"
+        | "map-search.js"
+        | "map-projection.js"
+        | "presentation-config.js" => "text/javascript; charset=utf-8",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    static_file(&format!("static/{asset}"), content_type)
+        .await
+        .map(IntoResponse::into_response)
 }
 
 async fn neighborhoods() -> Result<impl IntoResponse, StatusCode> {

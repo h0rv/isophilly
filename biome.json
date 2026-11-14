@@ -1,7 +1,23 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
   "files": {
-    "includes": ["static/app.js", "static/city-overlay.js", "tests/city-overlay.test.js", "scripts/visual-check.mjs"]
+    "includes": [
+      "static/app.js",
+      "static/city-overlay.js",
+      "static/map-presentation.js",
+      "static/map-projection.js",
+      "static/map-search.js",
+      "static/presentation-config.js",
+      "tests/map-presentation.test.js",
+      "tests/map-controls.test.js",
+      "tests/city-overlay.test.js",
+      "tests/google-imagery.test.js",
+      "scripts/visual-check.mjs",
+      "scripts/google-imagery*.mjs",
+      "scripts/google-earth*.mjs",
+      "tests/google-earth*.test.js",
+      "tools/google-imagery/*.js"
+    ]
   },
   "linter": {
     "enabled": true,

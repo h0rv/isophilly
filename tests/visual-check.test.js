@@ -27,7 +27,7 @@ import {
   writeJsonAtomic,
 } from "../scripts/visual-check-lib.mjs";
 
-test("the public UI always opens the vivid citywide scene", async () => {
+test("the public UI uses the city atlas without extra view modes", async () => {
   const index = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
   const app = await readFile(new URL("../static/app.js", import.meta.url), "utf8");
   const visualCheck = await readFile(
@@ -53,7 +53,7 @@ test("the map header stays focused and City Hall returns to the normal view", as
   assert.doesNotMatch(app, /citywide buildings|sunState|z\$\{viewZoom\}/);
   assert.match(app, /function currentTileZoom\(\) \{\n  return Math\.max\(0, Math\.min\(sceneMaxZoom\(\), Math\.round\(Math\.log2\(zoom\) \+ BASE_TILE_ZOOM\)\)\);\n\}/);
   assert.match(app, /function centerCityHall\(tileZoom = currentTileZoom\(\)\)/);
-  assert.match(app, /event\.key === "0"\) centerCityHall\(\)/);
+  assert.match(app, /event\.key === "0"\) centerCityHall\(7\)/);
   assert.match(index, /Repository: h0rv\/isophilly/);
 });
 

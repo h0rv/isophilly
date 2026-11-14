@@ -53,6 +53,20 @@ export function isometricLonLat(longitude, latitude, height = 0) {
   return [broadEast + broadNorth, (broadEast - broadNorth) * 0.5 - height];
 }
 
+/** Inverse of the renderer's southeast view, at the requested height.
+ * @param {number} x @param {number} y @param {number} [height]
+ * @returns {[number, number]}
+ */
+export function isometricToStatePlane(x, y, height = 0) {
+  const east = x * 0.5 + y + height;
+  const north = x * 0.5 - y - height;
+  const norm = BROAD_NORTH_NORTH ** 2 + BROAD_NORTH_EAST ** 2;
+  return [
+    (BROAD_NORTH_NORTH * east + BROAD_NORTH_EAST * north) / norm,
+    (-BROAD_NORTH_EAST * east + BROAD_NORTH_NORTH * north) / norm,
+  ];
+}
+
 /** @typedef {{ altitude: number, azimuth: number }} SolarPosition */
 
 /** Deterministic NOAA-style solar position, accurate enough for map lighting. */

@@ -3,49 +3,62 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Explore Philadelphia through the City's textured 3D scene and 2025 aerial photography.">
-  <meta name="theme-color" content="#191714">
+  <meta name="description" content="Explore Philadelphia as an isometric pixel map, with neighborhood names and optional borders.">
+  <meta name="theme-color" content="#e8dfd0">
   <title>IsoPhilly</title>
   <link rel="icon" href="data:,">
   <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; color: #302d28; }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #ded4c4; }
     canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
     canvas.dragging { cursor: grabbing; }
-    canvas:focus-visible { outline: 3px solid #b8754f; outline-offset: -3px; }
-    header { position: fixed; z-index: 1; background: #191714ed; color: #f6f0e6; backdrop-filter: blur(12px); }
-    header { top: .7rem; left: .7rem; right: .7rem; display: flex; gap: .75rem; align-items: center; min-height: 3.1rem; padding: .55rem .7rem .55rem .9rem; border: 1px solid #ffffff17; border-radius: .8rem; box-shadow: 0 .5rem 2rem #241d1645; }
-    h1 { margin: 0; font-size: 1.08rem; letter-spacing: -.035em; }
-    #status { color: #c7bfb2; font-size: .8rem; }
-    .orientation { color: #9f978c; font-size: .72rem; white-space: nowrap; }
-    .controls { display: flex; gap: .3rem; margin-left: auto; }
-    button { min-width: 2rem; border: 1px solid #625b52; background: #302d28; color: #f6f0e6; border-radius: 999px; padding: .34rem .65rem; cursor: pointer; font: inherit; font-size: .78rem; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
-    button:hover { background: #464039; transform: translateY(-1px); }
-    button:disabled { cursor: not-allowed; opacity: .46; transform: none; }
-    button:disabled:hover { background: #302d28; }
-    button[aria-pressed="true"] { border-color: #dc9e67; background: #68462f; }
-    button:focus-visible, summary:focus-visible { outline: 2px solid #c88a6b; outline-offset: 2px; }
-    details { position: relative; font-size: .75rem; }
-    summary { cursor: pointer; color: #c7bfb2; padding: .3rem; }
-    .legend { position: absolute; right: 0; top: 2rem; width: min(31rem, calc(100vw - 1.4rem)); padding: .8rem .9rem; background: #191714f7; border: 1px solid #484239; border-radius: .65rem; line-height: 1.55; box-shadow: 0 .5rem 1.5rem #0005; }
-    .legend a { color: #c7bfb2; }
-    footer { position: fixed; right: .55rem; bottom: .45rem; z-index: 1; padding: .28rem .45rem; background: #191714dc; border: 1px solid #ffffff14; border-radius: 999px; font-size: .65rem; backdrop-filter: blur(8px); }
-    footer a { color: #ded6ca; }
+    canvas:focus-visible { outline: 2px solid #786b58; outline-offset: -2px; }
+    header { position: fixed; z-index: 2; top: 12px; left: 12px; display: flex; align-items: center; gap: 15px; padding: 9px 12px; background: #f3ecdfed; border: 1px solid #b8ac985e; border-radius: 5px; box-shadow: 0 2px 8px #33291b12; }
+    h1 { margin: 0; font-size: 16px; letter-spacing: -.5px; font-weight: 700; }
+    .orientation { font-size: 11px; color: #766d60; }
+    .controls { display: flex; align-items: center; gap: 4px; }
+    button, summary { font: inherit; font-size: 12px; color: #51493d; cursor: pointer; }
+    button { border: 1px solid transparent; border-radius: 3px; padding: 6px 8px; background: transparent; }
+    button:hover, summary:hover { color: #211e19; background: #e5dbca; }
+    button:disabled { opacity: .45; cursor: default; }
+    button[aria-pressed="true"] { background: #d9ceba; color: #211e19; border-color: #b6a88f; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid #786b58; outline-offset: 2px; }
+    #status { position: fixed; left: 12px; top: 66px; padding: 5px 8px; font-size: 12px; background: #f3ecdfeb; border-radius: 3px; color: #6b6051; }
+    .map-navigation { position: fixed; z-index: 1; left: 12px; bottom: 12px; display: flex; gap: 1px; padding: 3px; background: #f3ecdfed; border: 1px solid #b8ac985e; border-radius: 5px; }
+    .map-navigation button { min-width: 34px; min-height: 32px; }
+    #zoom-out, #zoom-in { font-size: 19px; line-height: 1; }
+    #home { padding-inline: 11px; font-size: 12px; }
+    details { position: relative; }
+    .search-popover { position: fixed; top: 70px; left: 12px; width: min(360px, calc(100vw - 24px)); padding: 12px; background: #f7f1e7; border: 1px solid #c9bca7; border-radius: 5px; box-shadow: 0 6px 20px #33291b1a; font-size: 12px; }
+    #address-search { display: flex; gap: 5px; }
+    #address-input { min-width: 0; flex: 1; padding: 10px; font: inherit; font-size: 16px; border: 1px solid #b8ac98; border-radius: 3px; background: #fffaf2; color: #302d28; }
+    #address-search button { min-height: 44px; background: #e5dbca; }
+    #address-results { margin-top: 8px; line-height: 1.5; }
+    #address-results:empty { display: none; }
+    #address-results button { display: block; width: 100%; min-height: 44px; text-align: left; }
+    .search-credit { display: block; margin-top: 8px; font-size: 10px; color: #766d60; }
+    summary { list-style: none; padding: 6px 8px; border-radius: 3px; }
+    summary::-webkit-details-marker { display: none; }
+    .legend { position: absolute; top: 42px; left: -210px; width: 300px; padding: 18px; background: #f7f1e7; border: 1px solid #c9bca7; border-radius: 5px; font-size: 12px; line-height: 1.6; box-shadow: 0 6px 20px #33291b1a; }
+    .legend h2 { font-size: 15px; margin: 0 0 9px; color: #302d28; }
+    .legend p { margin: 9px 0; }
+    .legend a { color: #655644; text-decoration-color: #c2b49d; text-underline-offset: 2px; }
+    .legend .sources { margin-top: 13px; border-top: 1px solid #ddd1bd; padding-top: 10px; }
+    .sources div { margin-top: 5px; }
+    #google-imagery-credit { display: block; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     @media (max-width: 620px) {
-      header { top: .4rem; left: .4rem; right: .4rem; gap: .35rem; padding: .35rem .4rem .35rem .65rem; }
-      h1 { font-size: .95rem; }
-      #status, #zoom-out, #zoom-in, #home, #rocky { display: none; }
-      #neighborhoods-toggle, #local-areas-toggle { font-size: 0; padding: .25rem; }
-      #neighborhoods-toggle::after { content: "N"; font-size: .78rem; }
-      #local-areas-toggle::after { content: "Local"; font-size: .72rem; }
-      #neighborhoods-toggle:disabled, #local-areas-toggle:disabled { display: none; }
+      header { top: 8px; left: 8px; right: 8px; justify-content: space-between; gap: 6px; padding: 5px 9px; }
+      h1 { font-size: 15px; }
       .orientation { display: none; }
-      .controls { margin-left: auto; }
-      button, summary { min-width: 2.75rem; min-height: 2.75rem; display: inline-flex; align-items: center; justify-content: center; padding: .25rem .55rem; }
-      .legend { position: fixed; left: .5rem; right: .5rem; top: 3.8rem; width: auto; max-height: calc(100vh - 4.3rem); overflow: auto; white-space: normal; }
+      button, summary { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+      .controls { gap: 1px; }
+      .legend { position: fixed; left: 8px; right: 8px; top: 62px; width: auto; max-height: calc(100dvh - 130px); overflow: auto; padding: 18px; }
+      .map-navigation { left: 8px; bottom: 10px; }
+      .map-navigation button { min-width: 44px; min-height: 44px; }
+      #status { left: 8px; top: 61px; }
     }
   </style>
   <script src="/app.js" type="module"></script>
@@ -53,36 +66,50 @@
 <body>
   <header>
     <h1>IsoPhilly</h1>
-    <span id="status" aria-live="polite">Loading map...</span>
     <span id="orientation" class="orientation" title="North points up and right">↗ N</span>
-    <nav class="controls" aria-label="Map controls">
-      <button id="neighborhoods-toggle" aria-pressed="false" title="Loading planning neighborhood boundaries" disabled>Neighborhoods</button>
-      <button id="local-areas-toggle" aria-pressed="false" title="Loading local cultural and commercial areas" disabled>Local areas</button>
-      <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
-      <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
-      <button id="home">City Hall</button>
-      <button id="rocky" title="Visit Rocky on the Philadelphia Museum of Art steps">Rocky</button>
-      <button id="retry" hidden>Retry</button>
+    <nav class="controls" aria-label="Map layers">
+      <button id="neighborhoods-toggle" aria-pressed="true" title="Show neighborhood and local district names" disabled>Names</button>
+      <button id="local-areas-toggle" aria-pressed="false" title="Show official neighborhood borders" disabled>Borders</button>
     </nav>
-    <details>
-      <summary>Info</summary>
+    <details id="search-panel">
+      <summary>Search</summary>
+      <div class="search-popover">
+        <form id="address-search" role="search">
+          <label for="address-input" class="sr-only">Philadelphia address or place</label>
+          <input id="address-input" type="search" placeholder="Address or place in Philly" autocomplete="off" maxlength="160" enterkeyhint="search" required>
+          <button type="submit">Find</button>
+        </form>
+        <div id="address-results" aria-live="polite"></div>
+        <a class="search-credit" href="https://www.esri.com/" target="_blank" rel="noreferrer">Powered by Esri</a>
+      </div>
+    </details>
+    <details id="about-panel">
+      <summary>About</summary>
       <div class="legend">
-        <div>Drag or use arrow keys to move around. Use the wheel, pinch, plus, or minus to zoom.</div>
-        <div>Press 0 or choose City Hall to center the map there. Press R or choose Rocky to see the museum steps.</div>
-        <div>This map uses 2025 aerial photos, city building data, and 2025 street tree locations. Tree crowns are estimates.</div>
-        <div>Neighborhoods shows Planning Commission areas. Local areas shows selected cultural and shopping areas when you zoom in.</div>
-        <div><a href="https://github.com/h0rv/isophilly" target="_blank" rel="noreferrer">Repository: h0rv/isophilly</a></div>
-        <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">Planning neighborhoods from the Philadelphia City Planning Commission</a></div>
-        <div><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">2025 aerial photos from the City of Philadelphia and PASDA</a></div>
-        <div><a href="https://opendataphilly.org/datasets/philadelphia-tree-inventory/" target="_blank" rel="noreferrer">2025 tree inventory from Philadelphia Parks and Recreation</a></div>
-        <div><a href="https://services5.arcgis.com/N82JbI5EYtAkuUKU/ArcGIS/rest/services/Philadelphia_Buildings/SceneServer" target="_blank" rel="noreferrer">2015 building textures from the City of Philadelphia</a></div>
+        <h2>Philadelphia, in pixels.</h2>
+        <p>Drag to explore. Scroll or pinch to zoom. Choose City Hall to return to Center City.</p>
+        <p>Names includes neighborhoods and local districts. Borders adds official neighborhood outlines, without covering the map with colored areas.</p>
+        <p id="google-imagery-info" hidden>Google 3D imagery, rendered in IsoPhilly's isometric view with its original colors. Photos can differ in date and season.</p>
+        <p data-city-imagery>City aerial photography and building data. Tree shapes are illustrative.</p>
+        <div class="sources">
+          <div id="google-imagery-credit" hidden></div>
+          <div><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a><span data-city-imagery>, <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></span></div>
+          <div>Address searches go to Esri only when submitted. No address history is saved.</div>
+          <div><a href="https://github.com/h0rv/isophilly" target="_blank" rel="noreferrer">Repository: h0rv/isophilly</a></div>
+          <div><a href="https://services1.arcgis.com/CtMjdUqInecbPao9/arcgis/rest/services/Philly_Planning_Neighborhoods/FeatureServer/11" target="_blank" rel="noreferrer">Neighborhood data from the City of Philadelphia</a></div>
+          <div data-city-imagery><a href="https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/PhiladelphiaImagery2025/MapServer" target="_blank" rel="noreferrer">City aerial imagery and PASDA</a></div>
+        </div>
       </div>
     </details>
   </header>
-  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Wheel, pinch, or use plus and minus to zoom. Press 0 for City Hall. Press R for Rocky at the Philadelphia Museum of Art steps.</p>
-  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">
-    Interactive isometric map of Philadelphia. Use plus and minus to zoom and arrow keys to pan.
-  </canvas>
-  <footer><a href="https://opendataphilly.org/" target="_blank" rel="noreferrer">City of Philadelphia</a>, <a href="https://www.pasda.psu.edu/" target="_blank" rel="noreferrer">PASDA</a></footer>
+  <span id="status" aria-live="polite">Loading map…</span>
+  <nav class="map-navigation" aria-label="Map navigation">
+    <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
+    <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+    <button id="home" title="Return to Center City">City Hall</button>
+    <button id="retry" hidden>Retry</button>
+  </nav>
+  <p id="map-help" class="sr-only">Drag or use arrow keys to explore. Scroll, pinch, or use plus and minus to zoom. Press 0 for City Hall. Names shows neighborhood and local district names. Borders shows official neighborhood outlines.</p>
+  <canvas id="map" tabindex="0" aria-label="Interactive isometric map of Philadelphia" aria-describedby="map-help">Interactive isometric map of Philadelphia.</canvas>
 </body>
 </html>

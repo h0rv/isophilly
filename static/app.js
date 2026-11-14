@@ -1,14 +1,23 @@
 // @ts-check
 
-import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js";
+import { isometricLonLat } from "./city-overlay.js";
+import { createMapPresentation } from "./map-presentation.js";
+import { applyProjection, IDENTITY_PROJECTION, validateProjection } from "./map-projection.js";
+import { createAddressSearch } from "./map-search.js";
+import { presentationConfig, VIEWER_CONFIG } from "./presentation-config.js";
 
 /**
  * @typedef {{
  *   iso_bounds: [number, number, number, number],
+ *   projection?: import('./map-projection.js').MapProjection,
  *   city_hall: [number, number] | null,
  *   landmarks: { name: string, point: [number, number], min_zoom: number, color: string }[],
  *   counts: { buildings: number, building_meshes: number },
  *   tile_version: string,
+ *   google_imagery_sha256?: string,
+ *   google_attributions?: string[],
+ *   imagery_attributions?: string[],
+ *   tile_size?: number,
  *   max_tile_zoom: number,
  *   max_zoom: number,
  *   home_zoom: number,
@@ -25,7 +34,6 @@ import { isometricLonLat, lightingState, solarPosition } from "./city-overlay.js
 const canvasElement = document.querySelector("#map");
 const statusElement = document.querySelector("#status");
 const homeElement = document.querySelector("#home");
-const rockyElement = document.querySelector("#rocky");
 const zoomInElement = document.querySelector("#zoom-in");
 const zoomOutElement = document.querySelector("#zoom-out");
 const retryElement = document.querySelector("#retry");
@@ -36,7 +44,6 @@ if (
   !(canvasElement instanceof HTMLCanvasElement) ||
   !(statusElement instanceof HTMLSpanElement) ||
   !(homeElement instanceof HTMLButtonElement) ||
-  !(rockyElement instanceof HTMLButtonElement) ||
   !(zoomInElement instanceof HTMLButtonElement) ||
   !(zoomOutElement instanceof HTMLButtonElement) ||
   !(retryElement instanceof HTMLButtonElement) ||
@@ -49,7 +56,6 @@ if (
 const canvas = canvasElement;
 const statusText = statusElement;
 const home = homeElement;
-const rocky = rockyElement;
 const zoomIn = zoomInElement;
 const zoomOut = zoomOutElement;
 const retry = retryElement;
@@ -59,9 +65,12 @@ const orientation = orientationElement;
 const context = canvas.getContext("2d");
 if (context === null) throw new Error("2D canvas is unavailable");
 const ctx = context;
+const imagery = createMapPresentation(presentationConfig());
+const mapContext = imagery.context;
 
 /** @type {Meta | undefined} */
 let meta;
+let mapProjection = IDENTITY_PROJECTION;
 /** @type {Set<string> | undefined} */
 let availableTiles;
 let zoom = 1;
@@ -76,11 +85,16 @@ let pinch;
 /** @type {{ x: number, y: number } | undefined} */
 let lastPointer;
 let drawing = false;
+let visibleTileCount = 0;
 /** @type {Neighborhoods | undefined} */
 let neighborhoodData;
+/** @type {[number, number] | undefined} */
+let searchPoint;
 /** @type {WeakMap<Neighborhood, { rings: [number, number][][], bounds: [number, number, number, number] }>} */
 const areaProjectionCache = new WeakMap();
-let showNeighborhoods = false;
+// Names combine official neighborhoods with local districts. Borders are a
+// separate, quieter layer, rather than a second set of filled polygons.
+let showNeighborhoods = true;
 let showLocalAreas = false;
 const richMode = false;
 /** @type {Map<string, HTMLImageElement>} */
@@ -89,15 +103,19 @@ const tiles = new Map();
 const failures = new Map();
 const MIN_ZOOM = 0.7;
 const BASE_TILE_ZOOM = 2;
-const PREVIEW_TILE_ZOOM = 5;
-const MAX_CACHED_TILES = 512;
+const touchDevice = matchMedia("(pointer: coarse)").matches;
 const MAX_TILE_ATTEMPTS = 4;
 const PREFETCH_VIEW_LIMIT = 64;
 let activeView = "";
 /** @type {string | undefined} */
 let scheduledPrefetch;
 const prefetchedViews = new Set();
-const LIGHTING_TIME = new URLSearchParams(location.search).get("time");
+/** @param {number} longitude @param {number} latitude @returns {[number, number]} */
+function mapPoint(longitude, latitude) {
+  const [x, y] = isometricLonLat(longitude, latitude);
+  const [px, py] = applyProjection(x, y, 0, mapProjection);
+  return [px, py];
+}
 
 function city() {
   if (meta === undefined) throw new Error("city metadata is not loaded");
@@ -149,6 +167,7 @@ function resize() {
   canvas.style.height = `${viewportHeight}px`;
   ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   ctx.imageSmoothingEnabled = false;
+  imagery.resize(viewportWidth, viewportHeight);
   draw();
 }
 
@@ -163,7 +182,19 @@ function hasTile(z, x, y) {
 }
 
 function pruneTiles() {
-  while (tiles.size >= MAX_CACHED_TILES) {
+  // Keep the decoded-image budget near the original 256px atlas, rather than
+  // using four times as much browser memory for 512px imagery.
+  const pixels = meta?.tile_size ?? 256;
+  const limit = Math.max(
+    32,
+    visibleTileCount + 16,
+    Math.floor(
+      ((touchDevice ? VIEWER_CONFIG.touchDecodedCacheMiB : VIEWER_CONFIG.decodedCacheMiB) *
+        1024 ** 2) /
+        (pixels * pixels * 4),
+    ),
+  );
+  while (tiles.size >= limit) {
     const oldest = tiles.keys().next().value;
     if (typeof oldest !== "string") return;
     tiles.delete(oldest);
@@ -186,6 +217,14 @@ function imageSettled(image) {
  * @param {number} count
  */
 function schedulePrefetch(view, z, coordinates, count) {
+  const connection = "connection" in navigator ? navigator.connection : undefined;
+  if (
+    typeof connection === "object" &&
+    connection !== null &&
+    "saveData" in connection &&
+    connection.saveData
+  )
+    return;
   if (coordinates.length === 0 || prefetchedViews.has(view) || scheduledPrefetch === view) return;
   scheduledPrefetch = view;
   canvas.dataset.prefetch = "scheduled";
@@ -205,29 +244,37 @@ function schedulePrefetch(view, z, coordinates, count) {
     const maxX = Math.min(count - 1, Math.max(...xs) + 1);
     const minY = Math.max(0, Math.min(...ys) - 1);
     const maxY = Math.min(count - 1, Math.max(...ys) + 1);
-    const images = [];
+    const neighbors = [];
     for (let y = minY; y <= maxY; y += 1) {
       for (let x = minX; x <= maxX; x += 1) {
-        if (visible.has(`${x}/${y}`)) continue;
-        const image = requestTile(z, x, y);
-        if (image !== undefined) images.push(imageSettled(image));
+        if (!visible.has(`${x}/${y}`) && hasTile(z, x, y)) neighbors.push({ x, y });
       }
+    }
+    const cx = (minX + maxX) / 2,
+      cy = (minY + maxY) / 2;
+    neighbors.sort((a, b) => (a.x - cx) ** 2 + (a.y - cy) ** 2 - (b.x - cx) ** 2 - (b.y - cy) ** 2);
+    const budget = touchDevice ? VIEWER_CONFIG.touchPrefetchTiles : VIEWER_CONFIG.prefetchTiles;
+    const images = [];
+    for (const { x, y } of neighbors.slice(0, budget)) {
+      const image = requestTile(z, x, y, true);
+      if (image !== undefined) images.push(imageSettled(image));
     }
     canvas.dataset.prefetch = images.length === 0 ? "ready" : "loading";
     void Promise.all(images).then(() => {
       if (activeView === view) canvas.dataset.prefetch = "ready";
     });
   };
-  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 750 });
+  if ("requestIdleCallback" in window)
+    window.requestIdleCallback(run, { timeout: VIEWER_CONFIG.prefetchIdleTimeout });
   else setTimeout(run, 50);
 }
 
-/** @param {number} z @param {number} x @param {number} y */
-function requestTile(z, x, y) {
+/** @param {number} z @param {number} x @param {number} y @param {boolean} [prefetch] */
+function requestTile(z, x, y, prefetch = false) {
   const id = key(z, x, y);
   if (!hasTile(z, x, y)) {
     if (z > 0) {
-      const parentZ = Math.min(z - 1, PREVIEW_TILE_ZOOM);
+      const parentZ = z - 1;
       requestTile(parentZ, x >> (z - parentZ), y >> (z - parentZ));
     }
     return undefined;
@@ -243,11 +290,13 @@ function requestTile(z, x, y) {
     return undefined;
   }
   if (z > 0) {
-    const parentZ = Math.min(z - 1, PREVIEW_TILE_ZOOM);
+    const parentZ = z - 1;
     requestTile(parentZ, x >> (z - parentZ), y >> (z - parentZ));
   }
   pruneTiles();
   const image = new Image();
+  image.decoding = "async";
+  image.fetchPriority = prefetch ? "low" : "auto";
   image.onload = () => {
     failures.delete(id);
     draw();
@@ -273,8 +322,9 @@ function drawParent(z, x, y, destination) {
     const factor = 2 ** (z - parentZ);
     const image = tiles.get(key(parentZ, x >> (z - parentZ), y >> (z - parentZ)));
     if (image === undefined || !image.complete || !image.naturalWidth) continue;
-    const sourceSize = 256 / factor;
-    ctx.drawImage(
+    const sourceSize = image.naturalWidth / factor;
+    imagery.sampleTile(destination, sourceSize);
+    mapContext.drawImage(
       image,
       (x % factor) * sourceSize,
       (y % factor) * sourceSize,
@@ -292,11 +342,7 @@ function drawParent(z, x, y, destination) {
 
 /** @param {number} panX @param {number} panY @param {number} tileSize @param {number} x @param {number} y */
 function tileRectangle(panX, panY, tileSize, x, y) {
-  const left = Math.round(panX + x * tileSize);
-  const top = Math.round(panY + y * tileSize);
-  const right = Math.round(panX + (x + 1) * tileSize);
-  const bottom = Math.round(panY + (y + 1) * tileSize);
-  return { left, top, width: right - left, height: bottom - top };
+  return imagery.tileRectangle(panX, panY, tileSize, x, y);
 }
 
 function draw() {
@@ -316,10 +362,19 @@ function drawNow() {
   const cityHall = sceneCityHall();
   ctx.fillStyle = "#ded4c4";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+  mapContext.clearRect(0, 0, viewportWidth, viewportHeight);
   const viewZoom = Math.max(0, Math.min(maxZoom, Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
-  const z = Math.min(viewZoom, maxTileZoom);
   const side = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
   const scale = worldScale();
+  // Match source detail to screen resolution, including the real tile size.
+  const rasterScale = imagery.canvas.width / viewportWidth;
+  const z = Math.max(
+    0,
+    Math.min(
+      maxTileZoom,
+      Math.ceil(Math.log2((side * scale * rasterScale) / (meta.tile_size ?? 256))),
+    ),
+  );
   const count = 2 ** z;
   const tileSize = (side / count) * scale;
   clampCamera();
@@ -348,6 +403,9 @@ function drawNow() {
       (left.y - centerTileY) ** 2 -
       ((right.x - centerTileX) ** 2 + (right.y - centerTileY) ** 2),
   );
+  // Large viewports must retain their entire visible set, even when the
+  // higher-resolution image budget is smaller than the default tile count.
+  visibleTileCount = coordinates.filter(({ x, y }) => hasTile(z, x, y)).length;
   let requested = 0;
   let loaded = 0;
   let uncovered = 0;
@@ -359,7 +417,8 @@ function drawNow() {
     const image = requestTile(z, x, y);
     if (image?.complete && image.naturalWidth) {
       loaded += 1;
-      ctx.drawImage(
+      imagery.sampleTile(destination, image.naturalWidth, image.naturalHeight);
+      mapContext.drawImage(
         image,
         destination.left,
         destination.top,
@@ -375,7 +434,26 @@ function drawNow() {
       }
     }
   }
-  drawLighting();
+  imagery.drawTo(ctx, viewportWidth, viewportHeight, {
+    panX,
+    panY,
+    scale,
+    side,
+    coverage: availableTiles ?? new Set(),
+    version: sceneTileVersion(),
+  });
+  canvas.dataset.light = "day";
+  if (searchPoint !== undefined) {
+    const x = panX + (searchPoint[0] - bounds[0]) * scale;
+    const y = panY + (searchPoint[1] - bounds[1]) * scale;
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = "#f7f1e7";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#574d40";
+    ctx.stroke();
+  }
   canvas.dataset.areaLabels = "[]";
   canvas.dataset.planningAreas = "[]";
   canvas.dataset.localAreas = "[]";
@@ -383,7 +461,9 @@ function drawNow() {
     drawAreaOverlays(viewZoom, panX, panY, scale);
   }
   if (cityHall !== null) drawCityHall(cityHall, panX, panY, scale);
-  canvas.dataset.landmarks = JSON.stringify(drawLandmarks(viewZoom, panX, panY, scale));
+  canvas.dataset.landmarks = "[]";
+  canvas.dataset.names = String(showNeighborhoods);
+  canvas.dataset.borders = String(showLocalAreas);
   const pending = requested - loaded - failed;
   if (pending > 0) {
     statusText.hidden = false;
@@ -396,6 +476,7 @@ function drawNow() {
   }
   canvas.dataset.zoom = String(viewZoom);
   canvas.dataset.tileZoom = String(z);
+  canvas.dataset.tilePixels = String(meta?.tile_size ?? 256);
   canvas.dataset.requested = String(requested);
   canvas.dataset.loaded = String(loaded);
   canvas.dataset.pending = String(pending);
@@ -406,30 +487,13 @@ function drawNow() {
   if (pending === 0 && failed === 0) schedulePrefetch(view, z, coordinates, count);
 }
 
-function drawLighting() {
-  const requested = LIGHTING_TIME === null ? new Date() : new Date(LIGHTING_TIME);
-  const instant = Number.isNaN(requested.getTime()) ? new Date() : requested;
-  const solar = solarPosition(instant, 39.9526, -75.1652);
-  const lighting = lightingState(solar.altitude);
-  canvas.dataset.light = lighting.phase;
-  if (lighting.alpha === 0) return;
-  ctx.save();
-  ctx.globalAlpha = lighting.alpha;
-  ctx.fillStyle = lighting.color;
-  ctx.fillRect(0, 0, viewportWidth, viewportHeight);
-  ctx.restore();
-}
-
 /** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
 function drawAreaOverlays(z, panX, panY, scale) {
-  if (neighborhoodData === undefined || z < 3) return;
-  const planningAreas = showNeighborhoods
-    ? neighborhoodData.features.filter(
-        (area) =>
-          area.kind === "planning_neighborhood" && areaNearViewport(area, panX, panY, scale),
-      )
-    : [];
-  const localAreas = showLocalAreas
+  if (neighborhoodData === undefined || z < 2) return;
+  const planningAreas = neighborhoodData.features.filter(
+    (area) => area.kind === "planning_neighborhood" && areaNearViewport(area, panX, panY, scale),
+  );
+  const localAreas = showNeighborhoods
     ? neighborhoodData.features.filter(
         (area) =>
           area.kind === "local_area" &&
@@ -437,73 +501,85 @@ function drawAreaOverlays(z, panX, panY, scale) {
           areaNearViewport(area, panX, panY, scale),
       )
     : [];
-  const suppressedParents = new Set(localAreas.flatMap((area) => area.suppresses ?? []));
+  // Keep official neighborhood names, including Manayunk and East Falls.
+  // Local district names supplement them rather than suppressing their parents.
   /** @type {{ area: Neighborhood, rings: { x: number, y: number }[][] }[]} */
   const projectedPlanning = planningAreas.map((area) => ({
     area,
     rings: projectArea(area, panX, panY, scale),
   }));
-  /** @type {{ area: Neighborhood, rings: { x: number, y: number }[][] }[]} */
-  const projectedLocal = localAreas.map((area) => ({
-    area,
-    rings: projectArea(area, panX, panY, scale),
-  }));
-
-  for (const projected of projectedPlanning) drawAreaGeometry(projected.rings, "planning");
-  for (const projected of projectedLocal) {
-    if (projected.area.draw_geometry === true) {
-      drawAreaGeometry(projected.rings, "local");
-    }
+  if (showLocalAreas) for (const projected of projectedPlanning) drawAreaGeometry(projected.rings);
+  if (!showNeighborhoods) {
+    canvas.dataset.planningAreas = JSON.stringify(planningAreas.map((area) => area.name));
+    return;
   }
 
   /** @type {{ left: number, right: number, top: number, bottom: number }[]} */
   const occupiedLabels = [];
   /** @type {string[]} */
   const paintedLabels = [];
-  const labelBudget = Math.max(3, Math.floor((viewportWidth * viewportHeight) / 130_000));
+  const labelBudget = Math.max(10, Math.floor((viewportWidth * viewportHeight) / 23_000));
   const areas = [
+    ...planningAreas.filter((area) => !area.name.startsWith("Shared By ")),
     ...localAreas,
-    ...planningAreas.filter((area) => !suppressedParents.has(area.name)),
   ].toSorted((left, right) => {
-    const priority = (right.priority ?? 0) - (left.priority ?? 0);
-    if (priority !== 0) return priority;
-    if (left.kind !== right.kind) return left.kind === "local_area" ? -1 : 1;
-    return left.name.localeCompare(right.name);
+    if (left.kind !== right.kind) return left.kind === "planning_neighborhood" ? -1 : 1;
+    return (right.priority ?? 0) - (left.priority ?? 0) || left.name.localeCompare(right.name);
   });
-  for (const area of areas) {
-    if (paintedLabels.length >= labelBudget) break;
-    if (z < (area.kind === "local_area" ? 6 : 5)) continue;
-    const [isoX, isoY] = isometricLonLat(area.label[0], area.label[1]);
-    const x = panX + (isoX - city().iso_bounds[0]) * scale;
-    const y = panY + (isoY - city().iso_bounds[1]) * scale;
-    const topInset = viewportWidth <= 620 ? 64 : 76;
-    if (x < 8 || y < topInset || x > viewportWidth - 8 || y > viewportHeight - 8) continue;
-    const label = areaLabel(area);
-    ctx.font =
-      area.kind === "local_area"
-        ? "600 11px ui-sans-serif, system-ui"
-        : "500 10px ui-sans-serif, system-ui";
-    const width = ctx.measureText(label).width;
-    const labelBox = { left: x - 2, right: x + width + 2, top: y - 12, bottom: y + 3 };
-    if (
-      occupiedLabels.some(
-        (occupied) =>
-          labelBox.left < occupied.right &&
-          labelBox.right > occupied.left &&
-          labelBox.top < occupied.bottom &&
-          labelBox.bottom > occupied.top,
-      )
-    ) {
-      continue;
+  const occupiedCells = new Set();
+  const seenNames = new Set();
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  // First distribute names across the viewport, then fill remaining free space.
+  // A high-priority Center City district cannot consume the northwest's slots.
+  for (const pass of [0, 1])
+    for (const area of areas) {
+      if (paintedLabels.length >= labelBudget) break;
+      const label = areaLabel(area);
+      if (seenNames.has(label)) continue;
+      const [isoX, isoY] = mapPoint(area.label[0], area.label[1]);
+      const x = panX + (isoX - city().iso_bounds[0]) * scale;
+      const y = panY + (isoY - city().iso_bounds[1]) * scale;
+      const topInset = viewportWidth <= 620 ? 64 : 76;
+      if (x < 8 || y < topInset || x > viewportWidth - 8 || y > viewportHeight - 8) continue;
+      const cell = `${Math.floor(x / 190)}/${Math.floor(y / 84)}`;
+      if (pass === 0 && occupiedCells.has(cell)) continue;
+      ctx.font =
+        area.kind === "local_area"
+          ? "500 11px ui-sans-serif, system-ui"
+          : `600 ${z <= 4 ? 11 : 12}px ui-sans-serif, system-ui`;
+      const width = ctx.measureText(label).width;
+      const labelBox = {
+        left: x - width / 2 - 6,
+        right: x + width / 2 + 6,
+        top: y - 10,
+        bottom: y + 10,
+      };
+      if (labelBox.left < 6 || labelBox.right > viewportWidth - 6) continue;
+      if (
+        occupiedLabels.some(
+          (occupied) =>
+            labelBox.left < occupied.right &&
+            labelBox.right > occupied.left &&
+            labelBox.top < occupied.bottom &&
+            labelBox.bottom > occupied.top,
+        )
+      ) {
+        continue;
+      }
+      occupiedLabels.push(labelBox);
+      occupiedCells.add(cell);
+      seenNames.add(label);
+      ctx.lineWidth = 3.5;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#f2eadce8";
+      ctx.strokeText(label, x, y);
+      ctx.fillStyle = area.kind === "local_area" ? "#65584a" : "#292722";
+      ctx.fillText(label, x, y);
+      paintedLabels.push(label);
     }
-    occupiedLabels.push(labelBox);
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "#f6f0e6dd";
-    ctx.strokeText(label, x, y);
-    ctx.fillStyle = area.kind === "local_area" ? "#7a3e25" : "#302d28";
-    ctx.fillText(label, x, y);
-    paintedLabels.push(label);
-  }
+  ctx.restore();
   canvas.dataset.areaLabels = JSON.stringify(paintedLabels);
   canvas.dataset.planningAreas = JSON.stringify(planningAreas.map((area) => area.name));
   canvas.dataset.localAreas = JSON.stringify(localAreas.map((area) => area.name));
@@ -512,7 +588,7 @@ function drawAreaOverlays(z, panX, panY, scale) {
 /** @param {Neighborhood} area @param {number} z */
 function localAreaVisible(area, z) {
   if (area.display !== true || area.display_tier === undefined) return false;
-  return z >= (area.display_tier === 1 ? 6 : area.display_tier === 2 ? 7 : 8);
+  return z >= (area.display_tier === 1 ? 4 : area.display_tier === 2 ? 5 : 6);
 }
 
 /** @param {Neighborhood} area */
@@ -534,7 +610,7 @@ function areaNearViewport(area, panX, panY, scale) {
 function cachedAreaProjection(area) {
   const cached = areaProjectionCache.get(area);
   if (cached !== undefined) return cached;
-  const rings = area.rings.map((ring) => ring.map((point) => isometricLonLat(point[0], point[1])));
+  const rings = area.rings.map((ring) => ring.map((point) => mapPoint(point[0], point[1])));
   const points = rings.flat();
   const projection = {
     rings,
@@ -561,12 +637,12 @@ function projectArea(area, panX, panY, scale) {
   );
 }
 
-/** @param {{ x: number, y: number }[][]} rings @param {"planning" | "local"} kind */
-function drawAreaGeometry(rings, kind) {
+/** @param {{ x: number, y: number }[][]} rings */
+function drawAreaGeometry(rings) {
   ctx.save();
-  ctx.strokeStyle = kind === "local" ? "#e4935248" : "#24201d70";
-  ctx.fillStyle = "#ee9b4f14";
-  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = "#f5ead3ae";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
   for (const ring of rings) {
     if (ring.length === 0) continue;
     const xs = ring.map(({ x }) => x);
@@ -585,49 +661,9 @@ function drawAreaGeometry(rings, kind) {
       else ctx.lineTo(point.x, point.y);
     }
     ctx.closePath();
-    if (kind === "local") ctx.fill();
     ctx.stroke();
   }
   ctx.restore();
-}
-
-/** @param {number} z @param {number} panX @param {number} panY @param {number} scale */
-function drawLandmarks(z, panX, panY, scale) {
-  const landmarks = richView()?.landmarks ?? city().landmarks;
-  const painted = [];
-  for (const landmark of landmarks) {
-    if (z < landmark.min_zoom) continue;
-    const x = panX + (landmark.point[0] - sceneBounds()[0]) * scale;
-    const y = panY + (landmark.point[1] - sceneBounds()[1]) * scale;
-    if (x < -100 || y < -30 || x > viewportWidth + 30 || y > viewportHeight + 30) continue;
-    const pixelX = Math.round(x);
-    const pixelY = Math.round(y);
-    ctx.fillStyle = landmark.color;
-    drawRaisedFigure(pixelX, pixelY);
-    ctx.font = "600 12px ui-sans-serif, system-ui";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "#f6f0e6";
-    ctx.strokeText(landmark.name, pixelX + 10, pixelY - 11);
-    ctx.fillStyle = "#191714";
-    ctx.fillText(landmark.name, pixelX + 10, pixelY - 11);
-    painted.push(landmark.name);
-  }
-  return painted;
-}
-
-/** Draw Rocky as a tiny raised-arms figure instead of an ambiguous map pin. */
-/** @param {number} x @param {number} y */
-function drawRaisedFigure(x, y) {
-  ctx.fillRect(x - 1, y - 16, 3, 3);
-  ctx.fillRect(x - 2, y - 12, 5, 7);
-  ctx.fillRect(x - 5, y - 14, 3, 2);
-  ctx.fillRect(x - 7, y - 16, 3, 2);
-  ctx.fillRect(x + 3, y - 14, 3, 2);
-  ctx.fillRect(x + 5, y - 16, 3, 2);
-  ctx.fillRect(x - 2, y - 5, 2, 5);
-  ctx.fillRect(x + 1, y - 5, 2, 5);
-  ctx.fillRect(x - 4, y, 9, 2);
 }
 
 /** @param {[number, number]} cityHall @param {number} panX @param {number} panY @param {number} scale */
@@ -675,18 +711,12 @@ function setZoom(nextZoom) {
 
 /** @param {number} tileZoom */
 function centerCityHall(tileZoom = currentTileZoom()) {
+  searchPoint = undefined;
   centerAt(sceneCityHall() ?? boundsCenter(), tileZoom);
 }
 
 function currentTileZoom() {
   return Math.max(0, Math.min(sceneMaxZoom(), Math.round(Math.log2(zoom) + BASE_TILE_ZOOM)));
-}
-
-function centerRocky() {
-  const landmark = (richView()?.landmarks ?? city().landmarks).find(
-    (candidate) => candidate.name === "Rocky",
-  );
-  if (landmark !== undefined) centerAt(landmark.point, sceneMaxZoom());
 }
 
 /** @returns {[number, number]} */
@@ -708,7 +738,7 @@ function initialTileZoom() {
   const requested = Number.parseInt(new URLSearchParams(location.search).get("z") ?? "", 10);
   return Number.isInteger(requested)
     ? Math.max(0, Math.min(sceneMaxZoom(), requested))
-    : sceneHomeZoom();
+    : Math.max(7, sceneHomeZoom());
 }
 
 /** @returns {[number, number]} */
@@ -806,8 +836,7 @@ addEventListener("keydown", (event) => {
   if (event.target !== canvas && event.target !== document.body) return;
   if (event.key === "+" || event.key === "=") setZoom(zoom * 2);
   else if (event.key === "-") setZoom(zoom / 2);
-  else if (event.key === "0") centerCityHall();
-  else if (event.key.toLowerCase() === "r") centerRocky();
+  else if (event.key === "0") centerCityHall(7);
   else if (event.key.startsWith("Arrow")) {
     const distance = 64 / worldScale();
     if (event.key === "ArrowLeft") cameraX -= distance;
@@ -819,8 +848,57 @@ addEventListener("keydown", (event) => {
   event.preventDefault();
 });
 addEventListener("resize", resize);
-home.addEventListener("click", () => centerCityHall());
-rocky.addEventListener("click", centerRocky);
+const panels = [...document.querySelectorAll("details")];
+for (const panel of panels) {
+  addEventListener("pointerdown", (event) => {
+    if (event.target instanceof Node && !panel.contains(event.target)) panel.open = false;
+  });
+  addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && panel.open) {
+      panel.open = false;
+      panel.querySelector("summary")?.focus();
+    }
+  });
+  panel.addEventListener("toggle", () => {
+    if (panel.open) for (const other of panels) if (other !== panel) other.open = false;
+  });
+}
+const searchPanel = document.querySelector("#search-panel");
+const searchForm = document.querySelector("#address-search");
+const searchInput = document.querySelector("#address-input");
+const searchResults = document.querySelector("#address-results");
+if (
+  searchPanel instanceof HTMLDetailsElement &&
+  searchForm instanceof HTMLFormElement &&
+  searchInput instanceof HTMLInputElement &&
+  searchResults instanceof HTMLElement
+) {
+  const search = createAddressSearch({
+    form: searchForm,
+    input: searchInput,
+    results: searchResults,
+    onSelect(result) {
+      if (meta === undefined) return false;
+      // Exact map coverage, rather than the geocoder's rectangular bias box.
+      const point = mapPoint(result.longitude, result.latitude);
+      const bounds = sceneBounds();
+      const side = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+      const x = Math.floor(((point[0] - bounds[0]) / side) * 256);
+      const y = Math.floor(((point[1] - bounds[1]) / side) * 256);
+      if (!availableTiles?.has(`8/${x}/${y}`)) return false;
+      searchPoint = point;
+      centerAt(point, 9);
+      searchPanel.open = false;
+      canvas.focus({ preventScroll: true });
+      return true;
+    },
+  });
+  searchPanel.addEventListener("toggle", () => {
+    if (searchPanel.open) searchInput.focus({ preventScroll: true });
+    else search.cancel();
+  });
+}
+home.addEventListener("click", () => centerCityHall(7));
 zoomIn.addEventListener("click", () => setZoom(zoom * 2));
 zoomOut.addEventListener("click", () => setZoom(zoom / 2));
 retry.addEventListener("click", () => {
@@ -891,16 +969,16 @@ async function loadNeighborhoods() {
     const loaded = await response.json();
     if (!isNeighborhoods(loaded)) throw new Error("neighborhood data has the wrong shape");
     neighborhoodData = loaded;
-    neighborhoodsToggle.title = loaded.disclaimer;
-    localAreasToggle.title = "Toggle selected local cultural and commercial areas";
+    neighborhoodsToggle.title = "Show neighborhood and local district names";
+    localAreasToggle.title = "Show official neighborhood borders without colored fills";
     neighborhoodsToggle.disabled = richMode;
     localAreasToggle.disabled = richMode;
     draw();
   } catch {
     neighborhoodsToggle.disabled = true;
     localAreasToggle.disabled = true;
-    neighborhoodsToggle.title = "Neighborhood boundaries are unavailable";
-    localAreasToggle.title = "Local-area overlays are unavailable";
+    neighborhoodsToggle.title = "Neighborhood names are unavailable";
+    localAreasToggle.title = "Neighborhood borders are unavailable";
   }
 }
 
@@ -911,7 +989,21 @@ async function loadMeta() {
     /** @type {unknown} */
     const loaded = await response.json();
     if (!isMeta(loaded)) throw new Error("metadata response has the wrong shape");
+    mapProjection = validateProjection(loaded.projection);
     meta = loaded;
+    const credits = loaded.imagery_attributions ?? loaded.google_attributions ?? [];
+    for (const element of document.querySelectorAll("[data-city-imagery]")) {
+      if (element instanceof HTMLElement) element.hidden = credits.includes("Google Earth");
+    }
+    const imageryCredit = document.querySelector("#google-imagery-credit");
+    if (imageryCredit instanceof HTMLElement) {
+      imageryCredit.textContent = credits.join(" · ");
+      imageryCredit.hidden = !credits.length;
+    }
+    const imageryInfo = document.querySelector("#google-imagery-info");
+    if (imageryInfo instanceof HTMLElement) {
+      imageryInfo.hidden = !credits.length;
+    }
     normalizeSceneUrl();
     neighborhoodsToggle.disabled = richMode;
     localAreasToggle.disabled = richMode;
@@ -1006,6 +1098,24 @@ function isMeta(value) {
     Array.isArray(candidate.landmarks) &&
     candidate.landmarks.every(isLandmark) &&
     typeof candidate.tile_version === "string" &&
+    (candidate.imagery_attributions === undefined ||
+      (Array.isArray(candidate.imagery_attributions) &&
+        candidate.imagery_attributions.every(
+          (credit) => typeof credit === "string" && credit.trim().length > 0,
+        ))) &&
+    (candidate.google_imagery_sha256 === undefined ||
+      (typeof candidate.google_imagery_sha256 === "string" &&
+        /^[a-f0-9]{64}$/.test(candidate.google_imagery_sha256))) &&
+    (candidate.google_attributions === undefined ||
+      (Array.isArray(candidate.google_attributions) &&
+        candidate.google_attributions.every(
+          (credit) => typeof credit === "string" && credit.trim().length > 0,
+        ))) &&
+    (candidate.google_imagery_sha256 === undefined ||
+      (Array.isArray(candidate.google_attributions) &&
+        candidate.google_attributions.includes("Google Maps"))) &&
+    (candidate.tile_size === undefined ||
+      [256, 512, 1024].includes(/** @type {number} */ (candidate.tile_size))) &&
     Number.isInteger(candidate.max_tile_zoom) &&
     Number.isInteger(candidate.max_zoom) &&
     Number.isInteger(candidate.home_zoom) &&

@@ -1,4 +1,5 @@
 mod building_render;
+mod google_imagery;
 mod land_cover;
 mod mesh_render;
 mod mesh_texture;
@@ -17,7 +18,10 @@ mod transport_render;
 mod tree_render;
 mod world;
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
@@ -25,9 +29,13 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     building_render::eligible_detached_frontage,
+    google_imagery::GoogleImagery,
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
-    server::{prebuild, prebuild_is_complete, serve},
+    server::{
+        prebuild, prebuild_is_complete, prebuild_is_complete_with_google, prebuild_with_google,
+        serve,
+    },
     terrain::Terrain,
     texture::AerialSource,
     world::{BuildingKind, World, load_world, world_digest},
@@ -52,7 +60,12 @@ enum Command {
             value_parser = clap::value_parser!(u8).range(1..=16)
         )]
         jobs: u8,
+        /// Directory containing manifest.json and raw 8/x/y.png captures.
+        #[arg(long)]
+        google_imagery: Option<PathBuf>,
     },
+    /// Print the canonical mesh-free Google capture plan as JSON.
+    GooglePlan,
     /// Print deterministic building-context and frontage coverage counts.
     WorldAudit,
 }
@@ -60,6 +73,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("isophilly=info,tower_http=info")),
@@ -68,21 +82,47 @@ async fn main() -> io::Result<()> {
         .init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Prebuild { jobs } => {
+        Command::GooglePlan => {
+            let world = load_world(Path::new("data/clean/philly.bin"))?;
+            serde_json::to_writer(io::stdout().lock(), &google_imagery::plan(&world))
+                .map_err(io::Error::other)
+        }
+        Command::Prebuild {
+            jobs,
+            google_imagery,
+        } => {
             let world_path = Path::new("data/clean/philly.bin");
             let mut land_cover =
                 LandCoverMask::open_optional(Path::new("data/clean/land-cover-2018.isomask"))?;
             let land_cover_sha256 = land_cover.as_ref().map(LandCoverMask::artifact_sha256);
             let terrain = Terrain::open_optional(Path::new("data/clean/terrain-v1.isoterrain"))?;
             let terrain_sha256 = terrain.as_ref().map(Terrain::artifact_sha256);
-            if prebuild_is_complete(
-                &world_digest(world_path)?,
-                land_cover_sha256.as_ref(),
-                terrain_sha256.as_ref(),
-            ) {
+            // Opt-in captures require the loaded world and every PNG to be
+            // validated before a completed build can be reused.
+            if google_imagery.is_none()
+                && prebuild_is_complete(
+                    &world_digest(world_path)?,
+                    land_cover_sha256.as_ref(),
+                    terrain_sha256.as_ref(),
+                )
+            {
                 return Ok(());
             }
             let world = load_world(world_path)?;
+            let google = google_imagery
+                .as_deref()
+                .map(|root| GoogleImagery::open(root, &world))
+                .transpose()?;
+            if let Some(google) = &google
+                && prebuild_is_complete_with_google(
+                    &world,
+                    land_cover_sha256.as_ref(),
+                    terrain_sha256.as_ref(),
+                    google,
+                )?
+            {
+                return Ok(());
+            }
             validate_building_contexts(&world)?;
             let aerial = AerialSource::open("data/aerial")?;
             let mesh_textures = MeshTextureSource::open(
@@ -99,13 +139,24 @@ async fn main() -> io::Result<()> {
                 .map_err(io::Error::other)?;
             println!("prebuild using {jobs} workers");
             pool.install(|| {
-                prebuild(
-                    &world,
-                    &aerial,
-                    &mesh_textures,
-                    land_cover.as_ref(),
-                    terrain.as_ref(),
-                )
+                if let Some(google) = &google {
+                    prebuild_with_google(
+                        &world,
+                        &aerial,
+                        &mesh_textures,
+                        land_cover.as_ref(),
+                        terrain.as_ref(),
+                        Some(google),
+                    )
+                } else {
+                    prebuild(
+                        &world,
+                        &aerial,
+                        &mesh_textures,
+                        land_cover.as_ref(),
+                        terrain.as_ref(),
+                    )
+                }
             })
         }
         Command::Serve { port } => serve(port).await,

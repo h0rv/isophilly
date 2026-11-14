@@ -765,7 +765,20 @@ The 19,208-file raw nadir archive totals 943.21 GiB and has no published
 positions, camera orientation, or calibration. Neither group is an ingest
 candidate; see `PASDA_AUDIT.md` before reconsidering it.
 
-Google's 3-D map products are viable only as live hosted views. The Maps
+The optional [Google capture workflow](GOOGLE_IMAGERY.md) now supports
+Photorealistic 3D Tiles as an explicitly selected source outside existing
+photographed mesh coverage. The project owner authorized this integration.
+The operator must have permission to retain and publish the captures under
+their applicable agreement. Normal ingest and prebuild remain unchanged unless
+`prebuild --google-imagery` is supplied. That Map Tiles API route has not been
+live-tested here. The separate [Google Earth workflow](GOOGLE_EARTH.md) has
+captured all 9,214 citywide leaves, including Center City, without an API key.
+It writes an independent atlas rather than modifying the packed City world.
+The separate water masks use a complete, paginated City hydrographic snapshot.
+They preserve polygon holes and use photographed heights to exclude elevated
+bridge decks from grading. Original source photographs remain unchanged.
+
+The earlier standard-terms review recommended live hosted views only. The Maps
 JavaScript API 3-D map uses the Immersive Maps SKU: 5,000 free map loads per
 month, then $7 per 1,000 through 100,000. Direct Map Tiles API Photorealistic
 3D Tiles instead have 1,000 free root-tile requests, then cost $6 per 1,000
@@ -775,9 +788,8 @@ through 100,000
 Its [Map Tiles policies](https://developers.google.com/maps/documentation/tile/policies)
 prohibit the persistent/offline cache, prefetching, image or machine analysis,
 and extracted or derived imagery needed to save this project's source pixels.
-Neither route is therefore an approved input. Reconsider only if live-only
-delivery, billing, attribution, and no retained pixels become acceptable
-requirements.
+An ordinary API key does not override those restrictions. Review the applicable
+imagery agreement before using the opt-in capture workflow.
 
 ## Reproducibility and publication
 

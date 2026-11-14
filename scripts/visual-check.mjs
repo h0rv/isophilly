@@ -138,6 +138,8 @@ let serverOutput = "";
 let serverSpawnError;
 let browser;
 let tileZoomLimit = 0;
+let tilePixelSize = 256;
+let sceneBounds;
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
 });
@@ -502,7 +504,7 @@ async function waitForServer(expectedTileVersion) {
 /**
  * @param {import("playwright-core").Page} page
  * @param {number} zoom
- * @param {{ name: string, center?: [number, number], planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string, expectedLandmark?: string, sector?: string }} view
+ * @param {{ name: string, center?: [number, number], planningAreas?: boolean, localAreas?: boolean, expectedAreaLabel?: string, sector?: string }} view
  */
 async function capture(page, zoom, view = { name: "city-hall" }) {
   const started = performance.now();
@@ -585,10 +587,17 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   await drainGrowingTasks(responseTasks);
   const settledTileRequests = freezeRecords(tileRequests);
   validateTileResponseSnapshot(settledTileRequests);
-  if (view.planningAreas === true) {
-    await page.locator("#neighborhoods-toggle").click();
+  // Legacy capture flags request borders or local names, not separate filled layers.
+  const namesToggle = page.locator("#neighborhoods-toggle");
+  if ((await namesToggle.getAttribute("aria-pressed")) !== "true") await namesToggle.click();
+  const bordersToggle = page.locator("#local-areas-toggle");
+  if ((await bordersToggle.getAttribute("aria-pressed")) !== String(view.planningAreas === true)) {
+    await bordersToggle.click();
   }
-  if (view.localAreas === true) await page.locator("#local-areas-toggle").click();
+  await page.waitForFunction((borders) => {
+    const map = document.querySelector("#map");
+    return map?.dataset.names === "true" && map?.dataset.borders === String(borders);
+  }, view.planningAreas === true);
   if (view.expectedAreaLabel !== undefined) {
     await page.waitForFunction(
       (expected) => {
@@ -603,42 +612,80 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   await page.waitForTimeout(100);
   const screenshot = view.name === "city-hall" ? `z${zoom}.png` : `${view.name}-z${zoom}.png`;
   const screenshotRecord = await screenshotEvidence(page, screenshot);
-  const canvas = await page.locator("#map").evaluate((element) => {
-    if (!(element instanceof HTMLCanvasElement)) throw new Error("map canvas is missing");
-    const context = element.getContext("2d", { willReadFrequently: true });
-    if (context === null) throw new Error("map canvas is unavailable");
-    const image = context.getImageData(0, 0, element.width, element.height).data;
-    let samples = 0;
-    let ground = 0;
-    const colors = new Set();
-    for (let y = 0; y < element.height; y += 8) {
-      for (let x = 0; x < element.width; x += 8) {
-        const offset = (y * element.width + x) * 4;
-        const red = image[offset];
-        const green = image[offset + 1];
-        const blue = image[offset + 2];
-        if (red === 222 && green === 212 && blue === 196) ground += 1;
-        colors.add(`${red},${green},${blue}`);
-        samples += 1;
+  const canvas = await page.locator("#map").evaluate(
+    (element, { bounds, areas, zoom }) => {
+      if (!(element instanceof HTMLCanvasElement)) throw new Error("map canvas is missing");
+      const context = element.getContext("2d", { willReadFrequently: true });
+      if (context === null) throw new Error("map canvas is unavailable");
+      const image = context.getImageData(0, 0, element.width, element.height).data;
+      let samples = 0;
+      let ground = 0;
+      const colors = new Set();
+      for (let y = 0; y < element.height; y += 8) {
+        for (let x = 0; x < element.width; x += 8) {
+          const offset = (y * element.width + x) * 4;
+          const red = image[offset];
+          const green = image[offset + 1];
+          const blue = image[offset + 2];
+          if (red === 222 && green === 212 && blue === 196) ground += 1;
+          colors.add(`${red},${green},${blue}`);
+          samples += 1;
+        }
       }
-    }
-    return {
-      requested: Number(element.dataset.requested),
-      loaded: Number(element.dataset.loaded),
-      tileZoom: Number(element.dataset.tileZoom),
-      pending: Number(element.dataset.pending),
-      uncovered: Number(element.dataset.uncovered),
-      failed: Number(element.dataset.failed),
-      mode: element.dataset.mode,
-      view: element.dataset.view,
-      areaLabels: JSON.parse(element.dataset.areaLabels ?? "[]"),
-      planningAreas: JSON.parse(element.dataset.planningAreas ?? "[]"),
-      localAreas: JSON.parse(element.dataset.localAreas ?? "[]"),
-      landmarks: JSON.parse(element.dataset.landmarks ?? "[]"),
-      nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
-      sampledColors: colors.size,
-    };
-  });
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      const scale =
+        (Math.min(width, height) * 2 ** (zoom - 2)) /
+        Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+      const areaLabels = JSON.parse(element.dataset.areaLabels ?? "[]");
+      const unfittingLabels = areaLabels.filter(
+        (label) =>
+          !areas.some((area) => {
+            if (area.label !== label) return false;
+            const x = width / 2 + (area.point[0] - Number(element.dataset.cameraX)) * scale;
+            const y = height / 2 + (area.point[1] - Number(element.dataset.cameraY)) * scale;
+            context.save();
+            context.font = area.local
+              ? "500 11px ui-sans-serif, system-ui"
+              : `600 ${zoom <= 4 ? 11 : 12}px ui-sans-serif, system-ui`;
+            const halfWidth = context.measureText(label).width / 2 + 6;
+            context.restore();
+            return (
+              x - halfWidth >= 6 && x + halfWidth <= width - 6 && y - 10 >= 0 && y + 10 <= height
+            );
+          }),
+      );
+      return {
+        names: element.dataset.names,
+        borders: element.dataset.borders,
+        labelBudget: Math.max(10, Math.floor((width * height) / 23_000)),
+        unfittingLabels,
+        requested: Number(element.dataset.requested),
+        loaded: Number(element.dataset.loaded),
+        tileZoom: Number(element.dataset.tileZoom),
+        pending: Number(element.dataset.pending),
+        uncovered: Number(element.dataset.uncovered),
+        failed: Number(element.dataset.failed),
+        mode: element.dataset.mode,
+        view: element.dataset.view,
+        areaLabels,
+        planningAreas: JSON.parse(element.dataset.planningAreas ?? "[]"),
+        localAreas: JSON.parse(element.dataset.localAreas ?? "[]"),
+        landmarks: JSON.parse(element.dataset.landmarks ?? "[]"),
+        nonGroundRatio: Number((1 - ground / samples).toFixed(4)),
+        sampledColors: colors.size,
+      };
+    },
+    {
+      bounds: sceneBounds,
+      zoom,
+      areas: neighborhoodOverlay.features.map((area) => ({
+        label: area.kind === "local_area" ? (area.display_label ?? area.name) : area.name,
+        local: area.kind === "local_area",
+        point: isometricLonLat(area.label[0], area.label[1]),
+      })),
+    },
+  );
   if (errors.length > 0) throw new Error(`z${zoom} browser errors:\n${errors.join("\n")}`);
   if (canvas.pending !== 0 || canvas.uncovered !== 0 || canvas.failed !== 0) {
     throw new Error(`z${zoom} has unfinished tiles: ${JSON.stringify(canvas)}`);
@@ -648,23 +695,21 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
       `${view.name} did not use the public citywide scene: ${JSON.stringify(canvas)}`,
     );
   }
-  if (view.planningAreas === true && canvas.planningAreas.length === 0) {
-    throw new Error(`${view.name} did not paint planning boundaries`);
-  }
-  if (view.planningAreas !== true && canvas.planningAreas.length !== 0) {
-    throw new Error(`${view.name} leaked planning boundaries`);
+  if (canvas.names !== "true" || canvas.borders !== String(view.planningAreas === true)) {
+    throw new Error(`${view.name} has incorrect Names/Borders state: ${JSON.stringify(canvas)}`);
   }
   if (view.localAreas === true && canvas.localAreas.length === 0) {
-    throw new Error(`${view.name} did not paint local areas`);
+    throw new Error(`${view.name} has no visible local-name features`);
   }
-  if (view.localAreas !== true && canvas.localAreas.length !== 0) {
-    throw new Error(`${view.name} leaked local areas`);
+  if (view.expectedAreaLabel !== undefined && !canvas.areaLabels.includes(view.expectedAreaLabel)) {
+    throw new Error(`${view.name} did not paint name ${view.expectedAreaLabel}`);
   }
-  if (view.expectedLandmark !== undefined && !canvas.landmarks.includes(view.expectedLandmark)) {
-    throw new Error(`${view.name} did not paint landmark ${view.expectedLandmark}`);
+  if (canvas.landmarks.length !== 0 || (await page.locator("#rocky").count()) !== 0) {
+    throw new Error(`${view.name} still exposes removed landmark UI`);
   }
   if (
-    canvas.areaLabels.length > 24 ||
+    canvas.areaLabels.length > canvas.labelBudget ||
+    canvas.unfittingLabels.length > 0 ||
     new Set(canvas.areaLabels).size !== canvas.areaLabels.length
   ) {
     throw new Error(
@@ -684,7 +729,13 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
   ) {
     throw new Error(`z${zoom} has a non-WebP or non-immutable tile response`);
   }
-  const expectedTileZoom = Math.min(zoom, tileZoomLimit);
+  const expectedTileZoom = Math.max(
+    0,
+    Math.min(
+      tileZoomLimit,
+      Math.ceil(Math.log2((Math.min(width, height) * 2 ** (zoom - 2)) / tilePixelSize)),
+    ),
+  );
   if (canvas.tileZoom !== expectedTileZoom) {
     throw new Error(
       `z${zoom} used tile z${canvas.tileZoom}; expected canonical z${expectedTileZoom}`,
@@ -720,7 +771,7 @@ async function capture(page, zoom, view = { name: "city-hall" }) {
  */
 async function interactions(browser, meta) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  await page.goto(`${origin}/?z=5&time=${encodeURIComponent(VISUAL_TIME)}`, {
+  await page.goto(`${origin}/?time=${encodeURIComponent(VISUAL_TIME)}`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
@@ -733,21 +784,45 @@ async function interactions(browser, meta) {
       timeout: tileTimeout,
     },
   );
+  const hall = /** @type {number[]} */ (meta.city_hall);
+  await page.waitForFunction(
+    ([x, y]) => {
+      const map = document.querySelector("#map");
+      return (
+        map?.dataset.zoom === "7" &&
+        map.dataset.names === "true" &&
+        map.dataset.borders === "false" &&
+        Number(map.dataset.cameraX) === x &&
+        Number(map.dataset.cameraY) === y
+      );
+    },
+    hall,
+    { timeout: tileTimeout },
+  );
+  if ((await page.locator("#rocky").count()) !== 0)
+    throw new Error("removed landmark control remains");
   const panStarted = performance.now();
   await page.locator("#map").focus();
+  const panCameraBefore = Number(await page.locator("#map").getAttribute("data-camera-x"));
   await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (before) => Number(document.querySelector("#map")?.dataset.cameraX) > before,
+    panCameraBefore,
+  );
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
     timeout: settleBudget,
   });
   const prefetchedPanMs = performance.now() - panStarted;
-  const controls = await page.locator(".controls button").evaluateAll((buttons) =>
-    buttons
-      .filter((button) => !button.hidden && button.getClientRects().length > 0)
-      .map((button) => {
-        const bounds = button.getBoundingClientRect();
-        return { id: button.id, width: bounds.width, height: bounds.height };
-      }),
-  );
+  const controls = await page
+    .locator(".controls button, .map-navigation button, details > summary")
+    .evaluateAll((buttons) =>
+      buttons
+        .filter((button) => !button.hidden && button.getClientRects().length > 0)
+        .map((button) => {
+          const bounds = button.getBoundingClientRect();
+          return { id: button.id, width: bounds.width, height: bounds.height };
+        }),
+    );
   if (controls.some((control) => control.width < 44 || control.height < 44)) {
     throw new Error(`mobile controls are too small: ${JSON.stringify(controls)}`);
   }
@@ -766,25 +841,15 @@ async function interactions(browser, meta) {
   const cameraAfter = Number(await canvas.getAttribute("data-camera-x"));
   if (!(cameraAfter > cameraBefore)) throw new Error("keyboard pan did not move the camera");
   await canvas.focus();
-  await page.keyboard.press("r");
-  await page.waitForFunction(
-    () => {
-      const map = document.querySelector("#map");
-      const landmarks = JSON.parse(map?.getAttribute("data-landmarks") ?? "[]");
-      return map?.getAttribute("data-pending") === "0" && landmarks.includes("Rocky");
-    },
-    null,
-    { timeout: tileTimeout },
-  );
-  await canvas.focus();
   await page.keyboard.press("0");
-  const hall = /** @type {number[]} */ (meta.city_hall);
   await page.waitForFunction(
     ([x, y]) => {
       const map = document.querySelector("#map");
       return (
         Number(map?.getAttribute("data-camera-x")) === x &&
-        Number(map?.getAttribute("data-camera-y")) === y
+        Number(map?.getAttribute("data-camera-y")) === y &&
+        map?.getAttribute("data-zoom") === "7" &&
+        map?.getAttribute("data-pending") === "0"
       );
     },
     hall,
@@ -801,8 +866,8 @@ async function interactions(browser, meta) {
   await page.waitForFunction(() => document.querySelector("#map")?.dataset.pending === "0", null, {
     timeout: tileTimeout,
   });
-  const planningToggle = page.locator("#neighborhoods-toggle");
-  const localToggle = page.locator("#local-areas-toggle");
+  const namesToggle = page.locator("#neighborhoods-toggle");
+  const bordersToggle = page.locator("#local-areas-toggle");
   const overlayControls = await page
     .locator("#neighborhoods-toggle, #local-areas-toggle")
     .evaluateAll((buttons) =>
@@ -818,47 +883,125 @@ async function interactions(browser, meta) {
     () => document.documentElement.scrollWidth > window.innerWidth,
   );
   if (overlayOverflow) throw new Error("mobile overlay controls overflow the viewport");
-  await localToggle.click();
-  await page.waitForFunction(
-    () => JSON.parse(document.querySelector("#map")?.dataset.localAreas ?? "[]").length > 0,
+  await page.waitForFunction(() => {
+    const map = document.querySelector("#map");
+    return (
+      map?.dataset.names === "true" &&
+      map.dataset.borders === "false" &&
+      JSON.parse(map.dataset.areaLabels ?? "[]").length > 0
+    );
+  });
+  const namesOnly = await canvas.evaluate((element) =>
+    JSON.parse(element.dataset.areaLabels ?? "[]"),
   );
-  const localOnly = await canvas.evaluate((element) => ({
-    planning: JSON.parse(element.dataset.planningAreas ?? "[]").length,
-    local: JSON.parse(element.dataset.localAreas ?? "[]").length,
+  // Observe actual polygon drawing. Text and the City Hall dot are not polygons.
+  const geometryAudit = await canvas.evaluateHandle((element) => {
+    const context = element.getContext("2d");
+    if (context === null) throw new Error("map canvas is unavailable");
+    let segments = 0;
+    const stats = { strokes: 0, fills: 0, widestStroke: 0 };
+    const beginPath = context.beginPath.bind(context);
+    const lineTo = context.lineTo.bind(context);
+    const stroke = context.stroke.bind(context);
+    const fill = context.fill.bind(context);
+    context.beginPath = (...args) => {
+      segments = 0;
+      return beginPath(...args);
+    };
+    context.lineTo = (...args) => {
+      segments += 1;
+      return lineTo(...args);
+    };
+    context.stroke = (...args) => {
+      if (segments > 1) {
+        stats.strokes += 1;
+        stats.widestStroke = Math.max(stats.widestStroke, context.lineWidth);
+      }
+      return stroke(...args);
+    };
+    context.fill = (...args) => {
+      if (segments > 1) stats.fills += 1;
+      return fill(...args);
+    };
+    return stats;
+  });
+  await bordersToggle.click();
+  await page.waitForFunction(() => document.querySelector("#map")?.dataset.borders === "true");
+  const namesAndBorders = await canvas.evaluate((element) => ({
+    names: element.dataset.names,
+    labels: JSON.parse(element.dataset.areaLabels ?? "[]"),
   }));
-  if (localOnly.planning !== 0 || localOnly.local === 0) {
-    throw new Error(`local-area toggle is not independent: ${JSON.stringify(localOnly)}`);
+  const borderGeometry = await geometryAudit.jsonValue();
+  if (
+    namesAndBorders.names !== "true" ||
+    JSON.stringify(namesAndBorders.labels) !== JSON.stringify(namesOnly)
+  ) {
+    throw new Error(`Borders changed Names: ${JSON.stringify(namesAndBorders)}`);
   }
-  await planningToggle.click();
-  await page.waitForFunction(
-    () => JSON.parse(document.querySelector("#map")?.dataset.planningAreas ?? "[]").length > 0,
-  );
-  await localToggle.click();
-  await page.waitForFunction(
-    () => JSON.parse(document.querySelector("#map")?.dataset.localAreas ?? "[]").length === 0,
-  );
-  const planningOnly = await canvas.evaluate((element) => ({
-    planning: JSON.parse(element.dataset.planningAreas ?? "[]").length,
-    local: JSON.parse(element.dataset.localAreas ?? "[]").length,
-  }));
-  if (planningOnly.planning === 0 || planningOnly.local !== 0) {
-    throw new Error(`planning toggle is not independent: ${JSON.stringify(planningOnly)}`);
+  if (
+    borderGeometry.strokes === 0 ||
+    borderGeometry.fills !== 0 ||
+    borderGeometry.widestStroke > 1.5
+  ) {
+    throw new Error(
+      `Borders must be thin outlines without covering fills: ${JSON.stringify(borderGeometry)}`,
+    );
   }
-
-  const landmarks = /** @type {{ name: string }[]} */ (meta.landmarks);
-  if (!landmarks.some((landmark) => landmark.name === "Rocky")) {
-    throw new Error("Rocky landmark is missing");
+  const strokesBefore = (await geometryAudit.jsonValue()).strokes;
+  await namesToggle.click();
+  await page.waitForFunction(() => {
+    const map = document.querySelector("#map");
+    return (
+      map?.dataset.names === "false" &&
+      map.dataset.borders === "true" &&
+      JSON.parse(map.dataset.areaLabels ?? "[]").length === 0 &&
+      JSON.parse(map.dataset.localAreas ?? "[]").length === 0
+    );
+  });
+  if ((await geometryAudit.jsonValue()).strokes <= strokesBefore) {
+    throw new Error("Names off also removed Borders");
   }
+  await bordersToggle.click();
+  await page.waitForFunction(() => {
+    const map = document.querySelector("#map");
+    return (
+      map?.dataset.names === "false" &&
+      map.dataset.borders === "false" &&
+      JSON.parse(map.dataset.areaLabels ?? "[]").length === 0
+    );
+  });
+  await namesToggle.click();
+  await page.waitForFunction(() => {
+    const map = document.querySelector("#map");
+    return (
+      map?.dataset.names === "true" &&
+      map.dataset.borders === "false" &&
+      JSON.parse(map.dataset.areaLabels ?? "[]").length > 0
+    );
+  });
+  if (
+    (await page.locator("#rocky").count()) !== 0 ||
+    (await canvas.evaluate((element) => JSON.parse(element.dataset.landmarks ?? "[]").length)) !== 0
+  ) {
+    throw new Error("removed landmark UI remains");
+  }
+  await geometryAudit.dispose();
+  await page.close();
   return {
     viewport: [390, 844],
     controls,
     keyboardPan: true,
-    rockyShortcut: true,
+    defaultNames: true,
+    defaultBorders: false,
+    defaultCityHallZoom: 7,
     cityHallShortcut: true,
-    independentAreaToggles: true,
+    cityHallShortcutZoom: 7,
+    independentNamesAndBorders: true,
+    bordersWithoutCoveringFills: true,
+    borderGeometry,
     defaultMode: "city",
     prefetchedPanMs: Number(prefetchedPanMs.toFixed(1)),
-    rocky: true,
+    removedLandmarkUiAbsent: true,
     screenshot,
   };
 }
@@ -934,6 +1077,8 @@ try {
   }
   const meta = await waitForServer(activeScene.tile_version);
   tileZoomLimit = meta.max_tile_zoom;
+  tilePixelSize = meta.tile_size ?? 256;
+  sceneBounds = meta.iso_bounds;
   if (!Number.isInteger(tileZoomLimit) || tileZoomLimit < 0 || tileZoomLimit > meta.max_zoom) {
     throw new Error(`server has an invalid tile zoom limit: ${JSON.stringify(meta)}`);
   }
@@ -952,10 +1097,7 @@ try {
   if (!Array.isArray(meta.city_hall) || meta.city_hall.length !== 2) {
     throw new Error(`server has no City Hall mesh focus: ${JSON.stringify(meta.city_hall)}`);
   }
-  if (!Array.isArray(meta.landmarks)) throw new Error("server has no landmarks");
-  if (!meta.landmarks.some((landmark) => landmark.name === "Rocky")) {
-    throw new Error("citywide landmarks must include Rocky");
-  }
+  if (!Array.isArray(meta.landmarks)) throw new Error("server landmarks must be an array");
   const rendering = await profile(meta);
   browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
@@ -989,19 +1131,6 @@ try {
       }),
     );
     await page.close();
-    const rocky = /** @type {{ name: string, point: [number, number] }[]} */ (meta.landmarks).find(
-      (landmark) => landmark.name === "Rocky",
-    );
-    if (rocky === undefined) throw new Error("Rocky landmark is missing");
-    const rockyPage = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    results.push(
-      await capture(rockyPage, 10, {
-        name: "rocky",
-        center: rocky.point,
-        expectedLandmark: "Rocky",
-      }),
-    );
-    await rockyPage.close();
     const neighborhoods = [
       { name: "rittenhouse", center: [985167.68, 310418.65] },
       {

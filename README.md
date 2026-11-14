@@ -1,8 +1,29 @@
 # IsoPhilly
 
-See [city overlays](docs/LIVE_CITY.md) for neighborhood and day/night data provenance. Run
-`uv run --locked poe neighborhood-audit` to verify the checked-in 148 planning neighborhoods and all
-61 local areas configured for display without network or browser access.
+A mobile-friendly Philadelphia map using photographed Google Earth 3D geometry.
+The current map uses the selected lower, narrower camera and original source
+colors. Imagery has no palette reduction, recoloring, artificial lighting, or AI
+restyling. It uses a 1 CSS pixel grid with filtered sampling when zoomed out.
+
+The approved release contains all 10,144 planned leaves at source level 18.
+The separate level 20 refinement was stopped without replacing it. Original
+photos, shared source caches, and previous complete maps are preserved.
+Franklin Field has an unresolved raised-looking field feature. It remains at
+source levels 18 through 20; its cause is not established.
+
+See the [Google Earth workflow](docs/GOOGLE_EARTH.md) for capture, build, and
+publication commands. It requires no API key or browser credentials. The
+separate [Map Tiles API workflow](docs/GOOGLE_IMAGERY.md) is optional and needs
+an API key. No generated imagery or credentials are checked into git.
+
+Names are on by default. Borders are optional outlines. Address search runs
+only on explicit submission and uses Esri's public service. See
+[city overlays](docs/LIVE_CITY.md) for neighborhood data provenance.
+
+## Retained City-source pipeline
+
+The remaining sections describe the earlier City-source renderer, not the
+Google Earth release. Do not use its export task to publish the current map.
 
 A small, deterministic isometric map of Philadelphia built from official City
 building footprints and heights, the official 2015 Center City textured 3D
@@ -119,7 +140,11 @@ credentials are issued later, copy `.example.env` to `.env`, add them, and run
 cell and downloads at most one image. Normal ingest and prebuild do not read the
 credentials.
 
-## Static hosting
+## City-source static hosting
+
+For the current Google Earth map, follow the publication instructions in
+[GOOGLE_EARTH.md](docs/GOOGLE_EARTH.md). The commands below export the retained
+City-source artwork instead.
 
 The finished map can run as plain files on Cloudflare Workers Static Assets.
 The export includes the viewer, metadata, tile coverage, and every tile listed
@@ -149,8 +174,9 @@ account.
 Generated data and tiles are intentionally gitignored. See the [data pipeline
 and attribution notes](docs/DATA.md) before publishing a build.
 The [research record](docs/RESEARCH.md) also documents the audited April 2025
-PASDA LiDAR candidate and why Google's 3-D map products are viable only as a
-live, billed mode rather than as saved source pixels for this project.
+PASDA LiDAR candidate and the standard Google licensing restrictions. The
+optional [capture workflows](docs/GOOGLE_EARTH.md) assume the operator has
+permission to retain and publish the imagery.
 The full 664-tile City-intersection LiDAR evidence queue was explicitly
 authorized on 2026-08-30 and completed on 2026-08-31. The canonical schema-3
 merge accounts for 653 evidence tiles, three outside-City tiles, and eight
@@ -267,6 +293,7 @@ demolished after the 2008 source capture. The legacy downtown r0 source adds
 newer scene are suppressed before packing, so the same building is not drawn
 twice.
 
-The source code is [MIT licensed](LICENSE). The map uses publicly available
-open-data sources with attribution and provenance recorded in
+The source code is [MIT licensed](LICENSE). The default map uses publicly available
+open-data sources. Optional Google captures retain separate provider attribution.
+Source provenance is recorded in
 [docs/DATA.md](docs/DATA.md).

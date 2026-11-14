@@ -721,7 +721,7 @@ class LandCoverConversionTests(unittest.TestCase):
         archive = Path("/tmp/source.zip")
         self.assertEqual(
             _source_dataset_uri(archive, "PPR_LandCover_2018.gdb", "landcover"),
-            'OpenFileGDB:"/vsizip/{/tmp/source.zip}/PPR_LandCover_2018.gdb":landcover',
+            f'OpenFileGDB:"/vsizip/{{{archive.resolve()}}}/PPR_LandCover_2018.gdb":landcover',
         )
         with self.assertRaisesRegex(LandCoverError, "raster name"):
             _source_dataset_uri(

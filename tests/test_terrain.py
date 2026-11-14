@@ -143,6 +143,11 @@ class TerrainBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(TerrainError, "not canonical"):
             parse_evidence_manifest(evidence.with_suffix(".json"), evidence)
 
+    @unittest.skipUnless(
+        Path("data/lidar-2025/building-evidence.json").is_file()
+        and Path("data/lidar-2025/building-evidence.parquet").is_file(),
+        "Requires the optional downloaded LiDAR evidence dataset",
+    )
     def test_real_manifest_exposes_all_eight_terminal_gaps(self) -> None:
         manifest = parse_evidence_manifest(
             Path("data/lidar-2025/building-evidence.json"),

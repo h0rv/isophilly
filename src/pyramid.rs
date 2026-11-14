@@ -11,6 +11,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    google_imagery::GoogleImagery,
     land_cover::LandCoverMask,
     mesh_texture::MeshTextureSource,
     palette,
@@ -44,6 +45,30 @@ pub fn build(
     terrain: Option<&Terrain>,
     root: &Path,
 ) -> io::Result<()> {
+    build_with_google(
+        world,
+        aerial,
+        mesh_textures,
+        land_cover,
+        terrain,
+        None,
+        root,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_with_google(
+    world: &World,
+    aerial: &AerialSource,
+    mesh_textures: &MeshTextureSource,
+    land_cover: Option<&LandCoverMask>,
+    terrain: Option<&Terrain>,
+    google: Option<&GoogleImagery>,
+    root: &Path,
+) -> io::Result<()> {
+    if let Some(google) = google {
+        google.validate(world)?;
+    }
     fs::create_dir_all(root)?;
     fs::remove_file(root.join(COMPLETE_FILE)).or_else(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -52,7 +77,15 @@ pub fn build(
             Err(error)
         }
     })?;
-    let mut changed = render_leaves(world, aerial, mesh_textures, land_cover, terrain, root)?;
+    let mut changed = render_leaves(
+        world,
+        aerial,
+        mesh_textures,
+        land_cover,
+        terrain,
+        google,
+        root,
+    )?;
     for z in (0..ART_ZOOM).rev() {
         changed = derive_level(root, z, &changed)?;
         println!("built z{z} from z{}: {} written", z + 1, changed.len());
@@ -232,6 +265,7 @@ fn render_leaves(
     mesh_textures: &MeshTextureSource,
     land_cover: Option<&LandCoverMask>,
     terrain: Option<&Terrain>,
+    google: Option<&GoogleImagery>,
     root: &Path,
 ) -> io::Result<Vec<u32>> {
     let count = 1_u32 << ART_ZOOM;
@@ -255,6 +289,7 @@ fn render_leaves(
         mesh_textures,
         land_cover,
         terrain,
+        google,
         root,
         count,
         rendered: &rendered,
@@ -352,6 +387,7 @@ struct LeafBuilder<'a> {
     mesh_textures: &'a MeshTextureSource,
     land_cover: Option<&'a LandCoverMask>,
     terrain: Option<&'a Terrain>,
+    google: Option<&'a GoogleImagery>,
     root: &'a Path,
     count: u32,
     rendered: &'a AtomicUsize,
@@ -368,21 +404,32 @@ impl LeafBuilder<'_> {
             self.skipped.fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         }
-        let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
-        let aerial =
-            AerialTile::for_source_bounds(self.aerial, self.world.aerial_source_bounds(bounds))?;
-        let image = render_tile(
-            self.world,
-            &aerial,
-            self.mesh_textures,
-            GroundInputs {
-                land_cover: self.land_cover,
-                terrain: self.terrain,
-            },
-            ART_ZOOM,
-            x,
-            y,
-        )?;
+        let capture = self
+            .google
+            .map(|google| google.render_tile(self.world, x, y))
+            .transpose()?
+            .flatten();
+        let image = if let Some(capture) = capture {
+            capture
+        } else {
+            let bounds = self.world.iso_bounds.tile(ART_ZOOM, x, y);
+            let aerial = AerialTile::for_source_bounds(
+                self.aerial,
+                self.world.aerial_source_bounds(bounds),
+            )?;
+            render_tile(
+                self.world,
+                &aerial,
+                self.mesh_textures,
+                GroundInputs {
+                    land_cover: self.land_cover,
+                    terrain: self.terrain,
+                },
+                ART_ZOOM,
+                x,
+                y,
+            )?
+        };
         write_atomic(&path, &image)?;
         let done = self.rendered.fetch_add(1, Ordering::Relaxed) + 1;
         if done.is_multiple_of(128) {

@@ -13,7 +13,17 @@ CLOUDFLARE_FILE_LIMIT = 20_000
 CLOUDFLARE_ASSET_SIZE_LIMIT = 25 * 1024 * 1024
 TILE_DIGEST = re.compile(r"[0-9a-f]{64}")
 TILE_VERSION = re.compile(r"[0-9A-Za-z-]+")
-STATIC_FILES = ("index.html", "app.js", "city-overlay.js", "neighborhoods.json", "_headers")
+STATIC_FILES = (
+    "index.html",
+    "app.js",
+    "city-overlay.js",
+    "neighborhoods.json",
+    "_headers",
+    "map-presentation.js",
+    "map-search.js",
+    "map-projection.js",
+    "presentation-config.js",
+)
 
 
 @dataclass(frozen=True, slots=True)
