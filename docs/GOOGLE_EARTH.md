@@ -193,6 +193,25 @@ planning with `--projection tools/google-imagery/view.json`. It lowers the viewi
 angle and narrows the horizontal proportions while preserving building heights.
 Changing it requires a new capture workspace, not stretching finished images.
 
+## Wallpapers
+
+Export the same map without labels or controls. The exporter uses only local
+finished tiles and keeps a small source credit in each image. It does not change
+the atlas or download more imagery.
+
+```sh
+npm run wallpapers
+# Or choose a completed workspace and specific sizes:
+npm run wallpapers -- --root "$ROOT" --sizes 1920x1080,3840x2160 --output data/wallpapers-custom
+node scripts/google-earth.mjs serve --output data/wallpapers --port 3114
+```
+
+Open <http://127.0.0.1:3114/> for the local download page. There are two views in
+eight sizes, including 4K, 5K, ultrawide, laptop, and portrait phone images. Both
+lossless PNG and smaller JPG files are included. `manifest.json` records their
+hashes and source version. Existing output folders are never overwritten.
+These files are not automatically published to the live map.
+
 ## Publication
 
 Publish the verified generated Earth site, not the retained City-source export

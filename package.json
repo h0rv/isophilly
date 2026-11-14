@@ -15,8 +15,9 @@
     "wrangler": "4.162.0"
   },
   "scripts": {
-    "check": "biome check static/app.js static/city-overlay.js static/map-presentation.js static/map-projection.js static/map-search.js static/presentation-config.js tests/map-presentation.test.js tests/map-controls.test.js tests/city-overlay.test.js tests/visual-check.test.js tests/google-imagery.test.js scripts/visual-check.mjs scripts/visual-check-lib.mjs scripts/google-imagery.mjs scripts/google-imagery-lib.mjs tools/google-imagery scripts/google-earth*.mjs tests/google-earth*.test.js && tsc --noEmit && node --test tests/map-presentation.test.js tests/map-controls.test.js tests/city-overlay.test.js tests/visual-check.test.js tests/google-imagery.test.js tests/google-earth*.test.js",
+    "check": "biome check static/app.js static/city-overlay.js static/map-presentation.js static/map-projection.js static/map-search.js static/presentation-config.js tests/map-presentation.test.js tests/map-controls.test.js tests/city-overlay.test.js tests/visual-check.test.js tests/google-imagery.test.js scripts/visual-check.mjs scripts/visual-check-lib.mjs scripts/export-wallpapers.mjs scripts/google-imagery.mjs scripts/google-imagery-lib.mjs tools/google-imagery scripts/google-earth*.mjs tests/google-earth*.test.js && tsc --noEmit && node --test tests/map-presentation.test.js tests/map-controls.test.js tests/city-overlay.test.js tests/visual-check.test.js tests/google-imagery.test.js tests/google-earth*.test.js",
     "visual": "node scripts/visual-check.mjs",
+    "wallpapers": "node scripts/export-wallpapers.mjs",
     "google:plan": "node scripts/google-earth.mjs plan",
     "google:capture": "node scripts/google-earth.mjs capture",
     "google:status": "node scripts/google-earth.mjs status",

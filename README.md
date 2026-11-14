@@ -20,6 +20,10 @@ Names are on by default. Borders are optional outlines. Address search runs
 only on explicit submission and uses Esri's public service. See
 [city overlays](docs/LIVE_CITY.md) for neighborhood data provenance.
 
+Export desktop and phone wallpapers with `npm run wallpapers`. The local
+download page and PNG/JPG files are written to `data/wallpapers/`. See the
+[wallpaper instructions](docs/GOOGLE_EARTH.md#wallpapers).
+
 ## Retained City-source pipeline
 
 The remaining sections describe the earlier City-source renderer, not the

@@ -13,6 +13,7 @@
       "tests/city-overlay.test.js",
       "tests/google-imagery.test.js",
       "scripts/visual-check.mjs",
+      "scripts/export-wallpapers.mjs",
       "scripts/google-imagery*.mjs",
       "scripts/google-earth*.mjs",
       "tests/google-earth*.test.js",
