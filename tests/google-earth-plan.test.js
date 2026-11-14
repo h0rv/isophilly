@@ -118,10 +118,10 @@ test("fetches reference endpoints only once and checks matching versions before 
   await assert.rejects(createEarthPlan(bad), /Incomplete pinned/);
 });
 
-test("default SE planning preserves all 9214 locally cached zoom-8 leaves", async (t) => {
+test("default SE planning preserves all 9214 tracked reference zoom-8 leaves", async (t) => {
   const f = await fixture(t);
   const plan = await createEarthPlan({ root: f.root });
-  const reference = fileURLToPath(new URL("../data/reference/", import.meta.url));
+  const reference = fileURLToPath(new URL("../tools/google-imagery/reference/", import.meta.url));
   const meta = await load(join(reference, "meta.json")),
     coverage = await load(join(reference, "coverage.json"));
   assert.equal(plan.views[0].tiles.length, 9214);
